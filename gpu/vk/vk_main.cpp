@@ -275,6 +275,10 @@ bool create_device() {
     optional(VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME, dev.depth_clip_control);
     optional(VK_EXT_ROBUSTNESS_2_EXTENSION_NAME, dev.null_descriptor);
     optional(VK_EXT_INDEX_TYPE_UINT8_EXTENSION_NAME, dev.index_uint8);
+    // (macos) MoltenVK turns 8-bit indices into 16-bit ones before each draw, all of the bound range: bound with its size
+    // (vk_draw.cpp bind_index), that is the draw's indices and not the rest of the game's pool. Asked for on MoltenVK only
+    if (has_extension(exts, "VK_MVK_moltenvk") || has_extension(exts, "VK_EXT_metal_objects"))
+        optional(VK_KHR_MAINTENANCE_5_EXTENSION_NAME, dev.maintenance5);
     optional(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME, dev.push_descriptor);
     optional(VK_EXT_CONDITIONAL_RENDERING_EXTENSION_NAME, dev.conditional_rendering);
     optional(VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME, dev.provoking_vertex);
@@ -364,6 +368,8 @@ bool create_device() {
     if (dev.mesh_shader) *tail = &mesh, tail = &mesh.pNext;
     if (dev.null_descriptor) *tail = &robust2, tail = &robust2.pNext;
     if (dev.index_uint8) *tail = &u8, tail = &u8.pNext;
+    VkPhysicalDeviceMaintenance5FeaturesKHR maint5{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES_KHR};
+    if (dev.maintenance5) *tail = &maint5, tail = &maint5.pNext;
     if (dev.dynamic_state3) *tail = &eds3, tail = &eds3.pNext;
     if (dev.custom_border_color) *tail = &border, tail = &border.pNext;
     if (dev.depth_clip_control) *tail = &clip, tail = &clip.pNext;
@@ -385,6 +391,7 @@ bool create_device() {
     vkGetPhysicalDeviceFeatures2(dev.physical, &f);
     descriptor_buffer.descriptorBufferCaptureReplay = VK_FALSE;
     dev.view_2d_of_3d = dev.view_2d_of_3d && v2d3d.sampler2DViewOf3D;
+    dev.maintenance5 = dev.maintenance5 && maint5.maintenance5;
     coop.cooperativeMatrixRobustBufferAccess = VK_FALSE;
     dev.coop_matrix = dev.coop_matrix && coop.cooperativeMatrix &&
                       f12.vulkanMemoryModel && f12.vulkanMemoryModelDeviceScope;

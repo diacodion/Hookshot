@@ -6025,8 +6025,16 @@ bool index_bind_same(uint64_t buffer, uint64_t offset, uint32_t type, uint64_t c
                      uint32_t cached_type, int on) {
     return on && buffer && buffer == cached_buffer && offset == cached_offset && type == cached_type;
 }
-void bind_index(VkCommandBuffer cmd, VkBuffer buffer, VkDeviceSize offset, VkIndexType type) {
+void bind_index(VkCommandBuffer cmd, VkBuffer buffer, VkDeviceSize offset, VkIndexType type, VkDeviceSize size = 0) {
     const uint64_t b = (uint64_t)(uintptr_t)buffer;
+    // (macos) 8-bit indices on MoltenVK: bound with the size the draw reads. MoltenVK makes 16-bit indices of the whole bound
+    // range before every such draw, and the range of a plain bind is the rest of the buffer, here the rest of an imported pool
+    // (tens of MB a draw, a hundred draws a frame: Metal refused the frame's command buffer, "Insufficient Memory")
+    if (size && type == VK_INDEX_TYPE_UINT8_EXT && dev.maintenance5 && vkx::vkCmdBindIndexBuffer2KHR) {
+        vkCmdBindIndexBuffer2KHR(cmd, buffer, offset, size, type);
+        last_ib.on = false;
+        return;
+    }
     if (index_bind_same(b, (uint64_t)offset, (uint32_t)type, last_ib.buffer, last_ib.offset, last_ib.type, last_ib.on))
         return;
     vkCmdBindIndexBuffer(cmd, buffer, offset, type);
@@ -6877,9 +6885,12 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         BufferRef cnt = d.count_addr ? gpu_buffer_bind(d.count_addr, 4, false) : BufferRef{};
         if (!args) SKIP_HERE();
         if (d.indexed) {
-            BufferRef ib = gpu_buffer_bind(d.ibuf, 4, false);
+            // (macos: an indirect draw's index count is not known here; 8-bit indices get 16 KB of them, bind_index)
+            const uint64_t ib_bytes = d.itype == 0 && dev.maintenance5 ? 16384 : 4;
+            BufferRef ib = gpu_buffer_bind(d.ibuf, ib_bytes, false);
+            if (!ib && ib_bytes > 4) ib = gpu_buffer_bind(d.ibuf, 4, false);
             if (!ib) SKIP_HERE();
-            bind_index(cmd, ib.buffer, ib.offset, itype);
+            bind_index(cmd, ib.buffer, ib.offset, itype, ib_bytes);
             if (cnt) vkCmdDrawIndexedIndirectCount(cmd, args.buffer, args.offset, cnt.buffer, cnt.offset, std::max(d.max, 1), ind_stride);
             else vkCmdDrawIndexedIndirect(cmd, args.buffer, args.offset, std::max(d.max, 1), ind_stride);
         } else {
@@ -6894,7 +6905,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
             ib = gpu_buffer_bind(d.ibuf, (uint64_t)std::max(d.count, 1) * unit, false);
             if (!ib) SKIP_HERE();
             FINE_N(FC_IBIND, 1);
-            bind_index(cmd, ib.buffer, ib.offset, itype);
+            bind_index(cmd, ib.buffer, ib.offset, itype, (uint64_t)std::max(d.count, 1) * unit);
         }
         FINE_SCOPE(FT_DRAWCALL);
         vkCmdDrawIndexed(cmd, (uint32_t)d.count, (uint32_t)std::max(1, d.instances), 0, d.base_vertex, (uint32_t)d.base_instance);

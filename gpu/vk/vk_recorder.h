@@ -73,7 +73,7 @@ extern std::atomic<bool> par_active;   // (vk_replay.cpp: a parallel replay's se
     A(vkCmdCopyBuffer) A(vkCmdCopyBufferToImage) A(vkCmdCopyImageToBuffer) A(vkCmdCopyImage) A(vkCmdBlitImage) A(vkCmdResolveImage) \
     A(vkCmdClearColorImage) A(vkCmdClearDepthStencilImage) A(vkCmdClearAttachments) V(vkCmdFillBuffer) A(vkCmdUpdateBuffer)          \
     V(vkCmdBeginQuery) V(vkCmdEndQuery)                                                                                            \
-    V(vkCmdBindPipeline) A(vkCmdBindDescriptorSets) V(vkCmdBindIndexBuffer) A(vkCmdBindVertexBuffers2) A(vkCmdPushConstants)        \
+    V(vkCmdBindPipeline) A(vkCmdBindDescriptorSets) V(vkCmdBindIndexBuffer) V(vkCmdBindIndexBuffer2KHR) A(vkCmdBindVertexBuffers2) A(vkCmdPushConstants)        \
     A(vkCmdPushDescriptorSetKHR)                                                                                                   \
     A(vkCmdSetViewport) A(vkCmdSetScissor) A(vkCmdSetViewportWithCount) A(vkCmdSetScissorWithCount) A(vkCmdSetBlendConstants)       \
     V(vkCmdSetStencilReference) V(vkCmdSetStencilCompareMask) V(vkCmdSetStencilWriteMask) V(vkCmdSetStencilOp) V(vkCmdSetDepthBias) \
