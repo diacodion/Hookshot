@@ -19,6 +19,7 @@
 #include <os/os_sync_wait_on_address.h>
 #include <pthread.h>
 #include <stdint.h>
+#include <string.h>
 #include <sys/mman.h>
 #include <sys/sysctl.h>
 #include <time.h>
@@ -92,6 +93,24 @@ static inline uintptr_t hos_darwin_page(void) {
     static uintptr_t page;
     if (!page) page = (uintptr_t)getpagesize();
     return page;
+}
+
+/* Pages given back so that they read as zero. madvise(MADV_DONTNEED) is only advice on macOS and the pages keep what
+   they hold, and the host's page is 16 KB where the range is made of the guest's 4 KB pages. So: the whole host pages
+   inside the range are mapped anew (fresh zero pages; the old ones go back to the system), and what is left at either
+   end is cleared by hand. Private anonymous memory only, which is what the guest window and VirtualAlloc's are. */
+static inline int hos_darwin_discard(void *p, size_t n) {
+    const uintptr_t hp = hos_darwin_page(), a = (uintptr_t)p, b = a + n;
+    const uintptr_t lo = (a + hp - 1) & ~(hp - 1), hi = b & ~(hp - 1);
+    if (hi <= lo) {
+        memset(p, 0, n);
+        return 0;
+    }
+    if (lo > a) memset((void *)a, 0, lo - a);
+    if (b > hi) memset((void *)hi, 0, b - hi);
+    if (mmap((void *)lo, hi - lo, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0) == MAP_FAILED)
+        memset((void *)lo, 0, hi - lo);
+    return 0;
 }
 #endif
 #endif

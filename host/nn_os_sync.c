@@ -333,8 +333,12 @@ static void poke_multiwait(Obj *o) {
     if (wake) WakeAllConditionVariable(&mw_cv);
 }
 
-#if (defined(__x86_64__) || defined(_M_X64)) && !defined(__EMSCRIPTEN__)
+#if (defined(__x86_64__) || defined(_M_X64) || defined(__aarch64__)) && !defined(__EMSCRIPTEN__)
+#if defined(__aarch64__)   /* (macos, Apple silicon: ISB stands in for PAUSE, about as long a wait) */
+#define _mm_pause() __asm__ volatile("isb")
+#else
 #include <emmintrin.h>
+#endif
 static int64_t spin_ns(void) {
     static int64_t ns = -1;
     if (ns < 0) {

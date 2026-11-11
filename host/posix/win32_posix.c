@@ -834,23 +834,7 @@ static int discard_pages(void *p, size_t n) {
     if (!looked) fn = (DiscardFn)dlsym(RTLD_DEFAULT, "hos_posix_guest_discard"), looked = 1;
     if (fn && (uintptr_t)p >= GUEST_LO && (uintptr_t)p + n <= GUEST_HI) return fn(p, n);
 #ifdef __APPLE__
-    /* (macos) madvise(MADV_DONTNEED) is advice there and the pages keep what they hold, and the host's page is 16 KB
-       where the range is the guest's 4 KB pages. So: the whole host pages inside the range are mapped anew (fresh
-       zero pages, the old ones given back), and what is left at either end is cleared by hand. */
-    {
-        const uintptr_t hp = hos_darwin_page(), a = (uintptr_t)p, b = a + n;
-        const uintptr_t lo = (a + hp - 1) & ~(hp - 1), hi = b & ~(hp - 1);
-        if (hi > lo) {
-            if (lo > a) memset((void *)a, 0, lo - a);
-            if (b > hi) memset((void *)hi, 0, b - hi);
-            if (mmap((void *)lo, hi - lo, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0) == MAP_FAILED) {
-                memset((void *)lo, 0, hi - lo);
-            }
-        } else {
-            memset(p, 0, n);
-        }
-        return 0;
-    }
+    return hos_darwin_discard(p, n);   /* (macos: darwin.h) */
 #else
     return madvise(p, n, MADV_DONTNEED);
 #endif

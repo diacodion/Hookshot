@@ -100,6 +100,47 @@ __attribute__((naked, noreturn)) static void recomp_sj_longjmp(void **buf, int v
         "jmpq *72(%rcx)\n\t");
 }
 
+#elif defined(__aarch64__)
+/* (macos, Apple silicon) AAPCS64's callee-saved registers: x19-x28, the frame pointer and the link register at 0-88,
+   the stack pointer at 96, d8-d15 at 104-160 (168 of the buffer's 256 bytes). FPCR is not saved: the lifted code keeps
+   the host's as it is (a64-kit's FPX1 contract), so it is the same on both sides */
+__attribute__((naked, returns_twice)) int recomp_sj_setjmp(void **buf) {
+    __asm__ volatile(
+        "stp x19, x20, [x0, #0]\n\t"
+        "stp x21, x22, [x0, #16]\n\t"
+        "stp x23, x24, [x0, #32]\n\t"
+        "stp x25, x26, [x0, #48]\n\t"
+        "stp x27, x28, [x0, #64]\n\t"
+        "stp x29, x30, [x0, #80]\n\t"
+        "mov x9, sp\n\t"
+        "str x9, [x0, #96]\n\t"
+        "stp d8, d9, [x0, #104]\n\t"
+        "stp d10, d11, [x0, #120]\n\t"
+        "stp d12, d13, [x0, #136]\n\t"
+        "stp d14, d15, [x0, #152]\n\t"
+        "mov w0, #0\n\t"
+        "ret\n\t");
+}
+
+__attribute__((naked, noreturn)) static void recomp_sj_longjmp(void **buf, int value) {
+    __asm__ volatile(
+        "ldp x19, x20, [x0, #0]\n\t"
+        "ldp x21, x22, [x0, #16]\n\t"
+        "ldp x23, x24, [x0, #32]\n\t"
+        "ldp x25, x26, [x0, #48]\n\t"
+        "ldp x27, x28, [x0, #64]\n\t"
+        "ldp x29, x30, [x0, #80]\n\t"
+        "ldr x9, [x0, #96]\n\t"
+        "mov sp, x9\n\t"
+        "ldp d8, d9, [x0, #104]\n\t"
+        "ldp d10, d11, [x0, #120]\n\t"
+        "ldp d12, d13, [x0, #136]\n\t"
+        "ldp d14, d15, [x0, #152]\n\t"
+        "cmp w1, #0\n\t"
+        "csinc w0, w1, wzr, ne\n\t"
+        "ret\n\t");
+}
+
 #else
 /* (linux) the System V ABI's: the buffer as above, its callee-saved registers only (rbx rbp r12-r15: rdi, rsi and the
    xmm registers are the caller's to keep there), buf in rdi and the value in esi */

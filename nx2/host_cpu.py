@@ -9,10 +9,6 @@ import sys
 def host_march():
     want = ("avx2", "fma", "bmi2", "movbe")
     try:
-        if sys.platform == "darwin":
-            # (macos) Apple silicon: a -mcpu name, not an x86-64 level (build.py's ARM64). apple-m1 is what every Apple
-            # silicon Mac runs (ARMv8.5: LSE, the dot product, FP16); an Intel Mac has had AVX2 since 2013
-            return "apple-m1" if platform.machine() == "arm64" else "x86-64-v3"
         if os.name == "nt":
             import ctypes
             pf = ctypes.windll.kernel32.IsProcessorFeaturePresent
@@ -21,7 +17,15 @@ def host_march():
             if pf(40):
                 return "x86-64-v3"
             return "x86-64-v2" if pf(38) else "x86-64"
-        flags = open("/proc/cpuinfo").read().split("flags", 1)[1].split(chr(10), 1)[0].split()
+        try:
+            cpuinfo = open("/proc/cpuinfo").read()
+        except OSError:
+            # (macos) no /proc. Apple silicon: a -mcpu name, not an x86-64 level (build.py's ARM64). apple-m1 is what
+            # every Apple silicon Mac runs (ARMv8.5: LSE, the dot product, FP16); an Intel Mac has had AVX2 since 2013
+            if sys.platform == "darwin" and platform.machine() == "arm64":
+                return "apple-m1"
+            raise
+        flags = cpuinfo.split("flags", 1)[1].split(chr(10), 1)[0].split()
         if all(f in flags for f in want):
             return "x86-64-v3"
         return "x86-64-v2" if all(f in flags for f in ("sse4_2", "popcnt", "ssse3")) else "x86-64"

@@ -335,17 +335,30 @@ def free_mb():
             m = MemoryStatus()
             m.len = ctypes.sizeof(MemoryStatus)
             return m.avail >> 20 if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m)) else None
+        if sys.platform == "darwin":
+            # (macos: no /proc. vm_stat's free, inactive, speculative and purgeable pages: what the kernel gives a new
+            # process without paging anything out)
+            out = subprocess.run(["vm_stat"], capture_output=True, text=True, check=True).stdout
+            page = int(out.split("page size of", 1)[1].split()[0])
+            pages = 0
+            for line in out.splitlines():
+                name, _, value = line.partition(":")
+                if name in ("Pages free", "Pages inactive", "Pages speculative", "Pages purgeable"):
+                    pages += int(value.strip().rstrip("."))
+            return pages * page >> 20
         with open("/proc/meminfo") as f:
             for line in f:
                 if line.startswith("MemAvailable:"):
                     return int(line.split()[1]) >> 10
-    except (OSError, ValueError, AttributeError):
+    except (OSError, ValueError, AttributeError, IndexError, subprocess.SubprocessError):
         return None
     return None
 
 
 def tree_rss(pid):
     """(linux) The resident bytes of a process and the processes it started (a driver that runs its compiler as a child, or ccache)"""
+    if sys.platform == "darwin":   # (macos: ps's resident kilobytes; clang compiles in its own process there)
+        return int(subprocess.run(["ps", "-o", "rss=", "-p", str(pid)], capture_output=True, text=True).stdout.split()[0]) << 10
     with open("/proc/%d/statm" % pid) as f:
         n = int(f.read().split()[1]) * os.sysconf("SC_PAGE_SIZE")
     for task in os.listdir("/proc/%d/task" % pid):
@@ -822,7 +835,9 @@ def main():
         host_srcs = sorted(os.path.join(HOST, f) for f in os.listdir(HOST) if f.endswith(".c") and (f != "pgo_rt.c" or PGO == "gen")
                            and not (LINUX and f in ("display.c", "mf_av1.c", "rx_nowgpu.c")) and (f != "rx_nowgpu.c" or not have_wgpu))
         if LINUX:   # (the window on SDL2, the Win32 calls on POSIX, no Media Foundation and no WebGPU renderer)
-            host_srcs += [os.path.join(POSIX, f) for f in ("win32_posix.c", "display_sdl.c", "linux_stubs.c", "prof.c")]
+            # (macos: prof_darwin.c has the thread profilers on Mach; prof.c's are /proc's and perf_event_open's)
+            host_srcs += [os.path.join(POSIX, f) for f in ("win32_posix.c", "display_sdl.c", "linux_stubs.c",
+                                                           "prof_darwin.c" if MAC else "prof.c")]
     else:
         srcs += [os.path.join(NX2_RT, "eden_shim.c"), write_info(out)]
     if kit.env_on("RX_VK_ONLY"):   # (no lift needed: the back end alone)

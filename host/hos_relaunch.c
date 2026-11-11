@@ -74,15 +74,61 @@ static void relaunch(void) {
 
 extern char **environ;
 
+#ifdef __APPLE__
+/* (macos) No /proc: the arguments and the environment are copied when the process starts, before hookshot_env.txt's
+   lines are put into the environment, as the same strings ended by a NUL each */
+#include <crt_externs.h>
+#include <mach-o/dyld.h>
+#include <limits.h>
+static char *start_args, *start_env, start_exe[PATH_MAX];
+static size_t start_args_len, start_env_len;
+static char *join_strings(char **v, int n, size_t *len) {
+    size_t total = 0;
+    for (int i = 0; (n < 0 || i < n) && v && v[i]; i++) total += strlen(v[i]) + 1;
+    char *b = (char *)malloc(total + 1), *o = b;
+    if (!b) return NULL;
+    for (int i = 0; (n < 0 || i < n) && v && v[i]; i++) {
+        const size_t k = strlen(v[i]) + 1;
+        memcpy(o, v[i], k);
+        o += k;
+    }
+    *o = 0;
+    *len = total;
+    return b;
+}
+__attribute__((constructor)) static void keep_start_command(void) {
+    start_args = join_strings(*_NSGetArgv(), *_NSGetArgc(), &start_args_len);
+    start_env = join_strings(*_NSGetEnviron(), -1, &start_env_len);
+    char raw[PATH_MAX];
+    uint32_t n = sizeof raw;
+    if (_NSGetExecutablePath(raw, &n) == 0 && !realpath(raw, start_exe)) snprintf(start_exe, sizeof start_exe, "%s", raw);
+}
+static int relaunch_command(HosRelaunch *r) {
+    memset(r, 0, sizeof *r);
+    if (!start_args || !start_env || !start_args_len) return 0;
+    r->args = (char *)malloc(start_args_len + 1), r->env = (char *)malloc(start_env_len + 1);
+    if (!r->args || !r->env) return 0;
+    memcpy(r->args, start_args, start_args_len + 1), memcpy(r->env, start_env, start_env_len + 1);
+    return (r->argc = hos_relaunch_split(r->args, start_args_len, &r->argv)) >= 1 &&
+           (r->envc = hos_relaunch_split(r->env, start_env_len, &r->envp)) >= 0;
+}
+#define FD_DIR "/dev/fd"
+#define SELF_EXE start_exe
+#else
+static int relaunch_command(HosRelaunch *r) { return hos_relaunch_command("/proc/self/cmdline", "/proc/self/environ", r); }
+#define FD_DIR "/proc/self/fd"
+#define SELF_EXE "/proc/self/exe"
+#endif
+
 static void relaunch(void) {
     HosRelaunch r;
-    if (!hos_relaunch_command("/proc/self/cmdline", "/proc/self/environ", &r)) {
+    if (!relaunch_command(&r)) {
         hos_log("restart: this process's command was not found: the game only exits");
         hos_log_flush();
         return;
     }
     /* (every file this process opened closes with it, as at an exit: the new one opens its own) */
-    DIR *d = opendir("/proc/self/fd");
+    DIR *d = opendir(FD_DIR);
     if (d) {
         const int skip = dirfd(d);
         for (struct dirent *e; (e = readdir(d));) {
@@ -92,7 +138,7 @@ static void relaunch(void) {
         closedir(d);
     }
     fflush(NULL);
-    execve("/proc/self/exe", r.argv, r.envp);
+    execve(SELF_EXE, r.argv, r.envp);
     environ = r.envp;   /* (execvp searches the PATH of the environment it is given: the one the game started with) */
     execvp(r.argv[0], r.argv);
     hos_log("restart: the game could not be started again: it only exits");

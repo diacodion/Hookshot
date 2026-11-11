@@ -113,8 +113,15 @@ bool create_instance() {
         vkEnumerateInstanceExtensionProperties(nullptr, &n, nullptr);
         std::vector<VkExtensionProperties> all(n);
         vkEnumerateInstanceExtensionProperties(nullptr, &n, all.data());
+#ifdef __APPLE__
+        // (macos: SDL's window is on Cocoa and its surface a Metal layer's. MoltenVK is a "portability" driver: the loader
+        // lists it only when asked to, below)
+        for (const char* want : {"VK_EXT_metal_surface", "VK_KHR_portability_enumeration"})
+            if (has_extension(all, want)) exts[n_exts++] = want;
+#else
         for (const char* want : {"VK_KHR_xlib_surface", "VK_KHR_xcb_surface", "VK_KHR_wayland_surface"})
             if (has_extension(all, want)) exts[n_exts++] = want;
+#endif
     }
 #endif
     VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
@@ -136,6 +143,10 @@ bool create_instance() {
     }
     ci.enabledExtensionCount = (uint32_t)ext_list.size();
     ci.ppEnabledExtensionNames = ext_list.data();
+#ifdef __APPLE__
+    for (const char* e : ext_list)
+        if (!strcmp(e, "VK_KHR_portability_enumeration")) ci.flags |= 0x00000001;   // (VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR)
+#endif
     // RX_VK_VALIDATION=1: the Khronos validation layer (when installed)
     const char* layer = "VK_LAYER_KHRONOS_validation";
     if (env_on("RX_VK_VALIDATION")) ci.enabledLayerCount = 1, ci.ppEnabledLayerNames = &layer;
@@ -227,6 +238,8 @@ bool create_device() {
         flag = has_extension(exts, name);
         if (flag) want.push_back(name);
     };
+    // (macos: MoltenVK's "this is a subset of Vulkan" extension, which a device that lists it must be created with)
+    if (has_extension(exts, "VK_KHR_portability_subset")) want.push_back("VK_KHR_portability_subset");
     // (the Graphics tab's Mesh shaders row, mesh_shaders= in hookshot_options.ini, #1001: 0 Automatic (native where there are mesh
     // shaders, the compute fallback where not and for the task + mesh draws of the cards below), 1 Native (no fallback where
     // there are mesh shaders), 2 Compute (the fallback on every GPU). RX_VK_FORCE_MESH_FALLBACK=1, a test, is Compute over it:
