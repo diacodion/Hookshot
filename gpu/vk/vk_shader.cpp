@@ -551,9 +551,7 @@ Shader::Profile make_profile() {
                 mask |= 1u << (uint32_t)Shader::Stage::Task;
             if ((have & VK_SHADER_STAGE_MESH_BIT_EXT) || (as_compute && (have & VK_SHADER_STAGE_COMPUTE_BIT)))
                 mask |= 1u << (uint32_t)Shader::Stage::Mesh;
-            p.supported_subgroup_stages = mask;
-            static bool said;
-            if (!said) said = true, logf("vk: subgroups only in stages %#x: the others' programs run one lane (mask %#x)", have, mask);
+            p.supported_subgroup_stages = mask;   // (vk_main.cpp's "subgroups:" line says the stages)
         }
     }
     p.support_viewport_index_layer_non_geometry = true;

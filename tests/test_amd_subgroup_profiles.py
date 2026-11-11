@@ -21,6 +21,9 @@ FIXTURE = r'''
 
 enum VkShaderStageFlagBits : uint32_t {
     VK_SHADER_STAGE_VERTEX_BIT = 1,
+    VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT = 2,
+    VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT = 4,
+    VK_SHADER_STAGE_GEOMETRY_BIT = 8,
     VK_SHADER_STAGE_FRAGMENT_BIT = 16,
     VK_SHADER_STAGE_COMPUTE_BIT = 32,
     VK_SHADER_STAGE_TASK_BIT_EXT = 64,
@@ -32,6 +35,8 @@ using VkShaderStageFlags = uint32_t;
 constexpr uint32_t VK_DRIVER_ID_AMD_PROPRIETARY = 1;
 struct {
     uint32_t sg32_stages = 0, subgroup_size = 32, subgroup_max = 32, driver_id = 0;
+    uint32_t subgroup_stages = 0;   // (macos: 0, every stage, as the drivers this test is about)
+    bool mesh_shader = true, task_mesh_fallback = false;
     struct { struct { uint64_t minStorageBufferOffsetAlignment = 16; } limits; } props;
 } dev;
 

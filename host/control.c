@@ -1929,6 +1929,15 @@ static void transport_wait(int ms) {
     for (int i = 0; i < CTL_CONNS; i++) {
         Conn *c = &G.conns[i];
         if (!c->used) continue;
+#ifdef __APPLE__
+        /* (macos) poll says POLLHUP only when an event is asked for, and with POLLIN it says so for a peer that merely
+           stopped writing. A client whose input ended is asked about on its own: POLLOUT answers POLLHUP once it is gone
+           altogether, and plain POLLOUT while it still reads its replies */
+        if (c->eof) {
+            struct pollfd q = {c->fd, POLLOUT, 0};
+            if (poll(&q, 1, 0) > 0 && (q.revents & (POLLHUP | POLLERR))) c->closing = 1;
+        }
+#endif
         fds[n].fd = c->fd, fds[n].events = (short)((c->eof ? 0 : POLLIN) | (c->out.n ? POLLOUT : 0)), idx[n++] = i;
     }
     if (poll(fds, (nfds_t)n, ms) <= 0) return;

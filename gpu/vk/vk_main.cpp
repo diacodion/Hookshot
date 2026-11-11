@@ -459,8 +459,8 @@ bool create_device() {
         dev.subgroup_stages = sg.supportedStages;   // (macos: MoltenVK has subgroups in fragment and compute stages only: vk_shader.cpp)
         dev.subgroup_max = sc.maxSubgroupSize > sg.subgroupSize ? sc.maxSubgroupSize : sg.subgroupSize;
         dev.driver_id = drv.driverID;
-        logf("vk: subgroups: default %u lanes, %u-%u, pinned to 32 on stages %#x", sg.subgroupSize, sc.minSubgroupSize, sc.maxSubgroupSize,
-             (unsigned)dev.sg32_stages);
+        logf("vk: subgroups: default %u lanes, %u-%u, pinned to 32 on stages %#x, in stages %#x", sg.subgroupSize, sc.minSubgroupSize,
+             sc.maxSubgroupSize, (unsigned)dev.sg32_stages, (unsigned)sg.supportedStages);
     }
     if (!f13.dynamicRendering || !f13.synchronization2 || !f12.timelineSemaphore) {
         logf("vk: the GPU lacks dynamic rendering, synchronization2 or timeline semaphores");
