@@ -255,6 +255,28 @@ int hos_display_init(void) {
         hos_sdl_hint(hos_sdl_load() == 3 ? "SDL_VIDEO_DRIVER" : "SDL_VIDEODRIVER", "wayland,x11");
 #else
     (void)gamescope;
+    /* (macos) SDL loads the Vulkan library itself for a Vulkan window, by a bare name dyld does not find in Homebrew's
+       prefix ("Failed to load Vulkan Portability library"): told where the loader is, the first of HOOKSHOT_LIB_PATH's
+       folders, Homebrew's and /usr/local's that has one. SDL_VULKAN_LIBRARY in the environment still wins */
+    if (!getenv("SDL_VULKAN_LIBRARY")) {
+        char dirs[4096];
+        snprintf(dirs, sizeof dirs, "%s%s/opt/homebrew/lib:/usr/local/lib", getenv("HOOKSHOT_LIB_PATH") ? getenv("HOOKSHOT_LIB_PATH") : "",
+                 getenv("HOOKSHOT_LIB_PATH") ? ":" : "");
+        int found = 0;
+        for (char *d = dirs, *e; d && *d && !found; d = e ? e + 1 : NULL) {
+            e = strchr(d, ':');
+            if (e) *e = 0;
+            static const char *names[] = {"libvulkan.1.dylib", "libMoltenVK.dylib"};
+            for (int i = 0; i < 2 && !found; i++) {
+                char full[4096];
+                snprintf(full, sizeof full, "%s/%s", d, names[i]);
+                if (GetFileAttributesA(full) != INVALID_FILE_ATTRIBUTES) {
+                    hos_sdl_hint("SDL_VULKAN_LIBRARY", full);
+                    found = 1;
+                }
+            }
+        }
+    }
 #endif
     /* (SDL2 on Wayland: libdecor from the start. SDL2 2.32 asks for the compositor's decorations before the window's first
        configure, and a compositor that answers "the client draws them" (COSMIC) has it unmap and map the window again
