@@ -62,7 +62,7 @@ the encoders of a failed Metal command buffer by name, and `MTL_DEBUG_LAYER=1` f
 
 ## Open
 
-- Some objects draw as white shapes (seen in Kokiri Forest's first cutscene).
+- Some objects draw as white shapes in Kokiri Forest. Seen on the Linux build too (v2.0.x), so not taken as macOS's.
 - "Metal does not support disabling primitive restart" (MoltenVK's warning): draws whose indices hold the restart value
   with restart off would break; none seen yet.
 - Metal's validation reports an image view destroyed while a command buffer still uses it.

@@ -113,11 +113,9 @@ static int relaunch_command(HosRelaunch *r) {
            (r->envc = hos_relaunch_split(r->env, start_env_len, &r->envp)) >= 0;
 }
 #define FD_DIR "/dev/fd"
-#define SELF_EXE start_exe
 #else
 static int relaunch_command(HosRelaunch *r) { return hos_relaunch_command("/proc/self/cmdline", "/proc/self/environ", r); }
 #define FD_DIR "/proc/self/fd"
-#define SELF_EXE "/proc/self/exe"
 #endif
 
 static void relaunch(void) {
@@ -138,7 +136,11 @@ static void relaunch(void) {
         closedir(d);
     }
     fflush(NULL);
-    execve(SELF_EXE, r.argv, r.envp);
+#ifdef __APPLE__
+    execve(start_exe, r.argv, r.envp);
+#else
+    execve("/proc/self/exe", r.argv, r.envp);
+#endif
     environ = r.envp;   /* (execvp searches the PATH of the environment it is given: the one the game started with) */
     execvp(r.argv[0], r.argv);
     hos_log("restart: the game could not be started again: it only exits");

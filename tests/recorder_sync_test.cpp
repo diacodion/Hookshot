@@ -351,6 +351,7 @@ F(vkCmdBindDescriptorSets, (VkCommandBuffer cb, VkPipelineBindPoint bp, VkPipeli
   uint32_t nd, const uint32_t* d), handle(cb), put(bp), handle(l), put(first); each(s, n, [](VkDescriptorSet v) { handle(v); });
   each(d, nd, [](uint32_t v) { put(v); });)
 F(vkCmdBindIndexBuffer, (VkCommandBuffer cb, VkBuffer b, VkDeviceSize o, VkIndexType t), handle(cb), handle(b), put(o), put(t);)
+F(vkCmdBindIndexBuffer2KHR, (VkCommandBuffer cb, VkBuffer b, VkDeviceSize o, VkDeviceSize n, VkIndexType t), handle(cb), handle(b), put(o), put(n), put(t);)
 F(vkCmdBindVertexBuffers2, (VkCommandBuffer cb, uint32_t first, uint32_t n, const VkBuffer* b, const VkDeviceSize* o, const VkDeviceSize* s,
   const VkDeviceSize* st), handle(cb), put(first); each(b, n, [](VkBuffer v) { handle(v); }); each(o, n, [](VkDeviceSize v) { put(v); });
   put((uint8_t)!!s); if (s) each(s, n, [](VkDeviceSize v) { put(v); }); put((uint8_t)!!st); if (st) each(st, n, [](VkDeviceSize v) { put(v); });)
@@ -739,6 +740,7 @@ static void frame() {
             dynamic_state(cmd, at);
             vertex_streams(cmd, at);
             vkCmdBindIndexBuffer(cmd, H<VkBuffer>(0x9F00), 4ull * at, d ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
+            vkCmdBindIndexBuffer2KHR(cmd, H<VkBuffer>(0x9F00), 4ull * at, 64ull + at, VK_INDEX_TYPE_UINT8_EXT);   // (macos: bound with its size)
             vkCmdBeginQuery(cmd, H<VkQueryPool>(0x401), at, 0);
             switch ((pass * 3 + d) % 6) {
             case 0: vkCmdDrawIndexed(cmd, 36, 1, 0, -4, 0); vkCmdDraw(cmd, 3, 1, 0, 0); break;

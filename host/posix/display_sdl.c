@@ -270,7 +270,9 @@ int hos_display_init(void) {
             for (int i = 0; i < 2 && !found; i++) {
                 char full[4096];
                 snprintf(full, sizeof full, "%s/%s", d, names[i]);
-                if (GetFileAttributesA(full) != INVALID_FILE_ATTRIBUTES) {
+                FILE *lib = fopen(full, "rb");
+                if (lib) {
+                    fclose(lib);
                     hos_sdl_hint("SDL_VULKAN_LIBRARY", full);
                     found = 1;
                 }

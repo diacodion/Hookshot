@@ -357,8 +357,21 @@ def free_mb():
 
 def tree_rss(pid):
     """(linux) The resident bytes of a process and the processes it started (a driver that runs its compiler as a child, or ccache)"""
-    if sys.platform == "darwin":   # (macos: ps's resident kilobytes; clang compiles in its own process there)
-        return int(subprocess.run(["ps", "-o", "rss=", "-p", str(pid)], capture_output=True, text=True).stdout.split()[0]) << 10
+    if sys.platform == "darwin":   # (macos: no /proc. ps's table of every process: this one and the ones under it)
+        rows = [l.split() for l in subprocess.run(["ps", "-A", "-o", "pid=,ppid=,rss="], capture_output=True, text=True).stdout.splitlines()]
+        rss = {int(r[0]): int(r[2]) for r in rows if len(r) == 3}
+        kids = {}
+        for r in rows:
+            if len(r) == 3:
+                kids.setdefault(int(r[1]), []).append(int(r[0]))
+        if pid not in rss:
+            raise OSError("no process %d" % pid)
+        n, todo = 0, [pid]
+        while todo:
+            q = todo.pop()
+            n += rss.get(q, 0) << 10
+            todo += kids.get(q, [])
+        return n
     with open("/proc/%d/statm" % pid) as f:
         n = int(f.read().split()[1]) * os.sysconf("SC_PAGE_SIZE")
     for task in os.listdir("/proc/%d/task" % pid):
