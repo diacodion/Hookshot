@@ -922,7 +922,11 @@ void pcache_init() {
     pcache_path = dir + "mkw_vk_pipelines.bin";
     // (RX_VK_PCACHE_LOAD=0, an A/B of what the file costs in memory: its 2.5 GB read whole and held by the driver. The cache
     // starts empty and is not saved; the driver's own shader cache is all there is)
-    static const bool off = getenv("RX_VK_PCACHE_LOAD") && atoi(getenv("RX_VK_PCACHE_LOAD")) == 0;
+    // (macos) MoltenVK: off unless RX_VK_PCACHE_LOAD=1. With the file of an earlier run loaded (60 MB of Metal shader source
+    // after a few minutes of play), the first compute pipeline of gameplay never came back from Metal's compiler and the
+    // game stood still; without it the same run plays. Metal keeps its own compiled shaders across runs
+    static const bool off = getenv("RX_VK_PCACHE_LOAD") ? atoi(getenv("RX_VK_PCACHE_LOAD")) == 0
+                                                        : dev.driver_id == VK_DRIVER_ID_MOLTENVK;
     pcache_no_save = off;
     std::vector<uint8_t> data = off ? std::vector<uint8_t>{} : pcache_file_read(pcache_path);
     VkPipelineCacheCreateInfo ci{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
