@@ -534,6 +534,28 @@ Shader::Profile make_profile() {
     p.support_fp16_signed_zero_nan_preserve = p.support_fp32_signed_zero_nan_preserve = true;
     p.support_vote = true;
     p.supported_subgroup_stages = VK_SHADER_STAGE_ALL;
+    {   // (macos) A driver without subgroups in every classic stage (MoltenVK: fragment, compute and tessellation control only;
+        // Metal has no thread index in a vertex function, and SPIRV-Cross stops at "Subgroup builtins are not available in this
+        // type of function"): the stages it lacks take the back end's one-lane paths (emit_spirv_warp.cpp). The mask is by
+        // Shader::Stage, whose first six are Vulkan's stage bits; VertexA follows the vertex stage, and task and mesh programs
+        // follow their own stages, or compute's when they run as compute shaders (the mesh fallback)
+        const uint32_t classic = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT |
+                                 VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_GEOMETRY_BIT |
+                                 VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT;
+        const uint32_t have = dev.subgroup_stages;
+        if ((have & classic) != classic && have) {
+            uint32_t mask = have & classic;
+            if (have & VK_SHADER_STAGE_VERTEX_BIT) mask |= 1u << (uint32_t)Shader::Stage::VertexA;
+            const bool as_compute = !dev.mesh_shader || dev.task_mesh_fallback;
+            if ((have & VK_SHADER_STAGE_TASK_BIT_EXT) || (as_compute && (have & VK_SHADER_STAGE_COMPUTE_BIT)))
+                mask |= 1u << (uint32_t)Shader::Stage::Task;
+            if ((have & VK_SHADER_STAGE_MESH_BIT_EXT) || (as_compute && (have & VK_SHADER_STAGE_COMPUTE_BIT)))
+                mask |= 1u << (uint32_t)Shader::Stage::Mesh;
+            p.supported_subgroup_stages = mask;
+            static bool said;
+            if (!said) said = true, logf("vk: subgroups only in stages %#x: the others' programs run one lane (mask %#x)", have, mask);
+        }
+    }
     p.support_viewport_index_layer_non_geometry = true;
     p.support_typeless_image_loads = true;
     p.support_demote_to_helper_invocation = true;

@@ -673,7 +673,15 @@ void ensure_layout(Program& p) {
         add(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, st.vk_stage, st.info.texture_descriptors);
         add(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, st.vk_stage, st.info.image_descriptors);
     }
-    p.push = dev.push_descriptor && vkCmdPushDescriptorSetKHR && total <= dev.max_push_descriptors;
+    // (macos) MoltenVK: the game's programs take their set from a pool, not pushed. Eden's SPIR-V declares one binding several
+    // times (a constant buffer's or a storage buffer table's views by type); SPIRV-Cross can alias a descriptor array that way
+    // only inside a Metal argument buffer, and a pushed set is never one ("Attempting to alias same binding with a descriptor
+    // array which is not implemented through argument buffers"). RX_VK_PROGRAM_PUSH=1 / 0: pushed / from a pool, on any driver
+    static const bool program_push = [] {
+        if (const char* e = getenv("RX_VK_PROGRAM_PUSH")) return atoi(e) != 0;
+        return dev.driver_id != VK_DRIVER_ID_MOLTENVK;
+    }();
+    p.push = program_push && dev.push_descriptor && vkCmdPushDescriptorSetKHR && total <= dev.max_push_descriptors;
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     if (p.push) li.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR;
     li.bindingCount = (uint32_t)bindings.size();
