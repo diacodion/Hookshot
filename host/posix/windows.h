@@ -99,6 +99,13 @@ typedef struct { LONG cx, cy; } SIZE;
 #define _getpid getpid
 #define _countof(a) (sizeof(a) / sizeof((a)[0]))
 #define _environ environ
+#ifdef __APPLE__   /* (macos: unistd.h does not declare it) */
+#ifdef __cplusplus
+extern "C" char **environ;
+#else
+extern char **environ;
+#endif
+#endif
 #define _fileno fileno
 #define _chsize_s(fd, size) ftruncate((fd), (off_t)(size))
 #define _atoi64 atoll
@@ -148,7 +155,11 @@ void SetLastError(DWORD e);
 #define InterlockedCompareExchangePointer InterlockedCompareExchange
 #define MemoryBarrier() __atomic_thread_fence(__ATOMIC_SEQ_CST)
 #define _ReadWriteBarrier() __atomic_signal_fence(__ATOMIC_SEQ_CST)
+#if defined(__aarch64__)   /* (macos, Apple silicon: ISB, a pause of about the same length; YIELD is a no-op there) */
+#define YieldProcessor() __asm__ volatile("isb")
+#else
 #define YieldProcessor() __builtin_ia32_pause()
+#endif
 
 /* ---- locks: SRW locks are POSIX rwlocks (zero-initialised is valid, as on Windows); condition variables a futex
    word, so they wait with either an SRW lock or a critical section ---- */

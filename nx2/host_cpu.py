@@ -2,11 +2,17 @@
 CPU without x86-64-v3's features (AVX2, FMA, BMI2, MOVBE) gets x86-64-v2, or the x86-64 baseline. RX_MARCH, read by
 build.py, still chooses."""
 import os
+import platform
+import sys
 
 
 def host_march():
     want = ("avx2", "fma", "bmi2", "movbe")
     try:
+        if sys.platform == "darwin":
+            # (macos) Apple silicon: a -mcpu name, not an x86-64 level (build.py's ARM64). apple-m1 is what every Apple
+            # silicon Mac runs (ARMv8.5: LSE, the dot product, FP16); an Intel Mac has had AVX2 since 2013
+            return "apple-m1" if platform.machine() == "arm64" else "x86-64-v3"
         if os.name == "nt":
             import ctypes
             pf = ctypes.windll.kernel32.IsProcessorFeaturePresent
