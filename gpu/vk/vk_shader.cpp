@@ -71,6 +71,39 @@ extern thread_local bool g_all_global_this;
 extern thread_local bool g_gm_port_this;
 }
 namespace mkwvk {
+
+// (macos) Mesh programs whose native pipeline the driver refused (MoltenVK with mesh shaders: Metal's 32 KB of threadgroup
+// memory, which SPIRV-Cross stages a mesh's outputs in, is less than some of OoT's take): their draws take the compute fallback
+std::mutex native_mesh_refused_mu;
+std::unordered_set<uint64_t> native_mesh_refused_keys;
+void mesh_native_refused(uint64_t key) {
+    std::lock_guard lk(native_mesh_refused_mu);
+    if (native_mesh_refused_keys.insert(key).second)
+        logf("vk: mesh program %016llx: no native pipeline here, its draws take the compute fallback", (unsigned long long)key);
+}
+bool key_listed(const char* hex, const char* var);   // (below)
+bool mesh_native_was_refused(uint64_t key) {
+    if (!dev.mesh_shader) return false;
+    // (diagnosis, for bisecting what a driver's native mesh shaders draw wrong: RX_VK_MESH_FALLBACK_KEYS=<hex>,... sends those
+    // programs to the compute fallback; RX_VK_MESH_NATIVE_KEYS=<hex>,... sends every other. Prefixes match. RX_VK_LOG_MESH_KEYS=1
+    // names each mesh program once. On MoltenVK with PR 2842, 879fe82e and 8a8304ed, alpha-tested foliage depth passes, put
+    // their leaves where the fallback draws none, and the lighting shades them white)
+    static const std::string fb_list = getenv("RX_VK_MESH_FALLBACK_KEYS") ? getenv("RX_VK_MESH_FALLBACK_KEYS") : "";
+    static const std::string native_list = getenv("RX_VK_MESH_NATIVE_KEYS") ? getenv("RX_VK_MESH_NATIVE_KEYS") : "";
+    static const bool listed_fb = !fb_list.empty(), listed_native = !native_list.empty();
+    static const bool log_keys = env_on("RX_VK_LOG_MESH_KEYS");
+    if (listed_fb || listed_native || log_keys) {
+        char hex[17];
+        snprintf(hex, sizeof hex, "%016llx", (unsigned long long)key);
+        const bool forced = (listed_fb && key_listed(hex, "RX_VK_MESH_FALLBACK_KEYS")) || (listed_native && !key_listed(hex, "RX_VK_MESH_NATIVE_KEYS"));
+        std::lock_guard lk(native_mesh_refused_mu);
+        static std::unordered_set<uint64_t> seen;
+        if (log_keys && seen.insert(key).second) logf("vk: mesh program %s: %s", hex, forced ? "fallback (listed)" : "native");
+        if (forced) return true;
+    }
+    std::lock_guard lk(native_mesh_refused_mu);
+    return native_mesh_refused_keys.count(key) != 0;
+}
 struct NvnState;
 uint32_t compute_ssbo_table(const NvnState& s, uint32_t* count, uint32_t* layout_end);   // (vk_bank.cpp)
 bool seed_cs_buffer_word(uint32_t offset);   // (vk_bank.cpp)
@@ -1129,7 +1162,9 @@ uint64_t disk_stamp() {
     // the pinned graphics profile even if the base profile already has the requested width)
     const uint32_t lanes[] = {profile().warp_size_potentially_larger_than_guest ? 1u : 0u, profile().max_subgroup_size,
                               profile().has_broken_spirv_fragment_shuffle ? 1u : 0u, (uint32_t)dev.sg32_stages,
-                              getenv("RX_VK_WARP64") ? 1u : 0u};
+                              getenv("RX_VK_WARP64") ? 1u : 0u,
+                              // (macos) and the stages with subgroup operations: those without take the one-lane paths
+                              profile().supported_subgroup_stages};
     add(lanes, sizeof lanes);
     // (the records keep Shader::Info as it lies in memory: a cache written by another C++ library (the MSVC build's, then the
     // llvm-mingw one's libc++) has other layouts, and reading it crashed at start. The library and the sizes, so it starts again)
@@ -1970,8 +2005,8 @@ const Program* mesh_program_locked(const NvnState& s, const uint8_t color_types[
     static int logged;
     if (logged++ < 6) log_program_stages(s, "mesh draw");
     if (!mesh) return nullptr;
-    const bool fallback = dev.uses_mesh_fallback(task != nullptr);
     const uint64_t key = mesh_key(task, *mesh, fsc, prim, color_types);
+    const bool fallback = dev.uses_mesh_fallback(task != nullptr) || mesh_native_was_refused(key);
     auto& variants = programs[key];
     program_cache_load(key, variants);
     const uint64_t codes[4] = {mesh->key, fsc ? fsc->key : 0, task ? task->key : 0, prim ? prim->key : 0};
@@ -2591,7 +2626,7 @@ std::unique_ptr<Program> seed_translate(const SeedStage* const by_stage[8], cons
     p->compute = by_stage[5] != nullptr;
     const bool mesh = by_stage[7] != nullptr;
     if (mesh && !dev.mesh_shader && !dev.mesh_fallback) return nullptr;
-    p->fallback = mesh && dev.uses_mesh_fallback(by_stage[6] != nullptr);
+    p->fallback = mesh && (dev.uses_mesh_fallback(by_stage[6] != nullptr) || mesh_native_was_refused(p->key));
     p->mesh = mesh && !p->fallback;
     if (mesh)
         translate_mesh_into(*p, *blank, by_stage[6] ? &code[6] : nullptr, code[7], nullptr, by_stage[1] ? &code[1] : nullptr, color_types);
@@ -2780,7 +2815,7 @@ const Program* seed_variant_of(const uint64_t code[3], bool mesh, const uint32_t
     p->key = mesh ? mesh_key(by_stage[6] ? &code_of[6] : nullptr, code_of[7], fs, nullptr, color_types)
                   : graphics_key(code_of[0], fs, attributes, color_types);
     if (mesh && !dev.mesh_shader && !dev.mesh_fallback) return nullptr;
-    p->fallback = mesh && dev.uses_mesh_fallback(by_stage[6] != nullptr);
+    p->fallback = mesh && (dev.uses_mesh_fallback(by_stage[6] != nullptr) || mesh_native_was_refused(p->key));
     p->mesh = mesh && !p->fallback;
     p->codes[0] = code[0], p->codes[1] = code[1], p->codes[2] = code[2];
     questions_in = &questions, questions_at = 0, answers_in = &answers;

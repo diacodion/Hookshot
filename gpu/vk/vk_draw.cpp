@@ -2240,6 +2240,7 @@ VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at
         static std::atomic<int> logged;
         if (logged++ < 10) logf("vk: graphics pipeline for %016llx not made (%d)", (unsigned long long)p.key, (int)r);
         pl = VK_NULL_HANDLE;
+        if (p.mesh) mesh_native_refused(p.key);   // (its draws take the compute fallback from now on: vk_shader.cpp)
     }
     st_pipelines++;
     pcache_built_since_save += !driver_cache_only;

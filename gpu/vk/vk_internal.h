@@ -195,6 +195,9 @@ void memory_collect_written();
 void memory_capture_submit();
 /// The replay of the next submit: its capture (false: none, the pages are collected now as before)
 bool memory_take_capture(uint64_t value, uint64_t completed);
+/// (macos, vk_shader.cpp) A mesh program whose native pipeline the driver refused: its draws take the compute fallback
+void mesh_native_refused(uint64_t key);
+bool mesh_native_was_refused(uint64_t key);
 bool memory_capture_now(uint64_t value, uint64_t completed);   // (hookshot: made and taken at once)
 /// The submission the replay records next (bindings note it: a pool's mirror is in use until it is done)
 void memory_recording_value(uint64_t value, uint64_t completed);

@@ -105,9 +105,10 @@ def main():
 void check_stamp(uint32_t size, uint32_t pinned, bool workaround, bool forced) {
     bool added = false;
     const auto add = [&](const uint32_t* values, size_t bytes) {
-        assert(bytes == 5 * sizeof(uint32_t));
+        assert(bytes == 6 * sizeof(uint32_t));
         assert(values[0] == uint32_t(size > 32) && values[1] == size);
         assert(values[2] == uint32_t(workaround) && values[3] == pinned && values[4] == uint32_t(forced));
+        assert(values[5] == profile().supported_subgroup_stages);   // (the stages with subgroup operations)
         added = true;
     };
 ''' + stamp + r'''

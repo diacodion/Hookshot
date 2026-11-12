@@ -89,6 +89,23 @@ KhronosGroup/MoltenVK#2842, not in a release). Once a frame the replay waits for
 all read the same value, so `RX_VK_PASS_TIMING` has nothing to show here; the `GPU time` line (one pair a command buffer)
 is right. Metal's fast math (`MVK_CONFIG_FAST_MATH_ENABLED`), the NaN guard and invariant positions made no difference.
 
+### Native mesh shaders (MoltenVK PR #2842): not yet
+
+Tried on 2026-11-11 with that PR built locally (on MoltenVK main, with SPIRV-Cross as MoltenVK pins it, at #2686's merge
+and at main; `VK_DRIVER_FILES` pointing at the build's `MoltenVK_icd.json`). The game runs and the PR's mesh pipelines
+build, but the picture is wrong, and on that wrong picture the GPU saved only ~2-3 ms a frame, so the compute fallback stays:
+
+- Metal refuses eight of the ~50 mesh pipelines in Kokiri Forest: "Threadgroup memory size (35868..42908) exceeds the
+  maximum threadgroup memory allowed (32768)". They are the foliage's G-buffer passes (8-9 outputs; SPIRV-Cross stages a
+  mesh's outputs in threadgroup memory). Their draws take the compute fallback per program (`mesh_native_refused`).
+- Two native programs draw foliage in the wrong places, which the lighting then shades white: 879fe82e and 8a8304ed, both
+  alpha-tested depth-only passes over the leaf atlas. The same draws on the fallback, same arguments, are right. Not
+  the SPIRV-Cross version, the draws' first workgroups (all 0 here), the mesh epilogue (every vertex written, barriers in
+  place), subgroup operations (off in mesh stages, as the driver reports: one lane drew other wrong leaves) or dynamic offsets.
+- To bisect a driver's mesh shaders: `RX_VK_LOG_MESH_KEYS=1` names the programs, `RX_VK_MESH_NATIVE_KEYS=<hex>,...` keeps
+  only those native and `RX_VK_MESH_FALLBACK_KEYS=<hex>,...` sends those to the fallback (prefixes match);
+  `MVK_CONFIG_SHADER_DUMP_DIR` writes the MSL (`pipeline-*.txt` names a pipeline's `shader-*` and `shader-fs-*` files).
+
 Useful when something goes wrong: `MVK_CONFIG_LOG_LEVEL=3` (MoltenVK's messages in the log), with `MVK_CONFIG_DEBUG=1`
 the encoders of a failed Metal command buffer by name, and `MTL_DEBUG_LAYER=1` for Metal's own validation.
 
@@ -99,6 +116,6 @@ the encoders of a failed Metal command buffer by name, and `MTL_DEBUG_LAYER=1` f
   with restart off would break; none seen yet.
 - Metal's validation reports an image view destroyed while a command buffer still uses it.
 - HOS_NO_MOVIES=1 leaves this game on a black screen (not macOS's doing).
-- The grass and other mesh-drawn objects go through the compute fallback (above).
+- The grass and other mesh-drawn objects go through the compute fallback (above; native mesh shaders: not yet).
 - No builder, launcher or `make_game.py` route (PR #1872 upstream has a macOS Builder, for its WebGPU renderer); the hot-function list and profile (`work/hot_funcs.txt`,
   `hookshot_pieces.prof`) are not in the repository, so the build is the plain one.
