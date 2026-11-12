@@ -368,6 +368,10 @@ unsigned usable_cpus();   // vk_progcache.cpp
 /// (hookshot) Half the PC's CPUs (one a core where a core runs two threads: the translation's and the stage libraries' workers, at
 /// below normal priority), and never more than usable_cpus: on 12 of 24 CPUs, 6 workers made the translation 40% slower than 12
 unsigned half_cpus();   // vk_progcache.cpp
+/// (hookshot) The workers of the preparation's first part (prepare_run): half_cpus, or with the segment heap every usable CPU as far
+/// as the free memory allows (gpu/vk/prepare_workers.h, where the measurements are)
+unsigned prepare_cpus();   // vk_progcache.cpp
+bool segment_heap();       // vk_progcache.cpp (the process heap is the segment heap: nx2/win_manifest.py)
 /// (hookshot) The driver's shader cache folders' size, logged with when: at the start, after the prediction
 void driver_cache_log(const char* when);   // vk_draw.cpp
 /// (hookshot) At the start after a preparation, behind the game: a sample of its predicted pipelines asked of the driver without

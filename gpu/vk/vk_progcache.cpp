@@ -40,6 +40,7 @@
 #include "vk_paths.h"
 #include "vk_internal.h"
 #include "vk_progcache.h"
+#include "prepare_workers.h"
 #include "vk_programs.h"
 
 namespace mkwvk {
@@ -938,6 +939,21 @@ unsigned usable_cpus() {
 }
 unsigned half_cpus() {
     return std::max(1u, std::min(std::max(1u, std::thread::hardware_concurrency()) / 2, usable_cpus()));
+}
+bool segment_heap() {
+#ifdef _WIN32
+    return prepare_workers::segment_heap_signature(GetProcessHeap());
+#else
+    return false;
+#endif
+}
+unsigned prepare_cpus() {
+    uint64_t avail_mb = 0;
+#ifdef _WIN32
+    MEMORYSTATUSEX m{sizeof m};
+    if (GlobalMemoryStatusEx(&m)) avail_mb = m.ullAvailPhys >> 20;
+#endif
+    return prepare_workers::count(half_cpus(), usable_cpus(), avail_mb, segment_heap());
 }
 
 } // namespace mkwvk
