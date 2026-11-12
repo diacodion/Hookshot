@@ -51,6 +51,9 @@ enum { HOS_OPT_FOV = 51 };
    and Navi waking Link. 44 stays reserved for Skip title, 49 and 50 for Walk, 60 for the item wheel. A new option id
    answered by the existing option callback does not change MkwVkHost or MkwVkRenderer.) */
 enum { HOS_OPT_SKIP_OPENING = 52 };
+/* (HOS_OPT_FPS_CAP, 53: the Game frame rate cap row, host/nn_vi.c fps_refresh reads it at each present: 0 the console's 60, then
+   90, 120, 144, 165, 240, 6 Uncapped; a change applies in play) */
+enum { HOS_OPT_FPS_CAP = 53 };
 
 /* (hookshot) the controls' names (host/nn_hid.c, host/pad_sdl.c, the pad_ and key_ lines of hookshot_options.ini):
    the Switch's buttons in nn::hid's bit order, and a gamepad's inputs by position (the bottom face button first:

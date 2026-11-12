@@ -69,6 +69,7 @@ struct { void note(const int*) {} } restart_state;
 bool can_mic() { return false; }
 void mic_chosen() {}
 void samplers_changed() {}
+void menu_debug_rows(int, int) {}   // (the Debug rows that apply in play: vk_draw.cpp)
 int temporal_resets = 0;
 void temporal_reset_failure() { ++temporal_resets; }
 void prompts_at_once(const Row&) {}

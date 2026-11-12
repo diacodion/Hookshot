@@ -95,6 +95,8 @@ void samplers_changed() {}
 int temporal_resets = 0;
 void temporal_reset_failure() { ++temporal_resets; }
 void prompts_at_once(const Row&) {}
+/* (the Debug tab's Descriptor reuse and Sampler cache rows, told to vk_draw.cpp in play: not what this checks) */
+void menu_debug_rows(bool, bool) {}
 // (set_row steps the Output row through vk_menu.cpp's step_output_choice (#1144): not what this checks)
 int step_output_choice(int id, int dir) { return id + dir; }
 // (the Aspect ratio row moves the Output resolution to one of its shape's sizes, output_for_aspect: not what this checks)

@@ -53,8 +53,8 @@ def main():
     need("fps_level_now.store(" in tick and "fps_texts(" in tick, "menu_tick does not tell vk_fps.cpp the level or write the lines")
     need("fps_level_now.store(" in body(menu, "void menu_init()"), "menu_init does not tell vk_fps.cpp the saved level")
     target = body(menu, "double fps_target_ms()")
-    need("fps_stats::cap_rate(fps_cap_started" in target and "HOS_FPS_MAX" in target and "menu_vsync() == 1" in target,
-         "the target is not the cap the game started with (HOS_FPS_MAX over it), or the display's with V-Sync On")
+    need("fps_stats::cap_rate(opts.fps_cap" in target and "HOS_FPS_MAX" in target and "menu_vsync() == 1" in target,
+         "the target is not the Game frame rate cap row's (HOS_FPS_MAX over it), or the display's with V-Sync On")
     draw = body(menu, "void draw_fps(")
     for use in ("fps_graph(", "fps_target_ms()", "fs::graph_top(", "fs::rate_grade(", "fps_part_text", "fps_ms_text"):
         need(use in draw, "draw_fps does not use %s" % use)

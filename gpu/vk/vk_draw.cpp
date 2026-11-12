@@ -3145,38 +3145,61 @@ bool menu_env_on(const char* env_name, const char* ini_key_name, bool def = fals
 /// RX_VK_DESC_REUSE goes over the row for a run, with the row's values: 0 (or off) its Off, 1 (or on) its On; never: level 0.
 /// (It replaces RX_VK_DESC_SLOTGEN, same values, RX_VK_NO_DESC_REUSE=1, now never, and RX_VK_DESC_REUSE_DGEN, which turned
 /// off the texture-destroy check of issue 1126 and is gone: host/hos_main.c names the replacement when one is still set)
+/// The row applies in play (menu_debug_rows): a draw keeps descriptors only from a build made at the same level, desc_fp_on.
+/// RX_VK_DESC_REUSE holds the level for the run
+std::atomic<int> desc_reuse_row{-1}, sampler_cache_row{-1};   // (the rows as the menu has them now; -1 before it has loaded)
+} // namespace
+void menu_debug_rows(int descriptor_reuse, int sampler_cache) {   // (vk_draw.h: the menu, when it loads and when either row changes)
+    desc_reuse_row.store(descriptor_reuse != 0, std::memory_order_relaxed);
+    sampler_cache_row.store(sampler_cache != 0, std::memory_order_relaxed);
+}
+namespace {
 int desc_reuse_level() {
-    static int level = -1;
-    if (level < 0) {
+    static int start = -1;
+    static bool env = false;
+    if (start < 0) {
         const char* e = getenv("RX_VK_DESC_REUSE");
-        level = e && !strcmp(e, "never") ? 0 : menu_env_on("RX_VK_DESC_REUSE", "descriptor_reuse", true, 4) ? 2 : 1;
-        if (level == 2)
+        env = e != nullptr;
+        start = e && !strcmp(e, "never") ? 0 : menu_env_on("RX_VK_DESC_REUSE", "descriptor_reuse", true, 4) ? 2 : 1;
+        if (start == 2)
             logf("vk: descriptor slotgen ready: draws keep their descriptors through the registrations of slots they do not "
                  "sample (menu: Descriptor reuse)");
-        if (level == 0) logf("vk: RX_VK_DESC_REUSE=never: every draw builds its own descriptors");
+        if (start == 0) logf("vk: RX_VK_DESC_REUSE=never: every draw builds its own descriptors");
     }
+    const int row = env ? -1 : desc_reuse_row.load(std::memory_order_relaxed);
+    const int level = row < 0 ? start : row ? 2 : 1;
+    static std::atomic<int> last{-1};
+    if (last.load(std::memory_order_relaxed) != level && last.exchange(level, std::memory_order_relaxed) >= 0)
+        logf("vk: Descriptor reuse %s (menu)", level == 2 ? "on: draws keep their descriptors through other slots' registrations"
+                                                          : "off: kept only while no registration at all was made");
     return level;
 }
 bool desc_slotgen_on() { return desc_reuse_level() == 2; }
 /// (hookshot) the Sampler cache row / RX_VK_SAMPLER_CACHE=1: what a sampler id holds is kept next to its version on the replay
 /// thread, so resolving an id that was not registered anew takes no lock (the registrations' mutex contends with the texture streaming)
+/// The row applies in play (menu_debug_rows): what is kept is checked by the slot's version, so entries from before it was
+/// turned off and on again are still good while the slot was not registered anew. RX_VK_SAMPLER_CACHE holds it for the run
 bool sampler_cache_on() {
-    static int on = -1;
-    if (on < 0) {
-        on = menu_env_on("RX_VK_SAMPLER_CACHE", "sampler_cache");
-        if (on) logf("vk: sampler cache ready: sampler ids answer their parameters without the registrations' lock (menu: Sampler cache)");
+    static int start = -1;
+    static bool env = false;
+    if (start < 0) {
+        env = getenv("RX_VK_SAMPLER_CACHE") != nullptr;
+        start = menu_env_on("RX_VK_SAMPLER_CACHE", "sampler_cache");
+        if (start) logf("vk: sampler cache ready: sampler ids answer their parameters without the registrations' lock (menu: Sampler cache)");
     }
-    return on;
+    const int row = env ? -1 : sampler_cache_row.load(std::memory_order_relaxed);
+    return row < 0 ? start != 0 : row != 0;
 }
 // (Descriptor reuse) What the descriptors being built read of the registrations: the version of every slot whose handle they
 // resolved. The next draw of the same bindings keeps them while none of those versions moved. A handle read as 0 is noted: of a
 // slot that is not registered, only a registration (the global generation) can tell us that it is one now.
 TLS_OBJECT(desc_fp, std::vector<uint64_t>)   // ((version << 20 | slot), a handle read)
 thread_local bool desc_fp_dummy = false;      // (some handle read 0)
+thread_local bool desc_fp_on = false;         // (the build being made records its handles: Descriptor reuse on when it began)
 thread_local uint64_t desc_samp_seen = 0;     // (the samplers' generation when the build began)
 thread_local uint64_t desc_destroy_seen = 0;  // (the eviction generation: destroy_later retires a view without touching any slot or sampler generation)
 void desc_fp_note(uint32_t handle) {
-    if (!desc_slotgen_on()) return;
+    if (!desc_fp_on) return;
     const uint32_t slot = handle & 0xFFFFF;
     desc_fp().push_back((uint64_t)texture_slot_version((int)slot) << 20 | slot);
     desc_fp_dummy |= handle == 0;
@@ -3263,6 +3286,7 @@ void build_descriptors(const NvnState& s, const Program& p) {
     dw().reset();
     dw().prog = &p;
     desc_fp().clear(), desc_fp_dummy = false;   // (Descriptor reuse: the samplers' generation is read before the first handle,
+    desc_fp_on = desc_slotgen_on();             // (the row read once for the whole build: it changes in play)
     desc_samp_seen = sampler_registrations_generation();   // (so one registered during the build still forces the next rebuild)
     desc_destroy_seen = texture_destroy_generation();      // (an eviction retires views behind the slots' backs: it bumps only this)
     draw_sampled().clear();
@@ -4109,6 +4133,7 @@ thread_local uint64_t last_desc_bind = 0, last_desc_reg = 0, last_desc_ub = 0, l
 // sampled an unregistered slot; the same draw keeps its descriptors while none of those moved)
 TLS_OBJECT(last_desc_fp, std::vector<uint64_t>)
 thread_local bool last_desc_fp_dummy = false;
+thread_local bool last_desc_fp_on = false;   // (the last build recorded its handles: one made with the row off has none to check)
 thread_local uint64_t last_desc_samp = 0, last_desc_destroy = 0;
 int64_t st_desc_slotgen_saves;   // (reuses the global registrations' generation check would have rebuilt for)
 /// (Descriptor reuse) Whether every slot the last build resolved still holds what it did: no registration since touched a
@@ -6926,7 +6951,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
     const bool slotgen = desc_slotgen_on();
     const bool same_desc = !no_reuse && last_desc_valid && last_desc_prog == &p && last_desc_bind == s.bind_gen &&
                            last_desc_ub == ub_gen && last_desc_dgen == dgen &&
-                           (slotgen ? desc_slots_kept(reg_gen) : last_desc_reg == reg_gen) &&
+                           (slotgen ? last_desc_fp_on && desc_slots_kept(reg_gen) : last_desc_reg == reg_gen) &&
                            (!p.fallback || dw().prog == &p);
     if (p.fallback && !same_desc && dw().prog != &p && last_desc_valid && last_desc_prog == &p) {
         static std::atomic<int> told{0};
@@ -7071,7 +7096,8 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         if (!bind_descriptors(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p)) SKIP_HERE();
         last_desc_valid = true, last_desc_prog = &p, last_desc_bind = s.bind_gen, last_desc_reg = reg_gen;
         last_desc_ub = ub_gen, last_desc_dgen = dgen;
-        if (slotgen)   // (Descriptor reuse: what its handles resolved; the next such draw may keep it through other slots' churn)
+        last_desc_fp_on = desc_fp_on;
+        if (desc_fp_on)   // (Descriptor reuse: what its handles resolved; the next such draw may keep it through other slots' churn)
             last_desc_fp() = desc_fp(), last_desc_fp_dummy = desc_fp_dummy, last_desc_samp = desc_samp_seen,
             last_desc_destroy = desc_destroy_seen;
     } else {
