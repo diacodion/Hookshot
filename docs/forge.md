@@ -18,14 +18,23 @@ python -I scripts/forge.py login
 
 It prints a link and opens it: click **Sign in with Discord** and approve. Then it:
 
-- makes your fork, `<you>/Hookshot`, if you have none;
-- adds two remotes: `forge` (MagicBeanDev/Hookshot: fetch `main` from it, never push to it) and `forge-fork` (your
-  fork: push your branches here);
+- adds the remote `forge` (MagicBeanDev/Hookshot: fetch `main` from it, never push to it);
 - becomes git's credential helper for git.magicbean.dev only, so `git push`, `git fetch` and `jj git push` sign in by
   themselves. The token renews itself when it runs out.
 
 The sign-in is saved in your config folder (Linux `~/.config/hookshot/`, Windows `%APPDATA%\Hookshot\`), readable by
 you only, never in the repository. `python -I scripts/forge.py whoami` shows who is signed in, and `logout` undoes it.
+
+## Set up pushing
+
+Reading, building and testing need only the sign-in. When you have something to send:
+
+```
+python -I scripts/forge.py fork
+```
+
+It makes your fork, `<you>/Hookshot`, if you have none, and adds the remote `forge-fork` for it: push your branches
+there. (`pr create` does this too if it hasn't been done.)
 
 ## A change, start to finish
 

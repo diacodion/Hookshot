@@ -2,7 +2,8 @@
 Standard library only (Windows and Linux), so any agent can use it; people may prefer fj, the Forgejo CLI
 (docs/forge.md has both).
 
-    python -I scripts/forge.py login [--no-browser] [--again]      sign in, make your fork, set up git
+    python -I scripts/forge.py login [--no-browser] [--again]      sign in, set up git
+    python -I scripts/forge.py fork                                 set up pushing: your fork and its remote
     python -I scripts/forge.py whoami
     python -I scripts/forge.py logout
 
@@ -21,13 +22,13 @@ login is the team's one sign-in (magicbean_login.py: Sign in with Discord once, 
 it is skipped when a git sign-in is saved already (--again redoes it). Then it:
   - makes this script git's credential helper for https://git.magicbean.dev (global git config, that host only), so
     git push, git fetch and jj git push sign in by themselves, the token renewed when it runs out;
-  - makes your fork, <you>/Hookshot, if you have none;
-  - adds two remotes to the repository you run it in, unless one already points there: "forge" for MagicBeanDev/Hookshot
-    (fetch from it; its main takes reviewed pull requests only, nobody pushes to it) and "forge-fork" for your fork
-    (push your branches there).
-pr create opens a pull request from BRANCH on your fork into Hookshot's main (push the branch to your fork first:
-jj git push --remote forge-fork -b BRANCH, or git push forge-fork BRANCH). git calls this script as
-"forge.py credential get|store|erase".
+  - adds the remote "forge" for MagicBeanDev/Hookshot to the repository you run it in, unless one already points there
+    (fetch from it; its main takes reviewed pull requests only, nobody pushes to it).
+That is all reading, testing and test requests need. To send changes, fork sets up pushing: it makes your fork,
+<you>/Hookshot, if you have none, and adds the remote "forge-fork" for it (push your branches there). pr create does
+the same when it hasn't been done. pr create opens a pull request from BRANCH on your fork into Hookshot's main (push
+the branch to your fork first: jj git push --remote forge-fork -b BRANCH, or git push forge-fork BRANCH). git calls
+this script as "forge.py credential get|store|erase".
 """
 import argparse
 import os
@@ -156,12 +157,22 @@ def cmd_login(args):
     git("config", "--global", "--replace-all", HELPER_KEY, "")   # (no other helper for this host)
     git("config", "--global", "--add", HELPER_KEY, helper_command())
     print("git signs in to %s with this script (global git config, this host only)." % HOST)
-    fork, made = ensure_fork(state["login"])
-    print(("Made your fork: %s/%s" if made else "Your fork: %s/%s") % (BASE, fork))
     print(add_remote(args.upstream, REPO) + " (fetch from it; changes reach it through pull requests)")
-    print(add_remote(args.fork, fork) + " (push your branches here)")
+    print("To send changes: python -I scripts/forge.py fork (your fork, to push to; pr create does it too).")
+
+
+def set_up_fork(login, remote="forge-fork"):
+    """The fork and its remote, made if missing; prints what it did. Returns the fork's full name."""
+    fork, made = ensure_fork(login)
+    print(("Made your fork: %s/%s" if made else "Your fork: %s/%s") % (BASE, fork))
+    print(add_remote(remote, fork) + " (push your branches here)")
     if git("config", "user.email", check=False).returncode:
         print("Set your commit name and email too (git config --global user.name / user.email).")
+    return fork
+
+
+def cmd_fork(args):
+    set_up_fork(token()["login"], args.remote)
 
 
 def cmd_whoami(args):
@@ -209,11 +220,14 @@ def cmd_pr(args):
             raise ForgeError("the title must be a Conventional Commit, type(scope): description, with the type one of "
                              "%s (CONTRIBUTING.md, Pull request titles), e.g. \"fix(vk): ...\"" % ", ".join(TITLE_TYPES))
         state = token()
-        fork, _ = ensure_fork(state["login"])
+        fork, made = ensure_fork(state["login"])
+        if made:   # (first pull request: set up pushing, then the branch has to go there)
+            set_up_fork(state["login"])
         try:
             api("GET", "/repos/%s/branches/%s" % (fork, urllib.parse.quote(args.branch, safe="")))
         except ForgeError:
-            raise ForgeError("no branch %s on %s: push it there first" % (args.branch, fork))
+            raise ForgeError("no branch %s on %s: push it there first (jj git push --remote forge-fork -b %s, or "
+                             "git push forge-fork %s)" % (args.branch, fork, args.branch, args.branch))
         pr = api("POST", "/repos/%s/pulls" % REPO, {
             "base": "main", "head": "%s:%s" % (state["login"], args.branch),
             "title": ("WIP: " if args.draft else "") + args.title, "body": text_arg(args)})   # (Forgejo's draft mark)
@@ -289,11 +303,12 @@ def cmd_issue(args):
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = p.add_subparsers(dest="cmd", required=True)
-    s = sub.add_parser("login", help="sign in with Discord, make your fork, set up git")
+    s = sub.add_parser("login", help="sign in with Discord, set up git")
     s.add_argument("--upstream", default="forge", help="remote name for MagicBeanDev/Hookshot (default forge)")
-    s.add_argument("--fork", default="forge-fork", help="remote name for your fork (default forge-fork)")
     s.add_argument("--no-browser", action="store_true", help="print the link only")
     s.add_argument("--again", action="store_true", help="sign in anew even when signed in")
+    s = sub.add_parser("fork", help="set up pushing: your fork of Hookshot and its remote")
+    s.add_argument("--remote", default="forge-fork", help="remote name for your fork (default forge-fork)")
     sub.add_parser("whoami")
     sub.add_parser("logout")
     s = sub.add_parser("credential")
@@ -338,7 +353,7 @@ def main(argv=None):
     body_args(s, text=True)
 
     args = p.parse_args(argv)
-    commands = {"login": cmd_login, "whoami": cmd_whoami, "logout": cmd_logout, "credential": cmd_credential,
+    commands = {"login": cmd_login, "fork": cmd_fork, "whoami": cmd_whoami, "logout": cmd_logout, "credential": cmd_credential,
                 "pr": cmd_pr, "issue": cmd_issue}
     try:
         return commands[args.cmd](args) or 0

@@ -241,6 +241,13 @@ A build reads and writes tens of gigabytes. When the game folder or the build fi
 | `RX_VK_ONLY=1` | Only the Vulkan back end, with no lift |
 | `OOT_WORK`, `OOT_DUMP`, `OOT_EXEFS`, `OOT_ROMFS` | The work folder and the dump's folders, over `work/dump.txt` |
 
+The Windows Builder's own choices set two of these for its build. **Build workers**: Automatic keeps `HOOKSHOT_JOBS`
+(or the free-memory policy without it); a number overrides it for that build only, and is not saved, so a new window,
+or one started to update a game, is back on Automatic. More workers need more memory and are not always faster.
+**Build memory** is saved with the build's other settings and used by updates too: Automatic keeps the free-memory
+policy; a number of GB sets `HOOKSHOT_MEM_LIMIT_GB`, so the compilers may reserve that much together whatever is free
+now (the ones that always run, up to 4 on Windows, still run under a smaller number).
+
 Source-checkout builds keep the button prompts when their source, fonts, game assets, button tables, image overrides,
 Python, package/library versions and generation options still match, and every generated file still has its recorded
 size and content hash. The inputs are checked before and after generation; changed or unreadable inputs leave no reusable
