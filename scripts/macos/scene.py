@@ -183,10 +183,17 @@ def run(scene, name, measure, settle, settle_max, env_extra, window):
                 time.sleep(5)
             else:
                 raise Failed("teleport to %s not taken: %s" % (target, r))
-            w = b.request("wait", timeout=120, event="map", map=r.get("map"))
-            if not w.get("ok"):
-                raise Failed("did not arrive in %s: %s" % (target, w))
-            b.request("wait", timeout=120, event="state", state="play")
+            # (the status polled, not a wait for the map event: that event can come before the wait is asked for, and a
+            # first visit's load, its pipelines compiling, has taken over 2 minutes)
+            arrive_by = time.monotonic() + 600
+            while True:
+                st = b.request("status")
+                g = st.get("game") or {}
+                if st.get("map") == r.get("map", target) and st.get("state") == "play" and not g.get("loading"):
+                    break
+                if time.monotonic() > arrive_by:
+                    raise Failed("did not arrive in %s: %s" % (target, st))
+                time.sleep(1)
             times["arrived_s"] = round(time.monotonic() - t0, 1)
         arrive_frame = b.request("status")["frame"]
         # settle: the trace's left_out at its floor (a program that never compiles is left out every frame: the floor

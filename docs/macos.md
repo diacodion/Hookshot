@@ -77,7 +77,21 @@ compute stages only. What had to change for it, each found in play:
   (kIOGPUCommandBufferCallbackErrorOutOfMemory)", which MoltenVK reports as a lost device. An indirect draw's count is
   not known when it is bound: 16 KB of indices are bound for it.
 - **No `VkPipelineCache` file** (`pcache_init`, `RX_VK_PCACHE_LOAD=1` to try it). With the file of an earlier run
-  loaded, the first compute pipeline of gameplay never came back from Metal's compiler.
+  loaded, the first compute pipeline of gameplay never came back from Metal's compiler (likely the compiles below that
+  never finished, asked for in the draw).
+- **No `VkPipelineCache` at all** (`driver_cache_off`, `RX_VK_MVK_PIPELINE_CACHE=1` for one). MoltenVK compiles a
+  pipeline's Metal libraries while holding its pipeline cache's one lock, so every compile queued behind the one under
+  way and a draw waiting for its pipeline waited behind compiles it had nothing to do with: submits of 2-12 s after a save
+  loaded. Kokiri Forest from a cold Metal cache, two runs each: frames of over 250 ms before it settled 26-29 s (was
+  75-81 s), in play after 35-43 s (was 67-96 s); every pipeline compiled after 452-530 s (was 314-382 s).
+- **The big programs' global memory helpers in one exit** (`Profile::global_memory_single_exit`, `RX_VK_GM_SINGLE_EXIT`).
+  Eden's helpers for a guest pointer search the bound buffers, the tables and the page table with a return in each
+  test and are `DontInline`, which MoltenVK's SPIRV-Cross drops in MSL: Metal inlined them at every access and its
+  compiler never finished two compute programs (3e6fe279, 44511d69; a worker and a compiler process at 100% held for
+  the session, the dispatch left out every frame), 95 s for a third. They are the forest's distant trees: until this,
+  Kokiri Forest had open sky where they stand. A program with at least 64 global accesses in 24000 IR instructions now
+  gets helpers with one return (a result and a matched flag); they compile in 2-7 s. Every program in one exit cost
+  ~1.3 ms a frame (each access runs all its tests), hence the limits (`EDEN_NX2_GM_SINGLE_EXIT_MIN_GLOBAL`, `_MIN_INSTS`).
 
 ## The picture: FSR 3.1 in the game's upscaler's place
 
@@ -120,11 +134,31 @@ replay's submits from ~8 ms a frame to nothing.
 
 Most of the frame does not scale with resolution. About 10 ms of it is the task and mesh programs' compute fallback (issue
 640: ~50 mesh draws a frame, each a render pass split, four full barriers and its dispatches; the dispatches ~5 ms, the
-drawing itself ~4 ms, the splits and barriers ~1 ms), which MoltenVK's mesh shaders would replace (an open MoltenVK PR,
-KhronosGroup/MoltenVK#2842, not in a release). Once a frame the replay waits for the GPU (the exposure meter's page,
-`take_capture`'s late pages), so CPU and GPU take turns rather than overlap. MoltenVK's timestamps inside a command buffer
-all read the same value, so `RX_VK_PASS_TIMING` has nothing to show here; the `GPU time` line (one pair a command buffer)
-is right. Metal's fast math (`MVK_CONFIG_FAST_MATH_ENABLED`), the NaN guard and invariant positions made no difference.
+drawing itself ~4 ms, the splits and barriers ~1 ms, single runs before two merges), which MoltenVK's mesh shaders would
+replace in part (an open MoltenVK PR, KhronosGroup/MoltenVK#2842, not in a release). Metal's fast math
+(`MVK_CONFIG_FAST_MATH_ENABLED`), the NaN guard and invariant positions made no difference.
+
+**What the frame waits for (2026-11-12, Metal System Trace).** With Xcode installed,
+`xcrun xctrace record --template 'Metal System Trace' --attach <pid> --time-limit 4s` records every encoder's GPU time
+(export the `metal-gpu-intervals` and `metal-application-command-buffer-submissions` tables). In Kokiri Forest the GPU is
+busy 73% of the time at its top clock (~23.5 ms of a 32 ms frame): ~3.7 ms a frame it waits for the next command buffer to
+be committed (MoltenVK encodes ~10 ms of Metal commands a frame on its queue thread) and ~2.7 ms goes in gaps of over
+0.1 ms inside command buffers, most at the fallback's fill -> dispatch -> render steps. The `GPU time` line (a timestamp
+pair a command buffer: MoltenVK samples them at encoder boundaries) counts that idle too; MoltenVK's timestamps inside a
+command buffer collapse, so `RX_VK_PASS_TIMING` has nothing to show. Not the bottleneck, measured in alternating runs:
+the replay's wait for the exposure meter's late pages (~10 ms a frame on the game's main thread; `RX_VK_CAPTURE_WAIT=0`
+31.2/31.1 fps against 31.6/31.0) and the submission's part size (`RX_VK_CHUNK` 60: 30.6/30.9, 120: 30.8/30.8, 300: 29.2/29.3).
+
+Settled scenes, uncapped, 2048x1152, `scripts/macos/scene.py`, 2026-11-12 (Kokiri Forest was 30.9 fps without its trees):
+
+| Scene | Draws a frame | fps | Frame time p50 / p95 / p99 |
+|---|---|---|---|
+| Kokiri Forest, standing (with its distant trees) | ~2440 | 29.8 | 33.5 / 35.1 / 36.0 ms |
+| Market, at the gate | ~2930 | 34.4 | 29.0 / 31.3 / 32.5 ms |
+| Kakariko Village, at the gate | ~2600 | 34.0 | 29.3 / 30.8 / 31.6 ms |
+
+A first visit to an area compiles its pipelines: the Market left ~200 draws a frame out for ~3 minutes, Hyrule Field some
+for over 6. One machine only: no other Apple GPU has been measured, so these say nothing of a smaller Mac.
 
 ### Native mesh shaders (MoltenVK PR #2842): not yet
 
