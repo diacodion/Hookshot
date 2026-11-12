@@ -16,6 +16,7 @@ FIXTURE = r'''
 #include <cassert>
 #include <cstdint>
 #include <cstdlib>
+#include "../compat/hookshot_env.h"   // (env_on: make_profile's RX_VK_MESH_SUBGROUPS)
 #include "shader_recompiler/profile.h"
 #include "shader_recompiler/stage.h"
 

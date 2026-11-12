@@ -102,20 +102,34 @@ is right. Metal's fast math (`MVK_CONFIG_FAST_MATH_ENABLED`), the NaN guard and 
 
 ### Native mesh shaders (MoltenVK PR #2842): not yet
 
-Tried on 2026-11-11 with that PR built locally (on MoltenVK main, with SPIRV-Cross as MoltenVK pins it, at #2686's merge
-and at main; `VK_DRIVER_FILES` pointing at the build's `MoltenVK_icd.json`). The game runs and the PR's mesh pipelines
-build, but the picture is wrong, and on that wrong picture the GPU saved only ~2-3 ms a frame, so the compute fallback stays:
+Tried on 2026-11-11 and 2026-11-12 with that PR built locally (on MoltenVK main; `VK_DRIVER_FILES` pointing at the build's
+`MoltenVK_icd.json`). The game runs and most of the PR's mesh pipelines build, but foliage comes out wrong (white leaves, glowing
+or missing grass), so the compute fallback stays. What is known:
 
-- Metal refuses eight of the ~50 mesh pipelines in Kokiri Forest: "Threadgroup memory size (35868..42908) exceeds the
-  maximum threadgroup memory allowed (32768)". They are the foliage's G-buffer passes (8-9 outputs; SPIRV-Cross stages a
-  mesh's outputs in threadgroup memory). Their draws take the compute fallback per program (`mesh_native_refused`).
-- Two native programs draw foliage in the wrong places, which the lighting then shades white: 879fe82e and 8a8304ed, both
-  alpha-tested depth-only passes over the leaf atlas. The same draws on the fallback, same arguments, are right. Not
-  the SPIRV-Cross version, the draws' first workgroups (all 0 here), the mesh epilogue (every vertex written, barriers in
-  place), subgroup operations (off in mesh stages, as the driver reports: one lane drew other wrong leaves) or dynamic offsets.
-- To bisect a driver's mesh shaders: `RX_VK_LOG_MESH_KEYS=1` names the programs, `RX_VK_MESH_NATIVE_KEYS=<hex>,...` keeps
-  only those native and `RX_VK_MESH_FALLBACK_KEYS=<hex>,...` sends those to the fallback (prefixes match);
-  `MVK_CONFIG_SHADER_DUMP_DIR` writes the MSL (`pipeline-*.txt` names a pipeline's `shader-*` and `shader-fs-*` files).
+- **Metal refuses four to eight of the ~50 mesh pipelines in Kokiri Forest**: "Threadgroup memory size (35868..42908) exceeds the
+  maximum threadgroup memory allowed (32768)", the foliage's G-buffer passes (8-9 outputs; SPIRV-Cross stages a mesh's outputs
+  in threadgroup memory). Their draws take the compute fallback one program at a time (`mesh_native_refused`).
+- **That per-program fallback was itself wrong until b27b89b0**: on a driver with mesh shaders its compute translations took
+  the task and mesh stages' one-lane paths (every lane read as lane 0), and the grass's refused colour pass drew nothing. Fixed:
+  `profile_pinned` gives them compute's subgroups. With every program sent to the fallback one by one, the PR's MoltenVK now
+  matches Homebrew's picture. The bisects before that fix (which named 879fe82e and 8a8304ed) were confounded by it.
+- **Native task and mesh stages have no subgroups on this driver** (it reports them in tessellation control, fragment and
+  compute only, 0x32), so they take the one-lane paths, which are wrong by construction for OoT's foliage: its task and mesh
+  programs index their items by lane and compact them with ballots. Metal itself has SIMD-group functions in object and mesh
+  functions (a standalone test on the M4 Max: lanes, broadcasts and ballots right in both); `RX_VK_MESH_SUBGROUPS=1` gives
+  the native stages subgroups for testing.
+- **With subgroups, most native mesh programs draw right, but not all.** Mesh-only programs native, task + mesh programs on
+  the fallback (`RX_VK_TASK_MESH_FALLBACK=1`): 879fe82e alone (the falling leaves' depth pass) puts white leaves in the air,
+  and at least one other mesh-only program white plants; seven others checked together are clean. Every program native with
+  `RX_VK_MESH_SUBGROUPS=1`: the native task programs (the grass's) also differ from the fallback's (the grass glows white).
+  Not the cause: the task payload's size (set explicitly in the PR's pipeline: no change), Metal's fast math, depth-equal
+  precision (`RX_VK_EQ_BIAS=64`, in the clean configuration too), mesh-to-fragment interfaces (all 25 pairs match), multi-record
+  indirect draws (879fe82e's have one record).
+- No GPU time saving is known yet: the native runs that ran faster drew less.
+- To bisect: `RX_VK_LOG_MESH_KEYS=1` names the programs, `RX_VK_MESH_NATIVE_KEYS=<hex>,...` keeps only those native and
+  `RX_VK_MESH_FALLBACK_KEYS=<hex>,...` sends those to the fallback (prefixes match); `MVK_CONFIG_SHADER_DUMP_DIR` writes the
+  MSL (`pipeline-*.txt` names a pipeline's `shader-*` and `shader-fs-*` files). Judge a run by a pixel difference against a
+  fallback run at the same frame: the white shapes move between runs.
 
 Useful when something goes wrong: `MVK_CONFIG_LOG_LEVEL=3` (MoltenVK's messages in the log), with `MVK_CONFIG_DEBUG=1`
 the encoders of a failed Metal command buffer by name, and `MTL_DEBUG_LAYER=1` for Metal's own validation.

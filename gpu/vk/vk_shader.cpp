@@ -89,8 +89,7 @@ bool mesh_native_was_refused(uint64_t key) {
     if (!dev.mesh_shader) return false;
     // (diagnosis, for bisecting what a driver's native mesh shaders draw wrong: RX_VK_MESH_FALLBACK_KEYS=<hex>,... sends those
     // programs to the compute fallback; RX_VK_MESH_NATIVE_KEYS=<hex>,... sends every other. Prefixes match. RX_VK_LOG_MESH_KEYS=1
-    // names each mesh program once. On MoltenVK with PR 2842, 879fe82e and 8a8304ed, alpha-tested foliage depth passes, put
-    // their leaves where the fallback draws none, and the lighting shades them white)
+    // names each mesh program once. What they found with MoltenVK's PR 2842: docs/macos.md, "Native mesh shaders")
     static const std::string fb_list = getenv("RX_VK_MESH_FALLBACK_KEYS") ? getenv("RX_VK_MESH_FALLBACK_KEYS") : "";
     static const std::string native_list = getenv("RX_VK_MESH_NATIVE_KEYS") ? getenv("RX_VK_MESH_NATIVE_KEYS") : "";
     static const bool listed_fb = !fb_list.empty(), listed_native = !native_list.empty();
@@ -622,6 +621,10 @@ Shader::Profile make_profile() {
                 mask |= 1u << (uint32_t)Shader::Stage::Task;
             if ((have & VK_SHADER_STAGE_MESH_BIT_EXT) || (as_compute && (have & VK_SHADER_STAGE_COMPUTE_BIT)))
                 mask |= 1u << (uint32_t)Shader::Stage::Mesh;
+            // (RX_VK_MESH_SUBGROUPS=1, a test: native task and mesh programs with subgroups too. MoltenVK's mesh shaders (PR 2842)
+            // do not report them, but Metal has SIMD-group functions in object and mesh functions: an M4 Max's lanes, broadcasts and
+            // ballots came out right in both)
+            if (env_on("RX_VK_MESH_SUBGROUPS")) mask |= (1u << (uint32_t)Shader::Stage::Task) | (1u << (uint32_t)Shader::Stage::Mesh);
             p.supported_subgroup_stages = mask;   // (vk_main.cpp's "subgroups:" line says the stages)
         }
     }
