@@ -85,8 +85,9 @@ problem with a log outranks an NVIDIA one of the same severity.
    - In the game, on your hardware: what you did and what you saw, with numbers from `hookshot_log.txt` for performance.
    - Add a row to [tested configurations](tested-configurations.md) for each run you measured.
    - Say what you could not test (another OS, another vendor, real input devices).
-5. **Pull request.** Open the description with why the PR is needed; then what changed, how it was tested, what was
-   not tested, and screenshots when it shows on screen. Link the issue and the tracking issue. Post the link in
+5. **Pull request.** Fill in [the template](../.forgejo/pull_request_template.md) as
+   [CONTRIBUTING.md](../CONTRIBUTING.md#commits-and-pull-requests) says: why, what changed, measurements before and
+   after, what was not tested, screenshots, the checklist. Link the issue and the tracking issue. Post the link in
    #dev-work.
 6. **Review.** Answer every comment in the PR. Rebase onto `main` before asking for review again: a PR that does not
    merge cleanly waits.

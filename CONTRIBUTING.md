@@ -69,7 +69,7 @@ break.
 |---|---|
 | **Test on other hardware** | NVIDIA cards are the most tested; the README's [status table](README.md#project-status) says what works where, and [tested configurations](docs/tested-configurations.md) lists the runs behind it. Reports from AMD and Intel cards, other drivers, other distributions and SteamOS help even when everything works. Pull requests that need a run on your hardware are queued as [test requests](docs/test-requests.md). |
 | **Play further** | The tested area is the start of the game. Reaching new areas, cutscenes, menus and items finds problems nobody has seen. |
-| **Report what is broken** | Use the [issue forms](https://git.notrexed.dev/Hookshot/Hookshot/issues/new/choose): game problem, build problem or idea. Include the version, your hardware, where you were and `hookshot_log.txt`. |
+| **Report what is broken** | Use the [issue forms](https://git.notrexed.dev/Hookshot/Hookshot/issues/new/choose): game problem, install or build problem, save problem or idea. Include the version, your hardware, where you were and `hookshot_log.txt`. |
 | **Send a fix** | Branch, fix, test, open a pull request from your fork ([how](#commits-and-pull-requests)). Small, focused changes are the easiest to review. |
 | **Improve the docs** | The README, the development guide and the design notes are part of the project. |
 
@@ -277,20 +277,66 @@ python -I scripts/forge.py pr create fix/arc-walls --title "fix(vk): walls missi
 1. Name the branch for the change: `fix/...`, `linux/...`, `builder/...`, `docs/...`. One topic per pull request: a fix
    doesn't carry a refactor, and two unrelated fixes are two PRs.
 2. Write the title as a Conventional Commit ([below](#pull-request-titles)).
-3. Start the description with why the PR is needed, in one or two plain sentences a player could follow ("The menu's
-   text is cut off at 4K"). Then what changed and how it was tested: GPU, driver, game area, fps before and after.
-4. `Fixes #123` (one line per issue) closes the issue when the PR merges; `Part of #123` or `See #123` keeps it open.
-   Search the open issues first: your bug may already be reported.
-5. Include screenshots when the change shows on screen: before and after for a fix, the new screen for a feature, and
-   the sizes or settings checked. A screenshot of the game is fine; the rule above is about game files.
-6. Run the game-free checks, and run the change in the game; put what you measured in the description. An untested
-   change is opened as a draft (`pr create --draft`).
-7. When `main` moves, rebase onto it (`git rebase forge/main`, or `jj rebase -d main@forge`) and resolve conflicts in
+3. Fill in the description from [the template](.forgejo/pull_request_template.md). The web page puts it in the box for
+   you; with `forge.py pr create --body-file`, start your file from a copy of it. It is the one list of what a pull
+   request needs:
+   - **Why**, in one or two plain sentences a player could follow ("The menu's text is cut off at 4K");
+   - **What changed**;
+   - **Measurements**: before (`main` at a named commit) against after, the hardware, the scene, the method, a
+     `| | Before | After |` table and the log lines the numbers come from ([what counts](#measurements));
+   - **Not tested**, with a [test request](docs/test-requests.md) for the hardware you don't have;
+   - **Screenshots** when it shows on screen, before and after from the same spot (a screenshot of the game is fine:
+     the rule above is about game files);
+   - `Fixes #123` (one line per issue) closes the issue when the PR merges; `See #123` keeps it open;
+   - the **checklist**: every box of *For everyone* ticked, the *If applicable* ones that apply.
+4. An untested change is opened as a draft (`pr create --draft`, a `WIP:` title). A pull request without
+   measurements goes back to draft until it has them.
+5. When `main` moves, rebase onto it (`git rebase forge/main`, or `jj rebase -d main@forge`) and resolve conflicts in
    your branch.
-8. No build output, dumps, generated files or `.gitignore` bypasses.
 
 A maintainer reviews and squash-merges it. `forge.py pr list --mine`, `pr view <n> --comments` and `pr comment` follow
 up from the command line ([docs/forge.md](docs/forge.md)).
+
+### Measurements
+
+Every pull request shows its effect with numbers or proof, before against after:
+
+| Change | What counts as its measurement |
+|---|---|
+| `perf` | fps (average and 1% low), median and p99 frame time, and the number the change targets |
+| `fix` | the bug reproduced on `main` and gone on the branch: a log line, a screenshot, or a test failing before and passing after |
+| `feat` | it working in the game, and no cost when off: fps or frame time with it on against off |
+| `build`, tools | time or size before and after, or test output |
+| `docs`, `test` only | test output before and after (a new test failing on `main` is the best proof) |
+
+For before and after to compare:
+
+- before is `main` at a named commit;
+- the same PC, save, scene, settings and build type;
+- at least 2 runs each, interleaved (before, after, before, after), after a warm-up, and the median reported;
+- no overlays, ReShade or shader-cache tools;
+- the actual log lines pasted, not only the numbers taken from them.
+
+The numbers come from the FPS counter's **Breakdown** or **Dev** level (Insert menu, Gameplay), the `fps` lines of
+`hookshot_log.txt`, `RX_VK_DRAW_STATS`, or a test. A filled-in Measurements section, from a real run (a
+full one also names the driver, CPU, RAM, the settings and where each number comes from):
+
+```
+Before: main @ 87991bc8
+After: nightly @ 55b976c0
+Hardware: RTX 3080, Windows 11
+Scene: adult Link in Hyrule Field, uncapped
+Method: 120 s each after a warm-up, two interleaved pairs (before, after, before, after)
+
+| | Before | After |
+|---|---|---|
+| fps (run 1 / run 2) | 59.7 / 60.8 | 78.4 / 79.3 |
+| median frame time | 16.35 ms | 12.2 ms |
+| readback waits | ~5.7 ms | <0.1 ms |
+```
+
+followed by the log lines themselves. Add a row to [tested configurations](docs/tested-configurations.md) for each run
+you measured.
 
 ### Pull request titles
 

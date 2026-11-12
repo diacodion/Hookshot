@@ -7,9 +7,10 @@ Checked:
 
 - the report's folder holds report.txt, both logs and the picture, and nothing else; no file in it names the home folder,
   the user's name as a folder, or the game folder's path;
-- report.txt's sections are the issue form's (.github/ISSUE_TEMPLATE/1-game-problem.yml), and scripts/hardware_report.py
-  reads the GPU's vendor and class and the system from it as it reads an issue; its link fills in the form's own fields and
-  stays within 2000 characters (GitHub's sign-in page fails on longer ones): more switches than fit are counted, not listed;
+- report.txt's sections are the issue form's (.forgejo/ISSUE_TEMPLATE/1-game-problem.yml), and scripts/hardware_report.py
+  reads the GPU's vendor and class and the system from it as it reads an issue; its link fills in the form's own fields
+  (Forgejo's field:<id> query, for ids the form has) and stays within 2000 characters: more switches than fit are
+  counted, not listed;
 - where the player is comes from the last map line (host/hos_main.c logs them), the run before's crash line is named;
 - the switches set are listed by name, and a value only when it is a number, a size or on/off and its name holds none of
   TOKEN, KEY, ROOM, SECRET, PASS, SERVER, USER: paths, addresses, scripts and secrets are left out; other variables are not
@@ -204,12 +205,19 @@ def wiring():
     report = (ROOT / "gpu" / "vk" / "vk_bug_report.cpp").read_text(encoding="utf-8")
     listed = re.search(r"prefixes\[\] = \{([^}]*)\}", report[report.index("std::string switches("):]).group(1)
     check(listed == allowed, "the report lists switches by %s, hookshot_env.txt takes %s" % (listed, allowed))
-    form = (ROOT / ".github" / "ISSUE_TEMPLATE" / "1-game-problem.yml").read_text(encoding="utf-8")
+    form = (ROOT / ".forgejo" / "ISSUE_TEMPLATE" / "1-game-problem.yml").read_text(encoding="utf-8")
+    check(not (ROOT / ".github" / "ISSUE_TEMPLATE").exists(), "the GitHub issue forms are back beside Forgejo's")
     for label in ("Hookshot version", "Where in the game", "Graphics card and driver version", "CPU, RAM and operating system",
                   "Changes from the defaults", "hookshot_log.txt", "Screenshots or video"):
         check("label: " + label + "\n" in form, "the issue form has no field " + label)
-    for field in ("version", "where", "gpu", "system", "settings"):
+    # (every field the link fills is one of the form's, by the name Forgejo reads: field:<id>)
+    filled = re.findall(r'"&field:([a-z]+)="', report)
+    check(sorted(filled) == ["gpu", "settings", "system", "version", "where"], "the link fills in %s" % filled)
+    check(not re.search(r'"&(?!field:)[a-z]+="', report), "the link has a part Forgejo does not fill a field from")
+    for field in filled:
         check("id: " + field + "\n" in form, "the issue form has no field id " + field)
+    check('kForm = "https://git.notrexed.dev/Hookshot/Hookshot/issues/new?template=.forgejo/ISSUE_TEMPLATE/1-game-problem.yml"'
+          in report, "the link does not open the game problem form")
 
 
 def main():
@@ -288,9 +296,9 @@ def main():
         logs = section("hookshot_log.txt")
         check("hookshot v2.0.14" in logs and "CRASH: exception 0xc0000005" in logs, "the logs' section: " + logs)
         check("picture.png" in section("Screenshots or video"), "the picture is not named")
-        link = report[report.index("https://git.notrexed.dev/Hookshot/Hookshot/issues/new?template=.github/ISSUE_TEMPLATE/1-game-problem.yml"):].split()[0]
-        for part in ("&version=v2.1.0-rc.3-39-gbdfe09c%20%28source%20763271ad%29", "&gpu=NVIDIA%20GeForce%20RTX%204090",
-                     "&where=HyruleField_Child%20%28child%29", "&system=", "&settings=Upscaler", "HOS_HEADLESS", "RX_VK_MENU_SCRIPT"):
+        link = report[report.index("https://git.notrexed.dev/Hookshot/Hookshot/issues/new?template=.forgejo/ISSUE_TEMPLATE/1-game-problem.yml"):].split()[0]
+        for part in ("&field:version=v2.1.0-rc.3-39-gbdfe09c%20%28source%20763271ad%29", "&field:gpu=NVIDIA%20GeForce%20RTX%204090",
+                     "&field:where=HyruleField_Child%20%28child%29", "&field:system=", "&field:settings=Upscaler", "HOS_HEADLESS", "RX_VK_MENU_SCRIPT"):
             check(part in link, "the link does not fill in " + part)
         check("%3D" not in link and not any(v in link for v in ("93127", "58213", "hunter2", "192.168", "3840x2160", "1%3AINS")),
               "the link carries a switch's value: " + link)
@@ -346,11 +354,11 @@ def main():
         # switches there are; report.txt lists them all
         folders, out = run(exe, "many", game, str(now_log), home, user, windows)
         report = (game_path / folders[0] / "report.txt").read_text(encoding="utf-8")
-        link = report[report.index("https://git.notrexed.dev/Hookshot/Hookshot/issues/new?template=.github/ISSUE_TEMPLATE/1-game-problem.yml"):].split()[0]
+        link = report[report.index("https://git.notrexed.dev/Hookshot/Hookshot/issues/new?template=.forgejo/ISSUE_TEMPLATE/1-game-problem.yml"):].split()[0]
         check(len(link) <= 2000, "the link with 98 switches: %d characters" % len(link))
         settings = hw.section(report, "Changes from the defaults")
         listed = [ln for ln in settings.splitlines() if re.match(r"[A-Z_][A-Z0-9_]*=", ln)]
-        check("&settings=Upscaler%3A%20NVIDIA%20DLSS" in link and
+        check("&field:settings=Upscaler%3A%20NVIDIA%20DLSS" in link and
               "Switches%%20set%%3A%%20%d%%2C%%20listed%%20in%%20the%%20attached%%20report.txt" % len(listed) in link and
               "RX_TEST_SWITCH" not in link and "in short" in report, "the shortened link: " + link)
         check(all("RX_TEST_SWITCH_%d=(value left out)" % i in listed for i in range(80)) and "HOS_HEADLESS=1" in listed and

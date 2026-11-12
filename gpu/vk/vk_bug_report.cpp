@@ -39,14 +39,14 @@ extern char** environ;
 namespace mkwvk::bug_report {
 namespace {
 
-// (a log is copied whole up to 10 MB, GitHub taking files up to 25 MB; a longer one keeps its first MB, where the start, the
+// (a log is copied whole up to 10 MB, well within what the issue tracker takes; a longer one keeps its first MB, where the start, the
 // device and the options are, and its last 9 MB, where the problem usually is: an hour of play logs about 10 MB)
 constexpr uint64_t kLogCap = 10ull << 20, kLogHead = 1ull << 20;
 constexpr const char* kIssues = "https://git.notrexed.dev/Hookshot/Hookshot/issues/new/choose";
-constexpr const char* kForm = "https://git.notrexed.dev/Hookshot/Hookshot/issues/new?template=.github/ISSUE_TEMPLATE/1-game-problem.yml";
-// (the link's longest: a player who is not signed in is sent to GitHub's sign-in page with the whole address in it, encoded
-// once more, and that page failed (HTTP 400 or 500, or the address dropped) from links of 3500 characters of escaped text on,
-// signed in or not GitHub answers 414 from 8192; 2000 passes both, and every browser and chat program takes it)
+constexpr const char* kForm = "https://git.notrexed.dev/Hookshot/Hookshot/issues/new?template=.forgejo/ISSUE_TEMPLATE/1-game-problem.yml";
+// (the link's longest: a player who is not signed in is sent to the sign-in page, and the address waits for them in a cookie,
+// about 4 KB at most; GitHub's sign-in page, where the form lived first, failed from links of 3500 characters of escaped text
+// on. 2000 passes both, and every browser and chat program takes it)
 constexpr size_t kLinkMax = 2000;
 
 bool is_sep(char c) { return c == '/' || c == '\\'; }
@@ -512,8 +512,10 @@ std::string write(const Inputs& in) {
     // (the link fills in the form's one-line answers and, while the whole link stays within kLinkMax, the options changed and
     // the switches' names: never a switch's value, which only report.txt has. When they do not fit, the options and how many
     // switches there are, else only the two counts)
-    std::string link = std::string(kForm) + "&version=" + url_part(in.version) + (now.map.empty() ? "" : "&where=" + url_part(now.map)) +
-                       "&gpu=" + url_part(gpu) + "&system=" + url_part(in.system);
+    // (Forgejo fills a form's field from the query's field:<its id>: routers/web/repo/issue.go, setTemplateIfExists)
+    std::string link = std::string(kForm) + "&field:version=" + url_part(in.version) +
+                       (now.map.empty() ? "" : "&field:where=" + url_part(now.map)) + "&field:gpu=" + url_part(gpu) +
+                       "&field:system=" + url_part(in.system);
     const auto count = [](const std::string& s) { return std::to_string(std::count(s.begin(), s.end(), '\n')); };
     const std::string options = in.options.empty() ? "Every Insert menu option is at its default.\n" : in.options;
     const std::string named = sw.empty() ? "Switches set: none.\n" : "Switches set (their values are in the attached report.txt): " + names + ".\n";
@@ -522,7 +524,7 @@ std::string write(const Inputs& in) {
     for (const std::string& s : {options + named, options + listed,
                                  count(in.options) + " Insert menu options changed and " + count(sw) +
                                      " switches set, listed in the attached report.txt.\n"}) {
-        const std::string part = "&settings=" + url_part(s);
+        const std::string part = "&field:settings=" + url_part(s);
         if (link.size() + part.size() <= kLinkMax) {
             link += part;
             break;
