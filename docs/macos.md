@@ -83,6 +83,10 @@ Measured before the merge of upstream's main of 2026-11-11 (0ec31ff6). After it,
 the shader translation builds every pipeline again (Metal's own cache misses): ~800 pipelines, several minutes in
 Kokiri Forest, during which draws are left out and the picture is washed out white.
 
+After the merge of 2026-11-12 (upstream 5a0c21cb): 31.0 and 30.9 fps against 30.6 for the build before it, run between
+them, so no change in speed; the same GPU time and picture. Game memory is imported in 4 MB chunks now that the pools
+have mirrors (#2685): ~1,590 dirty pages per 600 submits synced instead of ~2,580, and ~100 MB less in textures.
+
 **VRAM mirrors on** (`mirror_on`, `RX_VK_MIRROR=0` to turn off). Upstream's #2419 makes a readback of GPU results wait for
 its submission's last part wherever a page is written in place, as on a GPU with no mirrors (issue 997's rule; #2602 lets
 mirrored pools wait only for the part that writes them back). The Mac had none: readbacks 3.3 ms each, 26.8 fps. With
