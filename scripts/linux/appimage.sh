@@ -61,7 +61,10 @@ cp scripts/ngx_sdk.py "$T/scripts/"
 cp -a gpu/vk gpu/compat gpu/third_party "$T/gpu/"
 cp -a third_party/imgui third_party/zstd third_party/fonts "$T/third_party/"
 mkdir -p "$T/third_party/zbic" "$T/third_party/a64-kit"
-cp -a third_party/zbic/zbic.so third_party/zbic/LICENSE third_party/zbic/PROVENANCE.md "$T/third_party/zbic/"
+# (zbic's single-file zstd too: the Vulkan back end compiled here, with DLSS, builds zstd.c and includes zstd.h; v2.2.0-rc.1
+# carried only zbic.so, and every Linux build with DLSS stopped at FileNotFoundError: zstd.h)
+cp -a third_party/zbic/zbic.so third_party/zbic/zstd.c third_party/zbic/zstd.h third_party/zbic/zstd_errors.h \
+      third_party/zbic/LICENSE third_party/zbic/PROVENANCE.md "$T/third_party/zbic/"
 cp -a third_party/a64-kit/* "$T/third_party/a64-kit/"
 rm -f "$T/third_party/a64-kit/tools/lld-link.exe"
 if [ -d work ]; then

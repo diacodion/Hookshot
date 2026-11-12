@@ -29,9 +29,9 @@ def package(tools):
                    capture_output=True, text=True)
 
 
-def dry_run(tools, lib, work):
+def dry_run(tools, lib, work, **extra):
     """nx2/build.py as nx2/make_game.py runs it in the AppImage (AppRun's variables), with nothing else of this PC's"""
-    env = {"PATH": "/usr/bin:/bin", "HOME": str(work / "home"), "LANG": "C.UTF-8", "HOOKSHOT_TOOLS": str(tools),
+    env = {**extra, "PATH": "/usr/bin:/bin", "HOME": str(work / "home"), "LANG": "C.UTF-8", "HOOKSHOT_TOOLS": str(tools),
            "EMSDK": str(lib / "emsdk"), "HOOKSHOT_SYSROOT": str(lib / "sysroot"), "HOOKSHOT_FFMPEG": str(lib / "ffmpeg"),
            "HOOKSHOT_VK_PREBUILT": str(lib / "hookshot_vk.so"), "OOT_WORK": str(work / "work"), "RX_RELEASE": "1",
            "A64_HOT_CHUNK": "1", "RX_MARCH": "x86-64-v3"}
@@ -49,10 +49,11 @@ class PlayerBuildFromTheAppImage(unittest.TestCase):
         self.tools.mkdir(parents=True)
         package(self.tools)
         # (stand-ins for what appimage.sh builds or brings: a compiler that is never run, the sysroot, FFmpeg, the back end)
-        clang = self.lib / "emsdk/upstream/bin/clang"
-        clang.parent.mkdir(parents=True)
-        clang.write_text("#!/bin/sh\nexit 1\n")
-        clang.chmod(0o755)
+        (self.lib / "emsdk/upstream/bin").mkdir(parents=True)
+        for name in ("clang", "clang++"):
+            clang = self.lib / "emsdk/upstream/bin" / name
+            clang.write_text("#!/bin/sh\nexit 1\n")
+            clang.chmod(0o755)
         for d in ("sysroot", "ffmpeg/include", "ffmpeg/lib"):
             (self.lib / d).mkdir(parents=True)
         (self.lib / "hookshot_vk.so").write_bytes(b"")
@@ -64,6 +65,23 @@ class PlayerBuildFromTheAppImage(unittest.TestCase):
         self.assertIn("as built", r.stdout)   # (the prebuilt back end: nothing of gpu/vk compiled)
         self.assertRegex(r.stdout, r"dry run: [1-9]\d* files to compile besides the lift's, 0 missing")
         self.assertFalse(list(self.tools.rglob("__pycache__")))   # (the image is read-only on a player's PC)
+
+    def test_dlss_compiles_the_back_end_from_the_packaged_tree(self):
+        # (NVIDIA DLSS ticked in the builder: the prebuilt back end has no DLSS, so the build compiles gpu/vk from the image's
+        # tree. v2.2.0-rc.1 shipped third_party/zbic without zstd.h, and every such build stopped at FileNotFoundError)
+        sdk, headers = self.root / "ngx", self.root / "headers"
+        (sdk / "include").mkdir(parents=True)
+        (sdk / "lib").mkdir()
+        (sdk / "lib/libnvsdk_ngx.a").write_bytes(b"")
+        for probe in ("vulkan/vulkan.h", "spirv/unified1/spirv.h", "vk_mem_alloc.h"):
+            (headers / "include" / probe).parent.mkdir(parents=True, exist_ok=True)
+            (headers / "include" / probe).write_text("")
+        r = dry_run(self.tools, self.lib, self.root, HOOKSHOT_NGX_SDK=str(sdk), HOOKSHOT_VULKAN_HEADERS=str(headers),
+                    HOOKSHOT_SPIRV_HEADERS=str(headers), HOOKSHOT_VMA_HEADERS=str(headers))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("with NVIDIA DLSS", r.stdout)
+        self.assertNotIn("as built", r.stdout)   # (the back end compiled here, not the prebuilt one)
+        self.assertRegex(r.stdout, r"dry run: [1-9]\d* files to compile besides the lift's, 0 missing")
 
     def test_a_file_the_image_lacks_fails(self):
         first = (self.tools / "third_party/opus/sources.txt").read_text().split()[0]
