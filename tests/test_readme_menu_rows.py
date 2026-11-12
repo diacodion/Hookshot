@@ -1,4 +1,4 @@
-"""readme.md's option table has a line for every row of the Insert menu's Graphics, Audio, Gameplay and Controls tabs.
+"""README.md's option table has a line for every row of the Insert menu's Graphics, Audio, Gameplay and Controls tabs.
 
 Four rows had none: Ultrawide menus, Mesh shaders, Discord status (which is on by default) and the Controls page's
 Button prompts. The rows are read from gpu/vk/vk_menu.cpp's table and the lines from the readme's
@@ -14,7 +14,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 MENU = (ROOT / "gpu" / "vk" / "vk_menu.cpp").read_text(encoding="utf-8")
-README = (ROOT / "readme.md").read_text(encoding="utf-8")
+README = (ROOT / "README.md").read_text(encoding="utf-8")
 ACTIONS = {"Restart", "Quit"}
 
 
@@ -46,12 +46,12 @@ class ReadmeMenuRowsTests(unittest.TestCase):
     def test_every_row_of_the_four_tabs_has_a_line(self):
         listed = {cells[1] for cells in table_lines()}
         missing = [name for _, name in menu_rows() if name not in listed and name not in ACTIONS]
-        self.assertEqual(missing, [], "menu rows with no line in readme.md's option table")
+        self.assertEqual(missing, [], "menu rows with no line in README.md's option table")
 
     def test_every_line_is_a_row_the_menu_has(self):
         rows = {name for _, name in menu_rows()}
         gone = [cells[1] for cells in table_lines() if cells[1] not in rows]
-        self.assertEqual(gone, [], "lines in readme.md's option table for rows the menu no longer has")
+        self.assertEqual(gone, [], "lines in README.md's option table for rows the menu no longer has")
 
     def test_the_lines_keep_the_menus_order(self):
         page = {name for _, name in menu_rows("PAGE")}   # (the Controls page's rows: listed with the Controls tab's)

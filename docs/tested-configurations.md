@@ -1,7 +1,7 @@
 # Tested configurations
 
 What has actually been run, where, and how it went: one row per test run, newest first. The README's
-[status table](../readme.md#project-status) sums this up by vendor; this page keeps the runs themselves, so a
+[status table](../README.md#project-status) sums this up by vendor; this page keeps the runs themselves, so a
 regression can be traced to a build and a driver, and so the next tester knows what is already covered.
 
 Add a row for your own runs (a PR, or paste it in an issue and a maintainer adds it). A run that worked is as useful as

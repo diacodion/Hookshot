@@ -11,7 +11,7 @@ on:
     branches: [main]
     tags: ['*']
   # (not for a pull request that changes only documentation or the release manifest: nothing of them is compiled or
-  # packaged but readme.md, which is only copied in. A push to main builds every time)
+  # packaged but README.md, which is only copied in. A push to main builds every time)
   pull_request:
     paths-ignore:
       - 'docs/**'

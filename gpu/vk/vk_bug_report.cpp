@@ -42,8 +42,8 @@ namespace {
 // (a log is copied whole up to 10 MB, GitHub taking files up to 25 MB; a longer one keeps its first MB, where the start, the
 // device and the options are, and its last 9 MB, where the problem usually is: an hour of play logs about 10 MB)
 constexpr uint64_t kLogCap = 10ull << 20, kLogHead = 1ull << 20;
-constexpr const char* kIssues = "https://github.com/NotRexed/Hookshot/issues/new/choose";
-constexpr const char* kForm = "https://github.com/NotRexed/Hookshot/issues/new?template=1-game-problem.yml";
+constexpr const char* kIssues = "https://git.notrexed.dev/Hookshot/Hookshot/issues/new/choose";
+constexpr const char* kForm = "https://git.notrexed.dev/Hookshot/Hookshot/issues/new?template=.github/ISSUE_TEMPLATE/1-game-problem.yml";
 // (the link's longest: a player who is not signed in is sent to GitHub's sign-in page with the whole address in it, encoded
 // once more, and that page failed (HTTP 400 or 500, or the address dropped) from links of 3500 characters of escaped text on,
 // signed in or not GitHub answers 414 from 8192; 2000 passes both, and every browser and chat program takes it)

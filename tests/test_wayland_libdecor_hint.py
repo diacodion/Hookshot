@@ -22,7 +22,7 @@ HARNESS = r"""
 #include <string>
 #include <vector>
 
-#define HOS_APP_ID "io.github.NotRexed.Hookshot"
+#define HOS_APP_ID "dev.magicbean.Hookshot"
 enum { HOS_SDL_VIDEO = 0x20, HOS_SDL_EVENTS = 0x4000 };
 static int version;
 static std::vector<std::string> hints;

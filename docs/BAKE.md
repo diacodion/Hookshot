@@ -21,7 +21,7 @@ Status: **working end-to-end, all tests pass** (results in §7).
 | `tests/test_bake_skeleton.py` | bake-spark | manifest determinism/dedupe/resume, exact-key translate + SPIR-V, stamp-trap, portable verify |
 | `tests/test_bake_mimo.py` | bake-mimo c60fd1d | fixture archives → enumerate → translate → bank, FNV round-trip, `spirv-val` on every module |
 | `tests/test_bake_ds.py` | bake-deepseek | census parity, Python key mirror, translate + 32 modules + bank read-back (needs `--tool`) |
-| `BAKE.md` | this file | the single merged doc (replaces `BAKE-SPARK.md`, `BAKE-MIMO.md`, `BAKE-DEEPSEEK.md`, `BAKE-GLM.md`) |
+| `docs/BAKE.md` | this file | the single merged doc (replaces `BAKE-SPARK.md`, `BAKE-MIMO.md`, `BAKE-DEEPSEEK.md`, `BAKE-GLM.md`) |
 
 One-line change vs the sources: `nx2/bake_mimo.py:spirv_headers` also
 probes `<repo>/buildext/cpm` (the in-tree CPM cache;

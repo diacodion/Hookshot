@@ -300,8 +300,9 @@ two builds of the same release apart, and it is the only identifier a build from
 `CHANGELOG.md` is written by release-please, newest first, one section per release candidate, each with the changes
 since the one before. A promoted version's section is a line naming the release candidate it is, above them. Do not
 rewrite a released entry;
-a correction is a new pull request and a new release. `changelog.txt` is the earlier changelog in Factorio's format,
-written by hand for `0.1.0`. It is kept for history and is no longer updated.
+a correction is a new pull request and a new release. The entries up to 2.2.0-rc.1 are Hookshot's, from before the
+fork. Hookshot's first release, `0.1.0`, is described in its hand-written
+[`changelog.txt`](https://github.com/NotRexed/Hookshot/blob/main/changelog.txt), which Hookshot does not carry.
 
 ## History
 

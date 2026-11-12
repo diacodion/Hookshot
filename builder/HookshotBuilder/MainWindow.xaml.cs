@@ -325,7 +325,7 @@ public partial class MainWindow : Window
     // ---- Save my pipeline list: the game folder's pipeline list and the "Submit your pipelines" issue's template, filled in,
     // zipped into the Downloads folder by nx2/pipeline_share.py (as the Linux builder and the game's menu do), then the template
     // on the clipboard, the zip shown in its folder and the issue opened. Nothing is uploaded: the player attaches the zip ----
-    const string ShareIssue = "https://github.com/NotRexed/Hookshot/issues/2034";
+    const string ShareIssue = "https://git.notrexed.dev/Hookshot/Hookshot/issues/14";
 
     async void LaunchShareClick(object sender, RoutedEventArgs e)
     {
@@ -354,7 +354,7 @@ public partial class MainWindow : Window
         try { Process.Start(new ProcessStartInfo(ShareIssue) { UseShellExecute = true }); opened = true; } catch (Exception) { }
         LaunchShareStatus.Text = $"Saved {System.IO.Path.GetFileName(zip)} ({count} pipelines) in {System.IO.Path.GetDirectoryName(zip)}. " +
             (copied ? "The report is copied. " : "The report is in the zip. ") +
-            (opened ? "Issue #2034 is open in your browser: attach" : $"Open {ShareIssue} and attach") +
+            (opened ? "Issue #14 is open in your browser: attach" : $"Open {ShareIssue} and attach") +
             " the zip to a comment, then paste the report and say where you played.";
     }
 

@@ -13,7 +13,7 @@
 #include "../hos_sdl.h"
 
 /* (the window's app id: the applications menu's entry names it as its StartupWMClass, builder/linux/hookshot_builder.py) */
-#define HOS_APP_ID "io.github.NotRexed.Hookshot"
+#define HOS_APP_ID "dev.magicbean.Hookshot"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

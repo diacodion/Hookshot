@@ -58,7 +58,7 @@ def main():
     replay = (ROOT / "gpu" / "vk" / "vk_replay.cpp").read_text(encoding="utf-8")
     menu = (ROOT / "gpu" / "vk" / "vk_menu.cpp").read_text(encoding="utf-8")
     header = (ROOT / "gpu" / "vk" / "vk_menu.h").read_text(encoding="utf-8")
-    readme = (ROOT / "readme.md").read_text(encoding="utf-8")
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
     check(not re.search(r"HOS_OPT_\w+ = 11\b", api), "a HOS_OPT_ enum also takes option 11")
     pads = block(hid, "static void pads_read(")
@@ -80,7 +80,7 @@ def main():
     check(row.group(0).rstrip().endswith("nullptr, false, true},"),
           "the row is not preset_exempt: changing the dead zone would set the quality preset to Custom")
     check("| | Stick dead zone | Default (24%), 5%, 10%, 15%, 20%, 30% | Default (24%) |" in readme,
-          "readme.md's option table has no Stick dead zone row")
+          "README.md's option table has no Stick dead zone row")
 
     c = r'''#include <stdint.h>
 #include <stdio.h>

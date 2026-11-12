@@ -50,7 +50,7 @@ Eden's save path, under that data folder: `nand/user/save/0000000000000000/<prof
   that is the save the game loads next, so the script refuses to copy until NX2navi has been started and quit (or
   `--force`). NX2navi's launcher also has its own **Import Saves**, which takes an emulator's save folder.
 - `$XDG_DATA_HOME` replaces `~/.local/share` when it is set. Hookshot's `--user <folder>` puts its saves in
-  `<folder>/save/<user id>/` ([command line arguments](../readme.md#running-the-game-from-the-command-line)).
+  `<folder>/save/<user id>/` ([command line arguments](../README.md#running-the-game-from-the-command-line)).
 - The emulator paths come from each one's `src/common/fs/fs_paths.h`, `path_util.cpp` and
   `src/core/file_sys/savedata_factory.cpp`. Official Eden does not run Switch 2 games; its name is accepted because
   the forks above use its folder.

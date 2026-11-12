@@ -67,7 +67,7 @@ break.
 
 | | What |
 |---|---|
-| **Test on other hardware** | NVIDIA cards are the most tested; the README's [status table](readme.md#project-status) says what works where, and [tested configurations](docs/tested-configurations.md) lists the runs behind it. Reports from AMD and Intel cards, other drivers, other distributions and SteamOS help even when everything works. Pull requests that need a run on your hardware are queued as [test requests](docs/test-requests.md). |
+| **Test on other hardware** | NVIDIA cards are the most tested; the README's [status table](README.md#project-status) says what works where, and [tested configurations](docs/tested-configurations.md) lists the runs behind it. Reports from AMD and Intel cards, other drivers, other distributions and SteamOS help even when everything works. Pull requests that need a run on your hardware are queued as [test requests](docs/test-requests.md). |
 | **Play further** | The tested area is the start of the game. Reaching new areas, cutscenes, menus and items finds problems nobody has seen. |
 | **Report what is broken** | Use the [issue forms](https://git.notrexed.dev/Hookshot/Hookshot/issues/new/choose): game problem, build problem or idea. Include the version, your hardware, where you were and `hookshot_log.txt`. |
 | **Send a fix** | Branch, fix, test, open a pull request from your fork ([how](#commits-and-pull-requests)). Small, focused changes are the easiest to review. |
@@ -140,7 +140,7 @@ The container keeps its own `build-linux/docker-deps` and `build-linux/docker-vk
 against its newer glibc). Where SELinux is enforcing, the script runs the container with
 `--security-opt label=disable` rather than relabelling your checkout. The AppImage needs glibc 2.35 or newer and a
 Vulkan 1.3 driver with mesh shaders. `HOOKSHOT_JOBS` sets how many files compile at once. The README's
-[Linux section](readme.md#on-linux) has the runtime paths.
+[Linux section](README.md#on-linux) has the runtime paths.
 
 ### NVIDIA DLSS (optional)
 

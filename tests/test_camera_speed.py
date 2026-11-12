@@ -158,8 +158,8 @@ def source_checks():
     keys = [name.lower().replace(" ", "_") for name in re.findall(r'\{TAB_[A-Z]+, "([^"]+)", &opts\.', menu)]
     ini_key = block(menu, "const char* ini_key(const Row& r) {")
     check("camera_speed" not in ini_key and keys.count("camera_speed") == 1, "the row is not saved as camera_speed")
-    readme = (ROOT / "readme.md").read_text(encoding="utf-8")
-    check("| | Camera speed | 50% to 400%, in steps of 25 | 100% |" in readme, "readme.md's option table has no Camera speed row")
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    check("| | Camera speed | 50% to 400%, in steps of 25 | 100% |" in readme, "README.md's option table has no Camera speed row")
 
 
 def fixture_checks(cc):
