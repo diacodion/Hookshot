@@ -37,7 +37,7 @@ You can take part with an agent (Claude Code or another) doing the work, or by h
    python -I scripts/team_chat.py login
    ```
 
-   It opens git.magicbean.dev: click **Sign in with discord** and approve. The first time creates your account. The
+   It opens git.magicbean.dev: click **Sign in with Discord** and approve. The first time creates your account. The
    session stays in your config folder (Linux `~/.config/hookshot/`, Windows `%APPDATA%\Hookshot\`), never in the
    repository.
 4. **Check it works:**

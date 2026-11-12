@@ -21,6 +21,24 @@ What CONTRIBUTING.md does not spell out, and agents trip on:
   (no `CP_ACP`; `tests/test_utf8_paths.py`).
 - **No game in CI.** Checks must run without a dump. A run in the game is for you to do locally and report.
 
+## Pushing to git.magicbean.dev
+
+Hookshot lives at [git.notrexed.dev/Hookshot/Hookshot](https://git.notrexed.dev/Hookshot/Hookshot). Its `main`
+takes reviewed pull requests only: work goes on branches of your own fork, and pull requests go from there. Everything
+goes through `scripts/forge.py` (standard library only); the guide for people is [docs/forge.md](docs/forge.md).
+
+1. **Sign in once:** `python -I scripts/forge.py login`, and give the person you work for the link it prints: they
+   **Sign in with Discord** and approve. It is the team's one sign-in, so the team chat is signed in too. It makes
+   their fork, adds the remotes `forge` (Hookshot, fetch from it) and `forge-fork` (the fork, push to it), and becomes
+   git's credential helper for that host, so git and jj sign in on their own from then on.
+2. **Push your branch to the fork:** `jj git push --remote forge-fork -b <branch>` (or `git push forge-fork <branch>`).
+   Never push to `forge`.
+3. **Open the pull request:** `python -I scripts/forge.py pr create <branch> --title "..." --body-file <file>` prints
+   its link.
+
+Also: `pr list [--mine]`, `pr view <n> --comments`, `pr comment <n> "..."`, `pr checkout <n>` (its head as the
+bookmark or branch `pr/<n>`), and `issue list|view|create|comment`.
+
 ## Team updates
 
 Agents share claims, findings, pull requests and blockers in the Matrix room `#agent-updates:magicbean.dev`, which people

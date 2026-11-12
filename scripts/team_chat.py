@@ -8,10 +8,11 @@ requests for help, the same trail docs/workflow.md asks for, in a place both peo
     python -I scripts/team_chat.py post "text" [--force] [--room ALIAS]     (or the text on standard input)
     python -I scripts/team_chat.py logout
 
-login signs in with Discord: it prints a link (and opens it unless --no-browser), the browser comes back to a one-time
-listener on 127.0.0.1, and the session is saved to the config folder (Linux: $XDG_CONFIG_HOME/hookshot, default
-~/.config/hookshot; Windows: %APPDATA%\\Hookshot; HOOKSHOT_TEAM_CHAT_DIR overrides it) as team_chat.json, readable by
-you only. The first sign-in creates the account. --access-token-stdin saves a token copied
+login signs in with Discord, through the team's one sign-in (magicbean_login.py, beside this script): it prints a
+link (and opens it unless --no-browser), and one trip through the browser signs you in to the team chat and to
+git.magicbean.dev (for pushing; see forge.py). The session is saved to the config folder (Linux:
+$XDG_CONFIG_HOME/hookshot, default ~/.config/hookshot; Windows: %APPDATA%\\Hookshot; HOOKSHOT_TEAM_CHAT_DIR overrides
+it) as team_chat.json, readable by you only. The first sign-in creates the account. --access-token-stdin saves a token copied
 from Element (Settings, Help & About, Access token) instead.
 
 post refuses, with exit code 3, a message sent less than the minimum interval after the last one (60 minutes; the
@@ -26,13 +27,15 @@ import http.server
 import json
 import os
 import sys
-import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-import webbrowser
+import webbrowser  # noqa: F401  (the sign-in opens the browser through it; the test stands in for it here)
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import magicbean_login  # noqa: E402  (same folder; python -I does not add it to the path)
 
 SERVER = "magicbean.dev"
 ROOM = "#agent-updates:magicbean.dev"
@@ -48,13 +51,7 @@ class ChatError(Exception):
     pass
 
 
-def config_dir():
-    if os.environ.get("HOOKSHOT_TEAM_CHAT_DIR"):
-        return os.environ["HOOKSHOT_TEAM_CHAT_DIR"]
-    if os.name == "nt":
-        return os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), "Hookshot")
-    base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
-    return os.path.join(base, "hookshot")
+config_dir = magicbean_login.config_dir
 
 
 def config_path():
@@ -129,8 +126,21 @@ def quote(text):
     return urllib.parse.quote(text, safe="")
 
 
+def this_module():
+    """This module's functions for magicbean_login (the test loads this file without registering it as a module)."""
+    return argparse.Namespace(homeserver=homeserver, request=request, client=client, quote=quote,
+                              finish_sso=finish_sso, finish_jwt=finish_jwt)
+
+
 def session():
+    """The saved session; when there is none but git.magicbean.dev is signed in, a new one from that, no browser."""
     config = load()
+    if not config.get("access_token") and magicbean_login.forge_load():
+        try:
+            magicbean_login.matrix_from_forge(config.get("server") or SERVER, this_module())
+            config = load()
+        except magicbean_login.LoginError as error:
+            print("team_chat: %s" % error, file=sys.stderr)
     if not config.get("access_token"):
         raise ChatError("not signed in: run `python -I scripts/team_chat.py login` first")
     return config
@@ -138,74 +148,49 @@ def session():
 
 def wait_for_login_token(port_holder, ready, timeout):
     """A listener on 127.0.0.1 for the one redirect that carries ?loginToken=; returns the token or None."""
-    found = {}
-
-    class Handler(http.server.BaseHTTPRequestHandler):
-        def do_GET(self):
-            query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
-            token = (query.get("loginToken") or [None])[0]
-            if token:
-                found["token"] = token   # (kept even if the browser closes the tab before the page below is sent)
-            text = "Signed in. You can close this tab." if token else "No login token in this request."
-            try:
-                self.send_response(200 if token else 400)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.end_headers()
-                self.wfile.write(("<!doctype html><title>Hookshot team chat</title><p>%s</p>" % text).encode("utf-8"))
-            except OSError:
-                pass   # (the browser went away first, e.g. WinError 10053; the token above is what matters)
-
-        def log_message(self, *args):
-            pass
-
-    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
-    server.timeout = 1
-    port_holder.append(server.server_address[1])
+    listener = http.server.HTTPServer(("127.0.0.1", 0), http.server.BaseHTTPRequestHandler)
+    port_holder.append(listener.server_address[1])
     ready.set()
-    deadline = time.monotonic() + timeout
-    try:
-        while "token" not in found and time.monotonic() < deadline:
-            server.handle_request()
-    finally:
-        server.server_close()
-    return found.get("token")
+    return magicbean_login.listen(listener, ["matrix"], None, None, timeout).get("matrix")
+
+
+def finish_login(server, base, body):
+    """The Matrix session for a login request body, saved; its user ID."""
+    reply = request("POST", client(base, "/login"), body=dict(body, initial_device_display_name=DEVICE_NAME))
+    config = load()
+    config.update(server=server, base_url=base, access_token=reply["access_token"], user_id=reply["user_id"],
+                  device_id=reply.get("device_id"))
+    save(config)
+    return reply["user_id"]
+
+
+def finish_sso(server, base, login_token):
+    return finish_login(server, base, {"type": "m.login.token", "token": login_token})
+
+
+def finish_jwt(server, base, token):
+    return finish_login(server, base, {"type": "org.matrix.login.jwt", "token": token})
 
 
 def login(args):
-    base = homeserver(args.server)
-    config = load()
     if args.access_token_stdin:
+        base = homeserver(args.server)
         token = sys.stdin.readline().strip()
         if not token:
             raise ChatError("no access token on standard input")
         me = request("GET", client(base, "/account/whoami"), token)
+        config = load()
         config.update(server=args.server, base_url=base, access_token=token, user_id=me["user_id"],
                       device_id=me.get("device_id"))
         save(config)
         print("signed in as %s" % me["user_id"])
         return
-    flows = [f.get("type") for f in request("GET", client(base, "/login")).get("flows", [])]
-    if "m.login.sso" not in flows:
-        raise ChatError("%s offers no single sign-on (flows: %s); use --access-token-stdin" % (base, ", ".join(flows)))
-    port, ready = [], threading.Event()
-    result = {}
-    listener = threading.Thread(target=lambda: result.update(token=wait_for_login_token(port, ready, LOGIN_TIMEOUT)))
-    listener.daemon = True
-    listener.start()
-    ready.wait()
-    url = client(base, "/login/sso/redirect?redirectUrl=" + quote("http://127.0.0.1:%d/" % port[0]))
-    print("Sign in with Discord here (the link works for %d minutes):\n\n  %s\n" % (LOGIN_TIMEOUT // 60, url), flush=True)
-    if not args.no_browser:
-        webbrowser.open(url)
-    listener.join()
-    if not result.get("token"):
-        raise ChatError("no sign-in came back within %d minutes" % (LOGIN_TIMEOUT // 60))
-    reply = request("POST", client(base, "/login"), body={
-        "type": "m.login.token", "token": result["token"], "initial_device_display_name": DEVICE_NAME})
-    config.update(server=args.server, base_url=base, access_token=reply["access_token"], user_id=reply["user_id"],
-                  device_id=reply.get("device_id"))
-    save(config)
-    print("signed in as %s; saved to %s" % (reply["user_id"], config_path()))
+    # the team's server: git.magicbean.dev, and the chat from it (another server, as in the test: its own sign-on)
+    done = magicbean_login.sign_in(server=args.server, no_browser=args.no_browser, chat=this_module())
+    print("signed in as %s; saved to %s" % (done["matrix"], config_path()))
+    if "forge" in done:
+        print("also signed in to %s as %s (for pushing: python -I scripts/forge.py login sets git up)" % (
+            magicbean_login.FORGE_HOST, done["forge"]))
 
 
 def whoami(args):
@@ -345,7 +330,7 @@ def main(argv=None):
     commands = {"login": login, "whoami": whoami, "status": status, "logout": logout, "read": read, "post": post}
     try:
         return commands[args.command](args) or 0
-    except ChatError as error:
+    except (ChatError, magicbean_login.LoginError) as error:
         print("team_chat: %s" % error, file=sys.stderr)
         return 1
 
