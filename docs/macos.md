@@ -25,6 +25,28 @@ scripts/macos/run-vk.sh --window --sound --seconds 3600       # or headless, wit
 The game is `$OOT_WORK/sa/build/hookshot` with `hookshot_vk.so` beside it (a Mach-O dylib under the Linux name).
 `make_game.py` and the builders have no macOS route yet.
 
+## The dev loop: edit, build, measure in a scene
+
+```sh
+$HOOKSHOT_PYTHON -I nx2/build.py --standalone --jobs 8     # what changed only: 8 s for a gpu/vk/*.cpp edit
+python3 -I scripts/macos/scene.py kokiri                   # boot, Continue, settle, 60 s measured, summary.json
+python3 -I scripts/macos/scene.py market RX_VK_CHUNK=60    # a teleport first (--list: the scenes)
+python3 -I scripts/macos/scene.py kokiri --ab RX_VK_CAPTURE_WAIT=0 --repeat 2   # alternating runs, per-arm fps
+```
+
+`scene.py` (a wrapper of the control bridge, `scripts/hookshot_ctl.py`, and the frame trace, `RX_VK_FRAME_TRACE`) runs the
+game from `$OOT_WORK/dev`: clones of the build's binaries (APFS, free; taken again after each build) with an options file
+of its own (`scripts/macos/bench_options.ini`: uncapped, 2048x1152), so the player's options and saves are never touched.
+Each run plays from a fresh copy of the saves (a teleport persists into them), presses through the title by the game's
+state, teleports, waits until no draw is left out for pipelines still compiling, measures, and writes
+`$OOT_WORK/runs/<name>/summary.json`: fps, frame-time p50/p95/p99, the time to play and to settle, the stalls before.
+
+Measured on the M4 Max (2026-11-12): a build with nothing to compile 6.7 s, a one-line renderer edit 8.0 s, a host edit
+4.5 s (the lift is kept). A run in Kokiri Forest reaches play in ~18 s and is settled in ~33 s, ~63 s in all for 30 s
+measured (the fixed-time input script took ~100 s to play); the Market, by teleport, settles in ~52 s. Two runs of the
+same build agree within ~0.3 fps, so an A/B of a few runs tells 1% apart. After a change to the shader translation (or
+with Metal's cache cold) the first run compiles ~800 pipelines: 5-9 minutes before Kokiri Forest is settled.
+
 ## What differs from Linux
 
 | Where | What |
