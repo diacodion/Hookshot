@@ -39,6 +39,7 @@ struct {
     uint32_t subgroup_stages = 0;   // (macos: 0, every stage, as the drivers this test is about)
     bool mesh_shader = true, task_mesh_fallback = false;
     struct { bool shaderFloat16 = true; } vk12;   // (k10: f16 lowered where the GPU has none; here it has)
+    bool float_atomic_add = false;
     struct { struct { uint64_t minStorageBufferOffsetAlignment = 16; } limits; } props;
     struct { bool gather_offset = false; } fixes;   // (vk_vendor.h: make_profile reads the gather offset from it)
 } dev;
