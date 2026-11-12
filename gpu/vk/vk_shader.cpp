@@ -986,6 +986,13 @@ const Shader::Profile& profile_pinned() {
     static const Shader::Profile p = [] {
         Shader::Profile q = profile();
         if (dev.sg32_stages & VK_SHADER_STAGE_COMPUTE_BIT) q.warp_size_potentially_larger_than_guest = false, q.max_subgroup_size = 32;
+        // (macos) A task or mesh program run as a compute shader has compute's subgroups, whatever the driver says of the task and mesh
+        // stages: make_profile gives them compute's only when every mesh program is a fallback, and with MoltenVK's mesh shaders a
+        // program goes to the fallback one at a time (a pipeline Metal refused, mesh_native_refused). With the one-lane paths there,
+        // every lane read as lane 0 and a ballot as its own bit: the foliage's task programs compacted their lists onto one slot, and the
+        // grass and leaves came out missing or at other instances' places
+        if (q.SupportsSubgroupStage(Shader::Stage::Compute))
+            q.supported_subgroup_stages |= (1u << (uint32_t)Shader::Stage::Task) | (1u << (uint32_t)Shader::Stage::Mesh);
         return q;
     }();
     return p;
@@ -1224,8 +1231,9 @@ uint64_t translator_stamp() {
                               // (and where the translation starts a storage binding: offsets are counted from there, so a cache
                               // made on a 16-aligned GPU is no use on a 64-aligned one in the same folder, a laptop's two GPUs)
                               (uint32_t)storage_binding_align(),
-                              // (macos) and the stages with subgroup operations: those without take the one-lane paths
-                              profile().supported_subgroup_stages};
+                              // (macos) and the stages with subgroup operations: those without take the one-lane paths. The mesh
+                              // fallback's (compute) translations follow profile_pinned's
+                              profile().supported_subgroup_stages, profile_pinned().supported_subgroup_stages};
     add(lanes, sizeof lanes);
     // (k10) f16 lowered to f32 on a GPU without f16 shaders (host_info): only then, so other GPUs keep their caches
     if (!dev.vk12.shaderFloat16) {
