@@ -1819,6 +1819,12 @@ static DWORD WINAPI game_thread(void *p) {
 static void driver_cache_room(void) {
     setenv("__GL_SHADER_DISK_CACHE_SIZE", "10737418240", 0);   /* (10 GiB, bytes) */
     setenv("MESA_SHADER_CACHE_MAX_SIZE", "10G", 0);
+#ifdef __APPLE__
+    /* (macos) MoltenVK encodes a submission's Metal commands in vkQueueSubmit, on the replay's thread: ~8 ms of an M4 Max's
+       frame in Kokiri Forest. Asynchronous, it encodes them on a thread of its own, in the order they were submitted: 30 -> 33.5
+       fps at the game's 3/4 (docs/macos.md) */
+    setenv("MVK_CONFIG_SYNCHRONOUS_QUEUE_SUBMITS", "0", 0);
+#endif
 }
 #include <errno.h>
 #include <sys/stat.h>

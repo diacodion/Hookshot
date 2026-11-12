@@ -77,6 +77,10 @@ An options file saved before keeps its rows: Insert menu, Graphics, Upscaler and
 | 75%, FSR 3.1 | 29 ms | 31 |
 | 100% | 36 ms | 25 |
 
+MoltenVK encodes a submission's Metal commands inside `vkQueueSubmit`; the host sets `MVK_CONFIG_SYNCHRONOUS_QUEUE_SUBMITS=0`
+(`driver_cache_room`, unless it is set already) so that this happens on MoltenVK's own thread: at 75% 30 -> 33.5 fps, the
+replay's submits from ~8 ms a frame to nothing.
+
 Most of the frame does not scale with resolution. About 10 ms of it is the task and mesh programs' compute fallback (issue
 640: ~50 mesh draws a frame, each a render pass split, four full barriers and its dispatches; the dispatches ~5 ms, the
 drawing itself ~4 ms, the splits and barriers ~1 ms), which MoltenVK's mesh shaders would replace (an open MoltenVK PR,
