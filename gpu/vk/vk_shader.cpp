@@ -592,6 +592,9 @@ private:
 Shader::Profile make_profile() {
     Shader::Profile p{};
     p.supported_spirv = 0x00010600;
+    // (macos) the global memory helpers in one exit on MoltenVK (profile.h): with a return in each of their tests, inlined by
+    // Metal, two of OoT's compute programs never finished compiling. RX_VK_GM_SINGLE_EXIT=0: as elsewhere, 1: on any driver
+    p.global_memory_single_exit = env_int("RX_VK_GM_SINGLE_EXIT", dev.driver_id == VK_DRIVER_ID_MOLTENVK ? 1 : 0) != 0;
     p.unified_descriptor_binding = true;
     p.support_descriptor_aliasing = true;
     p.support_int8 = p.support_int16 = p.support_int64 = true;
@@ -1243,6 +1246,11 @@ uint64_t translator_stamp() {
     if (!dev.vk12.shaderFloat16) {
         const uint32_t no_f16 = 0x6e663136u;   // ("nf16")
         add(&no_f16, sizeof no_f16);
+    }
+    // (macos) the global memory helpers in one exit (Profile::global_memory_single_exit): only then, so other GPUs keep theirs
+    if (profile().global_memory_single_exit) {
+        const uint32_t single_exit = 0x31786573u;   // ("sex1")
+        add(&single_exit, sizeof single_exit);
     }
     // (the records keep Shader::Info as it lies in memory: a cache written by another C++ library (the MSVC build's, then the
     // llvm-mingw one's libc++) has other layouts, and reading it crashed at start. The library and the sizes, so it starts again)

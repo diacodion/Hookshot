@@ -226,6 +226,8 @@ public:
     VectorTypes F16;
     VectorTypes F64;
 
+    /// (macos) this program's global memory helpers in one exit (Profile::global_memory_single_exit, and a program big enough)
+    bool gm_single_exit{};
     Id true_value{};
     Id false_value{};
     Id u32_zero_value{};

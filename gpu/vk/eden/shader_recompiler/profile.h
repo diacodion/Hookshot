@@ -108,6 +108,10 @@ struct Profile {
     bool has_broken_spirv_subgroup_mask_vector_extract_dynamic{};
     bool has_broken_spirv_subgroup_shuffle{};
     bool has_broken_spirv_fragment_shuffle{};   // (Lichii #273: AMD's proprietary driver, fragment stages only)
+    /// (macos) The global memory helpers in one exit: a result and a matched flag, every check after a match skipped, one
+    /// return (spirv_emit_context.cpp DefineGlobalMemoryFunctions). MoltenVK's SPIRV-Cross drops DontInline, Metal inlines
+    /// the helpers at each access, and with their early returns its compiler never finished some programs
+    bool global_memory_single_exit{};
     u32 max_subgroup_size{};
 
     u32 gl_max_compute_smem_size{};

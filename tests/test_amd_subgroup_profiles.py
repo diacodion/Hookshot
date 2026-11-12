@@ -34,6 +34,7 @@ enum VkShaderStageFlagBits : uint32_t {
 };
 using VkShaderStageFlags = uint32_t;
 constexpr uint32_t VK_DRIVER_ID_AMD_PROPRIETARY = 1;
+constexpr uint32_t VK_DRIVER_ID_MOLTENVK = 14;   // (macos: make_profile's global_memory_single_exit)
 struct {
     uint32_t sg32_stages = 0, subgroup_size = 32, subgroup_max = 32, driver_id = 0;
     uint32_t subgroup_stages = 0;   // (macos: 0, every stage, as the drivers this test is about)
