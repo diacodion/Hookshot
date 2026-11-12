@@ -33,6 +33,7 @@
 #include "vk_menu_hit.h"
 #include "vk_fps.h"    // (the FPS counter's levels and numbers)
 #include "vk_draw.h"   // (pipeline_cache_save: Restart now keeps what was built)
+#include "vk_texture.h"   // (the FPS counter's Dev level: texture_count, texture_bytes, texture_stats)
 #include "oot_cheat_items.h"
 #include "vk_progress.h"   // (StartupView, version_text: the start-up screen)
 #include "vk_ui.h"
@@ -1134,7 +1135,9 @@ MENU_HINTS(hn_fps, 0, nullptr, "The frame rate. With frame generation on, the ga
            "And the game's frame time, with its 1% low: the rate of its slowest 1% of frames over the last 10 seconds.",
            "And a graph of the last 4 seconds' frame times, with a line at the Game frame rate cap's.",
            "And where each frame's time goes: the game, the renderer, waiting for the GPU, waiting for its turn (frame pacing, "
-           "vsync); the GPU's own time; red marks where shaders were built or draws left out.")
+           "vsync); the GPU's own time; red marks where shaders were built or draws left out.",
+           "And the renderer's own numbers, for debugging: video memory, textures, draws, dispatches and render passes a "
+           "frame, draws skipped, texture uploads and pipelines built.")
 MENU_HINTS(hn_menu_size, 1, "Smaller, for a desk.", "The usual size.", "Larger, for a TV across the room.")
 MENU_HINTS(hn_speed, 0, "A step each frame: the game slows down whenever it runs below 60 fps.",
            "Normal speed down to 15 fps, by taking longer steps.")
@@ -2522,6 +2525,8 @@ double fps_rate_now = 0;   // (the number's rate, the game's own with frame gene
 char fps_part_text[fps_stats::kParts][24];
 char fps_gpu_text[24] = "";
 char fps_built_text[16] = "", fps_left_text[16] = "";
+char fps_dev_text[fps_stats::kDevLines][32];   // (the Dev level's values, fps_texts)
+bool fps_vram_over = false;                    // (the VRAM line in red: past what the driver allows)
 int fps_cap_started = 0;   // (the Game frame rate cap the game started with: the graph's line)
 /// The FPS counter's target frame time, ms: the cap the game started with (HOS_FPS_MAX over it, as host/nn_vi.c), or the
 /// display's refresh with V-Sync On and no frame generation when that is slower; 0 for none (Uncapped without V-Sync)
@@ -3768,6 +3773,7 @@ void draw_fps(ui::Ctx& c, bool under_banner) {
     if (level >= fs::kFrameTime && fps_ms_text[0]) h += row;
     if (level >= fs::kGraph) h += 8 * s + gh + 4 * s;
     if (level >= fs::kBreakdown) h += 10 * s + 6 * s + 4 * lh + 6 * s + 3 * lh;
+    if (level >= fs::kDev) h += 6 * s + fs::kDevLines * lh;
     const float edge = left ? c.safe : c.w - c.safe;
     const float top = bottom ? c.h - c.safe - h : under_banner && !tune_mode && page != 5 && !beside ? banner_h(c) + 10 * s : c.safe;
     // (x for a width at the column's edge)
@@ -3934,6 +3940,14 @@ void draw_fps(ui::Ctx& c, bool under_banner) {
     const ImU32 red = ui::rgba(240, 100, 85);
     line(0, "Shaders built (4 s)", fps_built_text, strcmp(fps_built_text, "0") ? red : dim);
     line(0, "Draws left out (4 s)", fps_left_text, strcmp(fps_left_text, "0") ? red : dim);
+    if (level < fs::kDev) return;
+    // (Dev: the renderer's own numbers, for debugging)
+    c.d->AddLine(ImVec2(x0, std::floor(by + 3 * s) + 0.5f), ImVec2(x1, std::floor(by + 3 * s) + 0.5f), ui::rgba(255, 255, 255, 40), std::max(1.0f, s));
+    by += 6 * s;
+    for (int i = 0; i < fs::kDevLines; i++) {
+        const bool alarm = (i == fs::kVram && fps_vram_over) || (i == fs::kSkipped && strcmp(fps_dev_text[i], "0") && strcmp(fps_dev_text[i], "-"));
+        line(0, fs::dev_name(i), fps_dev_text[i], alarm ? red : ink);
+    }
 }
 
 /// The start-up screen: the logo, the wordmark, what the start is doing, a bar, on a warm dark. A little below the middle; what
@@ -4269,6 +4283,32 @@ void fps_texts(int64_t now) {
     const fs::Summary graph = fps_summary(now, fs::kGraphWindow, 0);
     snprintf(fps_built_text, sizeof fps_built_text, "%d", graph.pipelines);
     snprintf(fps_left_text, sizeof fps_left_text, "%d", graph.left_out);
+    if (level < fs::kDev) return;
+    // (Dev: the renderer's counters since the last time, every half second, by the frames presented in that time)
+    static int64_t at = 0, last[5] = {};
+    if (at && now - at < fs::kSecond / 2 && now >= at) return;
+    int64_t draws = 0, skipped = 0, dispatches = 0, pipelines = 0, passes = 0, mesh = 0, uploads = 0, astc = 0, bytes = 0;
+    double pipeline_ms = 0;
+    draw_stats(&draws, &skipped, &dispatches, &pipelines);
+    draw_stats2(&passes, &mesh, &pipeline_ms);
+    texture_stats(&uploads, &astc, &bytes);
+    const int64_t counts[5] = {draws, dispatches, passes, skipped, bytes};
+    const bool first = !at || now < at || now - at > 2 * fs::kSecond;   // (Dev just chosen again: no stretch from before)
+    const double seconds = first ? 0 : (double)(now - at) / fs::kSecond;
+    const int frames = first ? 0 : fps_summary(now, now - at, 0).frames;
+    uint64_t used = 0, allowed = 0;
+    const bool known = vram_usage(&used, &allowed) && dev.memory_budget;   // (the status line asks the driver anew: vram_usage_now)
+    fps_vram_over = known && allowed && used > allowed;
+    fs::vram_line(fps_dev_text[fs::kVram], sizeof fps_dev_text[0], used, allowed, known);
+    fs::textures_line(fps_dev_text[fs::kTextures], sizeof fps_dev_text[0], texture_count(), texture_bytes());
+    fs::per_frame_line(fps_dev_text[fs::kDraws], sizeof fps_dev_text[0], counts[0] - last[0], frames);
+    fs::per_frame_line(fps_dev_text[fs::kDispatches], sizeof fps_dev_text[0], counts[1] - last[1], frames);
+    fs::per_frame_line(fps_dev_text[fs::kPasses], sizeof fps_dev_text[0], counts[2] - last[2], frames);
+    fs::per_frame_line(fps_dev_text[fs::kSkipped], sizeof fps_dev_text[0], counts[3] - last[3], frames);
+    fs::rate_line(fps_dev_text[fs::kUploads], sizeof fps_dev_text[0], counts[4] - last[4], seconds);
+    snprintf(fps_dev_text[fs::kPipelines], sizeof fps_dev_text[0], "%lld", (long long)pipelines);
+    at = now;
+    std::memcpy(last, counts, sizeof last);
 }
 
 /// A rate over the half-second that just ended. The first call only starts that interval: the frames since launch,

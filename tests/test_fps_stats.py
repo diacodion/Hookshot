@@ -43,7 +43,10 @@ def main():
     # (the key the row saves under is its name's: fps_counter, as before the levels, so an old file's 1 is FPS)
     need("show_fps" not in body(menu, "const char* ini_key("), "the FPS counter's key was renamed: old options files would not load")
     hints = body(menu, "MENU_HINTS(hn_fps,")
-    need(hints.count('"') // 2 >= 4, "the FPS counter's hints do not cover every level")
+    need(hints.count('"') // 2 >= 5, "the FPS counter's hints do not cover every level")
+    texts = body(menu, "void fps_texts(")
+    for use in ("fs::kDev", "draw_stats(", "draw_stats2(", "texture_stats(", "vram_usage(", "texture_count()", "fps_dev_text"):
+        need(use in texts, "fps_texts does not write the Dev level's %s" % use)
     need(re.search(r'\{TAB_GAMEPLAY, "FPS counter position", &opts\.fps_corner, 0, 3, 1, tx_fps_corner,', menu),
          "the Gameplay tab has no FPS counter position row")
     tick = menu[menu.index("void menu_tick()"):menu.index("void menu_record(")]
