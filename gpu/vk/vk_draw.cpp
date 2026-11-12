@@ -891,8 +891,22 @@ void play_cache_save() {
 /// pcache grows by it only for a library the warm pass did not leave there (a folder prepared before the warm pass), and
 /// only in memory: it is not written in play for that (pipeline_cache_save) until it has grown 64 MB.
 /// RX_VK_PLAY_ASK_START_FIRST=0: the generation first for the libraries too, as before
+/// (macos) No VkPipelineCache handed to MoltenVK. It compiles a pipeline's Metal libraries while holding its pipeline cache's
+/// one lock (MVKPipelineCache::getShaderLibrary), so with every pipeline made through one cache the workers' compiles queued
+/// behind each other, and a draw that waits for its pipeline (pipe_wait_ms) waited behind compiles it had nothing to do with:
+/// submits of 2-12 s after a save loaded (samples of the stalls: the replay and three workers in that lock, one compiling).
+/// Without it MoltenVK keeps each shader module's libraries under the module's own lock. Kokiri Forest from a cold Metal
+/// cache, M4 Max, 2026-11-12, two runs each: frames of over 250 ms before it settled 26-29 s against 75-81 s, in play after
+/// 35-43 s against 67-96 s; but every pipeline compiled 314-382 -> 452-530 s (four library compiles at once are slower in all
+/// than one at a time). Only the asks without a cache: no better than before. Nothing else is lost: pcache is neither read
+/// nor saved on MoltenVK (pcache_init). RX_VK_MVK_PIPELINE_CACHE=1: the cache, as before
+bool driver_cache_off() {
+    static const bool off = dev.driver_id == VK_DRIVER_ID_MOLTENVK && !env_on("RX_VK_MVK_PIPELINE_CACHE");
+    return off;
+}
 template <class CI>
 VkResult create_cached(VkResult (*create)(VkPipelineCache, const CI*, VkPipeline*), const CI* ci, VkPipeline* pl) {
+    if (driver_cache_off()) return create(VK_NULL_HANDLE, ci, pl);
     PlayCache* g = play_cache.load();
     if (!g) return create(pcache, ci, pl);
     const bool ask_only = (ci->flags & VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT) != 0;
@@ -1223,7 +1237,7 @@ VkResult cached_compute(const VkComputePipelineCreateInfo* ci, VkPipeline* pl) {
 }
 /// (a graphics pipeline made with the cache chosen for it: pcache through the play caches, another or none as it is)
 VkResult graphics_with(VkPipelineCache cache, const VkGraphicsPipelineCreateInfo* ci, VkPipeline* pl) {
-    return cache && cache == pcache ? cached_graphics(ci, pl) : guarded_graphics(cache, ci, pl);
+    return cache && cache == pcache ? cached_graphics(ci, pl) : guarded_graphics(driver_cache_off() ? VK_NULL_HANDLE : cache, ci, pl);
 }
 
 /// A target's write mask: the state's channel mask, nothing for a target the fragment shader leaves unwritten
@@ -8005,7 +8019,7 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background, b
         VkPipeline pl = VK_NULL_HANDLE;
         // (into the app's pipeline cache, saved to mkw_vk_pipelines.bin: without it the next start compiled them again in play
         // where the driver's own cache missed them, AMD's 15 s culling compiles each time)
-        if (guarded_compute(pcache, &ci, &pl) == VK_SUCCESS && pl) {
+        if (guarded_compute(driver_cache_off() ? VK_NULL_HANDLE : pcache, &ci, &pl) == VK_SUCCESS && pl) {
             vkDestroyPipeline(dev.device, pl, nullptr);
             libs++;
             pcache_built_since_save++;
