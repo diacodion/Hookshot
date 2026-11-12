@@ -59,7 +59,7 @@ thing (two people fixing the same thing is the most common waste here) or alread
 ```
 python -I scripts/team_chat.py status
 python -I scripts/team_chat.py post "Intel Arc: claimed the missing walls, testing on an A770.
-- Claimed: https://github.com/NotRexed/Hookshot/issues/1234 (worklist 36): missing walls on Intel Arc.
+- Claimed: https://git.notrexed.dev/Hookshot/Hookshot/issues/12 (worklist 36): missing walls on Intel Arc.
 - Working on: a capture of the broken frame on an A770, Windows."
 ```
 
