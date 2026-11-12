@@ -2999,8 +2999,24 @@ void menu_first_start_for_gpu(const VkPhysicalDeviceProperties& props, const VkP
     const bool integrated = props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
     // (RX_VK_AUTO_PRESET_VRAM_MB=<n>: the card's memory taken as n MB, to try the choice on a larger card)
     const uint64_t mb = getenv("RX_VK_AUTO_PRESET_VRAM_MB") ? (uint64_t)atoll(getenv("RX_VK_AUTO_PRESET_VRAM_MB")) : vram >> 20;
-    const int preset = integrated || mb <= 4608 ? 1 : mb <= 6656 ? 2 : 0;
-    if (!preset) return;
+    // (macos) An Apple GPU is integrated, its memory the Mac's own, which MoltenVK reports whole as the one heap (36 GB on a 36 GB
+    // M4 Max): taken as an integrated GPU it had the Minimum preset, the 3D at half size and stretched (the network for that
+    // share does not translate without cooperative matrices). Here by the Mac's memory, of which the game takes ~10 GB itself:
+    // 8 GB Minimum, 16 GB Low, larger the defaults. The Upscaler: AMD FSR 3.1, built from AMD's shaders,
+    // in the gameplay network's place (vk_fsr3.cpp; on MoltenVK the game's networks are left out and their upscales are
+    // linear stretches): the game's dithering and the grass blades resolved, at ~1 ms of an M4 Max's frame
+    const bool apple = props.vendorID == 0x106B;
+    if (apple) opts.dlss = ur::FSR3;
+    const int preset = apple ? (mb <= 8192 ? 1 : mb <= 16384 ? 2 : 0) : integrated || mb <= 4608 ? 1 : mb <= 6656 ? 2 : 0;
+    if (!preset) {
+        if (apple) {
+            restart_init();
+            save();
+            logf("vk: first start on %s (Apple, %llu MB of the Mac's memory for the GPU): the defaults, FSR 3.1 the upscaler",
+                 props.deviceName, (unsigned long long)mb);
+        }
+        return;
+    }
     opts.preset = opts.budget = preset;
     apply_preset(preset);
     sync_preset_budgets(preset);

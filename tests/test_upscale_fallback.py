@@ -136,6 +136,11 @@ bool temporal_off() { return false; }
 static bool temporal_rejected_network(VkCommandBuffer, uint64_t, Texture *, const nvn_tex *, Texture *, const nvn_tex *) {
     return false;
 }
+// (and AMD FSR 3.1, off here too: vk_draw.cpp fsr3_rejected_network)
+bool fsr3_wanted() { return false; }
+static bool fsr3_rejected_network(VkCommandBuffer, uint64_t, Texture *, const nvn_tex *, Texture *, const nvn_tex *) {
+    return false;
+}
 void full_barrier(VkCommandBuffer) {}
 bool dump_on() { return false; }
 void logf(const char *format, ...) {

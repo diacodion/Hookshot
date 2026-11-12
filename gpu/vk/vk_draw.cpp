@@ -7032,6 +7032,8 @@ static bool typed_upscale(VkCommandBuffer cmd, VkImageView input_view, VkImageVi
                           Texture* out, uint32_t level, uint64_t key, const char* keys, bool temporal);
 static bool temporal_rejected_network(VkCommandBuffer cmd, uint64_t key, Texture* src, const nvn_tex* in, Texture* dst,
                                       const nvn_tex* out);
+static bool fsr3_rejected_network(VkCommandBuffer cmd, uint64_t key, Texture* src, const nvn_tex* in, Texture* dst,
+                                  const nvn_tex* out);
 
 bool upscale_stub(VkCommandBuffer cmd, const NvnState& s, uint64_t key) {
     static const bool off = env_on("RX_VK_NO_UPSCALE_STUB");
@@ -7080,6 +7082,9 @@ bool upscale_stub(VkCommandBuffer cmd, const NvnState& s, uint64_t key) {
     // GPU without cooperative matrices they are left out): the temporal upscaler is offered it first, as temporal_stand_in
     // offers the networks that did translate. It takes only the scene into the picture; anything else goes on below
     if ((temporal_wanted() || temporal_off()) && temporal_rejected_network(cmd, key, src, &in, dst, &out)) return true;
+    // (macos) and to AMD FSR 3.1 when it is the Upscaler: on a GPU without cooperative matrices (MoltenVK, AMD RDNA 2) every
+    // Render resolution share but the game's 3/4 has a network that does not translate, and FSR 3.1 saw only the 3/4
+    if (fsr3_wanted() && fsr3_rejected_network(cmd, key, src, &in, dst, &out)) return true;
     VkFormatProperties fs{}, fd{};
     vkGetPhysicalDeviceFormatProperties(dev.physical, src->format, &fs);
     vkGetPhysicalDeviceFormatProperties(dev.physical, dst->format, &fd);
@@ -7388,6 +7393,35 @@ static bool temporal_rejected_network(VkCommandBuffer cmd, uint64_t key, Texture
     if (seen.size() < 32 && seen.insert(key).second)
         logf("vk: network %016llx does not translate here: the temporal upscaler draws its upscale (%ux%u -> %ux%u)",
              (unsigned long long)key, src->width, src->height, dst->width, dst->height);
+    return true;
+}
+/// (macos) The same for AMD FSR 3.1 (vk_fsr3.cpp): an upscale network that did not translate here, its input the scene. The
+/// fixed shares' networks sample the scene's image (B10G11R11, holding RGB9E5's bits) as RGB9E5, which FSR 3.1's inputs pass
+/// samples it as too.
+/// true: FSR 3.1 wrote the output
+static bool fsr3_rejected_network(VkCommandBuffer cmd, uint64_t key, Texture* src, const nvn_tex* in, Texture* dst,
+                                  const nvn_tex* out) {
+    if (src->format != VK_FORMAT_B10G11R11_UFLOAT_PACK32 || dst->format != VK_FORMAT_B10G11R11_UFLOAT_PACK32) return false;
+    end_pass(cmd);
+    VkFormat in_format = VK_FORMAT_UNDEFINED, out_format = VK_FORMAT_UNDEFINED;
+    const VkImageView in_view = texture_view(src, in, nullptr, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Sample, &in_format);
+    const VkImageView out_view = texture_view(dst, out, nullptr, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Storage, &out_format,
+                                              VK_FORMAT_B10G11R11_UFLOAT_PACK32);
+    if (!in_view || !out_view || out_format != VK_FORMAT_B10G11R11_UFLOAT_PACK32 ||
+        (in_format != VK_FORMAT_B10G11R11_UFLOAT_PACK32 && in_format != VK_FORMAT_E5B9G9R9_UFLOAT_PACK32))
+        return false;
+    const bool done = fsr3_upscale(cmd, key, false, src, in_view, dst, out_view, 0);
+    last_dyn_valid = false, last_desc_valid = false, last_vb_valid = false, last_pipeline = VK_NULL_HANDLE;
+    vertex_set.on = false, last_ib.on = false;
+    if (!done) return false;
+    full_barrier(cmd);
+    texture_written(dst);
+    static std::mutex mu;
+    static std::unordered_set<uint64_t> seen;
+    std::lock_guard lk(mu);
+    if (seen.size() < 32 && seen.insert(key).second)
+        logf("vk: network %016llx does not translate here: FSR 3.1 draws its upscale (%ux%u -> %ux%u)", (unsigned long long)key,
+             src->width, src->height, dst->width, dst->height);
     return true;
 }
 bool taau_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p) {
