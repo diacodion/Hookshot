@@ -271,12 +271,55 @@ void hos_update_check(void);   /* (host/hos_update.c) */
 #ifndef _WIN32
 /* (linux) Saves live in $XDG_DATA_HOME/hookshot (~/.local/share/hookshot), so a rebuilt game folder still finds them.
    A user/ folder beside the executable from before is moved there the first time, entry by entry. Anything that
-   cannot be moved keeps the old place. --user still wins. */
+   cannot be moved keeps the old place. --user still wins.
+   A symbolic link in it, to saves the player keeps elsewhere (a synced folder, another drive), is made again in the
+   new place, to the same folder, and never entered. It was moved as it stood, and one written from where it stood
+   ("../../saves") then named nothing; from another drive it was copied as the folder it names and delete_tree emptied
+   that folder, which is not Hookshot's: the next start found the link still here, kept the old place, and showed no
+   saves. A user/ that is a link itself is the player's choice of place, and is used as it is. */
 static int is_dir(const char *p) {
     const DWORD a = GetFileAttributesA(p);
     return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY);
 }
+static int is_link(const char *p) {
+    struct stat st;
+    return lstat(p, &st) == 0 && S_ISLNK(st.st_mode);
+}
+static const char *move_old, *move_new;   /* (the user folder on the move, as realpath names it, and the new place) */
+static int copy_link(const char *from, const char *to) {   /* (to what it names, in full; one that names nothing: as written) */
+    char target[MAX_PATH], there[MAX_PATH];
+    const size_t old = move_old ? strlen(move_old) : 0;
+    if (!realpath(from, target)) {
+        const ssize_t n = readlink(from, target, sizeof target - 1);
+        if (n < 0) return 0;
+        target[n] = 0;
+    } else if (old && !strncmp(target, move_old, old) && target[old] == SEP) {   /* (to an entry that moves too: where it will be) */
+        snprintf(there, sizeof there, "%s%s", move_new, target + old);
+        snprintf(target, sizeof target, "%s", there);
+    }
+    return symlink(target, to) == 0;
+}
+static int has_link(const char *p) {
+    if (is_link(p)) return 1;
+    if (!is_dir(p)) return 0;
+    char pattern[MAX_PATH];
+    snprintf(pattern, sizeof pattern, "%s" SEP_S "*", p);
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(pattern, &fd);
+    int found = 0;
+    if (h != INVALID_HANDLE_VALUE) {
+        do {
+            if (!strcmp(fd.cFileName, ".") || !strcmp(fd.cFileName, "..")) continue;
+            char a[MAX_PATH];
+            snprintf(a, sizeof a, "%s" SEP_S "%s", p, fd.cFileName);
+            found = has_link(a);
+        } while (!found && FindNextFileA(h, &fd));
+        FindClose(h);
+    }
+    return found;
+}
 static int copy_tree(const char *from, const char *to) {
+    if (is_link(from)) return copy_link(from, to);
     if (!is_dir(from)) {
         FILE *in = fopen(from, "rb"), *out = in ? fopen(to, "wb") : NULL;
         int ok = in && out;
@@ -306,7 +349,7 @@ static int copy_tree(const char *from, const char *to) {
     return ok;
 }
 static void delete_tree(const char *p) {
-    if (!is_dir(p)) {
+    if (!is_dir(p) || is_link(p)) {   /* (a link goes; what it names stays) */
         DeleteFileA(p);
         return;
     }
@@ -328,6 +371,7 @@ static void delete_tree(const char *p) {
 static const char *saves_dir(const char *beside) {
     static char dir[MAX_PATH];
     const char *xdg = getenv("XDG_DATA_HOME"), *home = getenv("HOME");
+    if (is_link(beside)) return beside;
     if (xdg && xdg[0] == '/') snprintf(dir, sizeof dir, "%s", xdg);
     else if (home && home[0] == '/') {
         snprintf(dir, sizeof dir, "%s/.local", home);
@@ -340,21 +384,27 @@ static const char *saves_dir(const char *beside) {
     if (GetFileAttributesA(dir) == INVALID_FILE_ATTRIBUTES) return beside;
     char pattern[MAX_PATH];
     snprintf(pattern, sizeof pattern, "%s" SEP_S "*", beside);
-    WIN32_FIND_DATAA fd;
-    HANDLE h = FindFirstFileA(pattern, &fd);
-    if (h == INVALID_HANDLE_VALUE) return dir;
     int moved = 0, kept = 0;
-    do {
-        if (!strcmp(fd.cFileName, ".") || !strcmp(fd.cFileName, "..")) continue;
-        char from[MAX_PATH], to[MAX_PATH];
-        snprintf(from, sizeof from, "%s" SEP_S "%s", beside, fd.cFileName);
-        snprintf(to, sizeof to, "%s" SEP_S "%s", dir, fd.cFileName);
-        if (GetFileAttributesA(to) != INVALID_FILE_ATTRIBUTES) kept++;
-        else if (MoveFileExA(from, to, 0)) moved++;
-        else if (copy_tree(from, to)) delete_tree(from), moved++;
-        else delete_tree(to), kept++;
-    } while (FindNextFileA(h, &fd));
-    FindClose(h);
+    char real[MAX_PATH];
+    move_old = realpath(beside, real), move_new = dir;
+    /* (looked at first, then moved: with an entry the new place has already, the old place is kept, and it keeps them all.
+       The others used to go all the same, and the game then ran here without them) */
+    for (int move = 0; move < 2 && !kept; move++) {
+        WIN32_FIND_DATAA fd;
+        HANDLE h = FindFirstFileA(pattern, &fd);
+        if (h == INVALID_HANDLE_VALUE) return dir;
+        do {
+            if (!strcmp(fd.cFileName, ".") || !strcmp(fd.cFileName, "..")) continue;
+            char from[MAX_PATH], to[MAX_PATH];
+            snprintf(from, sizeof from, "%s" SEP_S "%s", beside, fd.cFileName);
+            snprintf(to, sizeof to, "%s" SEP_S "%s", dir, fd.cFileName);
+            if (!move) kept += GetFileAttributesA(to) != INVALID_FILE_ATTRIBUTES;
+            else if (!has_link(from) && MoveFileExA(from, to, 0)) moved++;
+            else if (copy_tree(from, to)) delete_tree(from), moved++;
+            else delete_tree(to), kept++;
+        } while (FindNextFileA(h, &fd));
+        FindClose(h);
+    }
     if (kept) {
         hos_log("saves: %d of %s's entries could not go to %s: the saves stay in %s", kept, beside, dir, beside);
         return beside;
@@ -404,7 +454,7 @@ static int env_line_allowed(const char *name, const char *value) {
        the file select) */
     static const char *const by_name[] = {
         "HOS_AUDIO_DUMP", "HOS_AUDIO_WB_DUMP", "HOS_SHADER_DUMP", "HOS_FS_OVERLAY", "HOS_MODS", "HOS_INPUT_LIVE",
-        "HOS_INPUT_SCRIPT", "HOS_SAMPLE_ALL", "HOS_WATCH", "HOOKSHOT_BUILDER_HOME", "RX_VK_SHOTS", "RX_VK_SHOT_GO",
+        "HOS_INPUT_SCRIPT", "HOS_SAMPLE_ALL", "HOS_CHAIN", "HOS_WATCH", "HOOKSHOT_BUILDER_HOME", "RX_VK_SHOTS", "RX_VK_SHOT_GO",
         "RX_VK_FRAMELOG", "RX_VK_HANG_DUMP", "RX_VK_DUMP", "RX_VK_DUMP_SPV", "RX_VK_DUMP_MESH_SPV", "RX_VK_DUMP_STAGES",
         "RX_VK_DUMP_FAILED", "RX_VK_IR", "RX_VK_MENU_SCRIPT", "RX_DUMP_WGSL", "RX_DUMP_SLOW_WGSL", "RX_DUMP_TICS",
         "RX_WGSL_OVERRIDE"};
@@ -603,6 +653,8 @@ static const unsigned char oot_item_kinds[] = {OOT_CHEAT_ITEMS(OOT_NO_SECTION, O
 
 static int oot_item_count(Ctx *c, const char *name);
 static int oot_gamedata_bool(Ctx *c, uint32_t hash, int *value);
+static int oot_gamedata_set_bool(Ctx *c, uint32_t hash, int value);
+static int oot_gamedata_string(Ctx *c, uint32_t hash, char *buf, size_t size);
 
 static void oot_inventory_refresh(Ctx *c, int64_t now) {
     void rx_option_set(int id, int value);
@@ -619,6 +671,17 @@ static void oot_inventory_refresh(Ctx *c, int64_t now) {
     {   /* Link's age for the Debug tab's Switch age row: 0 child, 1 adult, -1 no save loaded (Sequence_IsChildhood) */
         int child = 1;
         rx_option_set(OOT_CHEAT_AGE_ID, loaded && oot_gamedata_bool(c, 0xcea220d3u, &child) ? (child ? 0 : 1) : -1);
+    }
+    if (loaded) {   /* the map Link is in and his age, logged when either changes: where a log's problem happened, the "Where in
+                       the game" of the Insert menu's Bug report (gpu/vk/vk_bug_report.cpp reads the last of these lines) */
+        static char logged[100];
+        char map[80], line[100];
+        int child = 1;
+        if (oot_gamedata_string(c, 0x1d6189dau, map, sizeof map) && map[0]) {   /* Sequence_CurrentBanc */
+            snprintf(line, sizeof line, "%s (%s)", map,
+                     oot_gamedata_bool(c, 0xcea220d3u, &child) ? (child ? "child" : "adult") : "age not known");
+            if (strcmp(line, logged)) hos_log("map: %s", line), snprintf(logged, sizeof logged, "%s", line);
+        }
     }
     if (!probed && oot_pouch_count(c, "Item_DekuSeed") >= 0) {
         probed = 1;   /* (one line naming every count, both spellings: which names the pouch knows) */
@@ -948,6 +1011,24 @@ static int oot_teleport(Ctx *c, uint64_t actor, unsigned index) {
         release_link(c);
     }
     *c = saved;
+    /* (issues 2217, 2588) A map-hiding area can leave this saved flag set when a debug teleport skips its exit.
+       Only clear it once the event manager takes the request; the destination may hide its own minimap.
+       Use the game's Bool setter (mgr, value, hash): it queues the change for the live value AND the save's copy.
+       Writing only the live byte restores the HUD until the next load, but saves keep the old hidden value. */
+    int hidden = 0;
+    if (ok && result && oot_gamedata_bool(c, 0x9a4dd779u, &hidden) && hidden) {
+        A64Fn set_bool = a64_lookup(0x806a2b20ULL);
+        const uint64_t mgr = oot_singleton(c, OOT_GAMEDATA_SLOT);
+        if (set_bool && mgr) {
+            c->x[0] = mgr, c->x[1] = 0, c->x[2] = 0x9a4dd779u;   /* MapIconDeactivateByAreaActor */
+            set_bool(c);
+            *c = saved;
+            hos_log("cheats: teleport: the area left had hidden the minimap (MapIconDeactivateByAreaActor): restore queued");
+        } else {   /* (another game build: say so, a report's log then shows why the minimap stayed away) */
+            hos_log("cheats: teleport: the area left had hidden the minimap (MapIconDeactivateByAreaActor): %s not found, left hidden",
+                    set_bool ? "the game data manager" : "the game's Bool setter");
+        }
+    }
     teleport.requested_at = now;
     teleport.check_at = now + 1500000000LL;
     teleport.destination = index;
@@ -1705,15 +1786,15 @@ static int game_main(int argc, char **argv) {
     }
     hos_mem_init(hos_image_end);
     {   /* (hookshot) Widescreen and ultrawide (nx2/oot_wide.py): HOS_ASPECT=<ratio> (2.3889 for 3440x1440), else the Insert menu's
-           Ultrawide (off unless it says 1) takes the main monitor's shape. The game's picture takes that shape at its own height (the
+           Aspect ratio (on unless it says 0) takes the main monitor's shape. The game's picture takes that shape at its own height (the
            world wider at the sides on an ultrawide screen, narrower on a 16:10 or 4:3 one), its 16:9 cameras the picture's ratio.
-           A custom output wider than 32:9 takes precedence over both HOS_ASPECT and Ultrawide, matching the menu's picture. Wider
+           A custom output wider than 32:9 takes precedence over both HOS_ASPECT and the Aspect ratio, matching the menu's picture. Wider
            than 16:9 the HUD, menus and movies keep the middle 16:9; narrower they fill the picture's width. Until now the one 16:9
            constant in the game's data was changed and the 16:9 picture stretched to the window. */
         const char *e = getenv("HOS_ASPECT");
         float want = e ? (float)atof(e) : 0.0f;
         if (!e) {
-            int on = 0;
+            int saved = -1, version = 0;   /* (the Aspect ratio's ultrawide= and options_version=, -1 / 0 without them) */
             char path[MAX_PATH];
             const DWORD len = hos_game_path_a(path, MAX_PATH);
             char *slash = len ? strrchr(path, SEP) : NULL;
@@ -1723,12 +1804,15 @@ static int game_main(int argc, char **argv) {
                 if (o) {
                     char line[80];
                     while (fgets(line, sizeof line, o)) {
-                        if (!strncmp(line, "ultrawide=", 10)) on = atoi(line + 10) != 0;
+                        if (!strncmp(line, "ultrawide=", 10)) saved = atoi(line + 10) != 0;
+                        if (!strncmp(line, "options_version=", 16)) version = atoi(line + 16);
                     }
                     fclose(o);
                 }
             }
             const int sw = GetSystemMetrics(SM_CXSCREEN), sh = GetSystemMetrics(SM_CYSCREEN);
+            /* (no line: the monitor's shape; an older file's 16:9 on a screen narrower than 16:9 too: hos_aspect_on) */
+            const int on = hos_aspect_on(saved, version, sw, sh);
             if (on && sh > 0) want = (float)sw / (float)sh;
         }
         extern volatile uint64_t hos_wide_out, hos_wide_scene;
@@ -1743,8 +1827,9 @@ static int game_main(int argc, char **argv) {
            at the 1440 output: picture 1920 x 1440, scene 1440 x 1080, HUD 100%) */
         if (want > game * 1.01 || (want > 1.0f && want < game * 0.99)) {
             const double r = hos_wide_clamp(want);
-            /* (the height kept, the width at the screen's ratio, at most 3840 x 2160's pixels with the shape kept:
-               host/hos_wide_size.h, which the Insert menu's Output and Render resolution rows share; issue 1031) */
+            /* (the height kept, the width at the screen's ratio, at most hos_wide_max_px() pixels (5120 x 2160's, a 21:9 screen's
+               native at the 4K output) with the shape kept: host/hos_wide_size.h, which the Insert menu's Output and Render
+               resolution rows share; issue 1031) */
             unsigned ow, oh;
             hos_wide_size(output_h, r, hos_wide_max_px(), &ow, &oh);
             const unsigned sh = oh * 3 / 4, sw = (unsigned)(ow * 0.75 / 8 + 0.5) * 8;   /* (the scene, 3/4 of the picture as shipped) */
@@ -1772,6 +1857,8 @@ static int game_main(int argc, char **argv) {
     uint64_t sp = c->x[31];
     void hos_prof_start(void);
     hos_prof_start();   /* HOS_PROFILE=<seconds> */
+    void hos_chain_start(void);
+    hos_chain_start();  /* HOS_CHAIN=<path> */
 #ifdef _WIN32
     timeBeginPeriod(1);   /* 1 ms timer resolution: the 60 Hz vsync and the game's frame pacing sleep in short steps */
     no_power_throttling();

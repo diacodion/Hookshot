@@ -17,17 +17,29 @@ def host_march():
             if pf(40):
                 return "x86-64-v3"
             return "x86-64-v2" if pf(38) else "x86-64"
-        try:
-            cpuinfo = open("/proc/cpuinfo").read()
-        except OSError:
-            # (macos) no /proc. Apple silicon: a -mcpu name, not an x86-64 level (build.py's ARM64). apple-m1 is what
-            # every Apple silicon Mac runs (ARMv8.5: LSE, the dot product, FP16); an Intel Mac has had AVX2 since 2013
-            if sys.platform == "darwin" and platform.machine() == "arm64":
-                return "apple-m1"
-            raise
-        flags = cpuinfo.split("flags", 1)[1].split(chr(10), 1)[0].split()
+        # (macos) no /proc. Apple silicon: a -mcpu name, not an x86-64 level (build.py's ARM64). apple-m1 is what every
+        # Apple silicon Mac runs (ARMv8.5: LSE, the dot product, FP16); an Intel Mac has had AVX2 since 2013
+        if sys.platform == "darwin" and platform.machine() == "arm64":
+            return "apple-m1"
+        with open("/proc/cpuinfo") as f:
+            flags = f.read().split("flags", 1)[1].split(chr(10), 1)[0].split()
         if all(f in flags for f in want):
             return "x86-64-v3"
         return "x86-64-v2" if all(f in flags for f in ("sse4_2", "popcnt", "ssse3")) else "x86-64"
     except Exception:
         return "x86-64-v3"
+
+
+def host_mtune():
+    """Tuning target for the host CPU (e.g. znver2 for Steam Deck APU 0405/0932)"""
+    if os.environ.get("RX_STEAMDECK") == "1":
+        return "znver2"
+    if os.name != "nt":
+        try:
+            with open("/proc/cpuinfo") as f:
+                info = f.read()
+            if "Custom APU 0405" in info or "Custom APU 0932" in info:
+                return "znver2"
+        except Exception:
+            pass
+    return ""

@@ -32,6 +32,7 @@ import hashlib
 import json
 import math
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -51,6 +52,7 @@ import win_manifest
 NX2_RT = os.path.join(kit.HERE, "rt")
 HOST = os.path.join(kit.HERE, "..", "host")
 OPUS = os.path.join(kit.HERE, "..", "third_party", "opus")
+ZSTD = os.path.normpath(os.path.join(kit.HERE, "..", "third_party", "zstd", "lib"))
 OBJ_CACHE = os.path.join(kit.WORK, "objcache")
 # (hookshot) work/hot_order.txt: the functions that run, hottest first (sampled), packed together by the linker; RX_NO_ORDER=1: off
 PGO = os.environ.get("RX_PGO", "")
@@ -146,6 +148,14 @@ def no_throttle(handle=None):
     except (OSError, ValueError, TypeError):
         pass
 
+def linker(*opts):
+    """Linker options, each as an argument of its own after -Xlinker. The ones that name a file (the map, the link order) are in
+    the build files folder, which the player chooses (make_game.py --work), and the compiler splits -Wl, (and so
+    toolchain.link_opt) at every comma: a comma in that folder's path cut the map's path in two and stopped the link. On
+    Windows link.exe-style options ("/map:x"), through lld's MinGW driver (-Xlink=) for llvm-mingw, as toolchain.link_opt"""
+    return [arg for opt in opts for arg in ("-Xlinker", "-Xlink=" + opt if toolchain.mingw() else opt)]
+
+
 def HOT_ORDER():
     p = os.path.join(kit.WORK, "hot_order.txt")
     if not os.path.exists(p) or os.environ.get("RX_NO_ORDER"):
@@ -154,10 +164,10 @@ def HOT_ORDER():
         q = os.path.join(kit.WORK, "hot_order_macho.txt")
         with open(p) as f, open(q, "w") as g:
             g.write("".join("_" + l.strip() + "\n" for l in f if l.strip() and not l.startswith("#")))
-        return ["-Wl,-order_file," + q]
+        return linker("-order_file", q)
     if LINUX:
-        return ["-Wl,--symbol-ordering-file=" + p, "-Wl,--no-warn-symbol-ordering"]
-    return [toolchain.link_opt("/order:@" + p.replace("\\", "/")), toolchain.link_opt("/ignore:4037")]
+        return linker("--symbol-ordering-file=" + p, "--no-warn-symbol-ordering")
+    return linker("/order:@" + p.replace("\\", "/"), "/ignore:4037")
 
 
 HOST_LIBS = ["-lpthread", "-ldl", "-lm"] if LINUX else \
@@ -251,6 +261,17 @@ def vk_sources():
     vc = os.path.join(GPU, "third_party", "suyu", "video_core")
     out += [os.path.join(vc, "textures", f) for f in ("decoders.cpp", "astc.cpp")]   # (the WebGPU back end's unswizzle)
     return sorted(out)
+
+
+def zstd_jobs(cc, flags, obj_dir, prefix):
+    """zstd's decoder (third_party/zstd, plain C) as compile jobs, objects <prefix><name>.o: in the Vulkan back end (the game's
+    fonts, vk_imgui.cpp) and in the runtime (a mod's resource size table, host/prompts.c)"""
+    deps = b"".join(open(os.path.join(d, f), "rb").read() for d in (ZSTD, os.path.join(ZSTD, "common"), os.path.join(ZSTD, "decompress"))
+                    for f in sorted(os.listdir(d)) if f.endswith(".h"))
+    return [(cc, os.path.join(ZSTD, *f.split("/")), os.path.join(obj_dir, prefix + os.path.basename(f)[:-2] + ".o"), flags, deps)
+            for f in ("common/debug.c", "common/entropy_common.c", "common/error_private.c", "common/fse_decompress.c",
+                      "common/xxhash.c", "common/zstd_common.c", "decompress/huf_decompress.c", "decompress/zstd_ddict.c",
+                      "decompress/zstd_decompress.c", "decompress/zstd_decompress_block.c")]
 
 
 def cpm_dirs():
@@ -549,6 +570,17 @@ FFMPEG = next((os.path.join(d, n) for d in [os.path.join(r, "ffmpeg") for r in c
 FFMPEG_LIBS = ("avcodec", "swscale", "swresample", "avutil")
 
 
+def dav1d_windows():
+    """(windows, llvm-mingw) dav1d in the CPM cache (scripts/windows/dav1d.sh): the AV1 movies' decoder (host/dav1d_av1.c,
+    issue 2316), as the CPM cache's FFmpeg has none. None without it, or on the Visual Studio route (a MinGW library):
+    Media Foundation decodes them then, as before"""
+    d = cpm_package("dav1d")
+    if LINUX or not toolchain.mingw() or not d:
+        return None
+    return d if os.path.exists(os.path.join(d, "lib", "libdav1d.a")) and \
+        os.path.exists(os.path.join(d, "include", "dav1d", "dav1d.h")) else None
+
+
 def ffmpeg_linux():
     """(linux) FFmpeg's compile and link flags: HOOKSHOT_FFMPEG=<prefix> with static libraries (the AppImage's, with
     dav1d for OoT's AV1 movies), else the system's through pkg-config; None without either"""
@@ -598,24 +630,28 @@ WRITE_TRACK = [] if os.environ.get("RX_SOFT_WRITE_WATCH") == "0" else ["-DA64_WR
 
 # (hookshot) the host CPU the lifted game and the runtime are built for: x86-64-v3 (AVX2, FMA, BMI1/2, LZCNT,
 # MOVBE; Haswell and Zen 1 on). With FMA the FPX1 fast paths cover double-precision FMA (RECOMP_FPX_FMA64; it took
-# the exact software body on baseline x86-64) and the bit counts are single instructions. No contraction, so a C
-# expression is rounded as written (the exact bodies and FPX1's proofs assume it). RX_MARCH=x86-64: the old baseline
+# the exact software body on baseline x86-64), single-precision FMA, FRECPS and FRSQRTS are one fused instruction
+# (nx2/suyu_rt_fixes.py) and the bit counts are single instructions. No contraction, so a C expression is rounded as
+# written (the exact bodies and FPX1's proofs assume it). RX_MARCH=x86-64: the old baseline
 # (issue 363: a Xeon E5-2667 v2 (Ivy Bridge, no AVX2) built the game and then stopped at its first AVX2 instruction,
 # 0xc000001d. The game is built on the PC it runs on: a CPU without x86-64-v3's features gets x86-64-v2, or x86-64)
-from host_cpu import host_march   # (make_game.py asks it too: the AppImage's renderer)
+from host_cpu import host_march, host_mtune   # (make_game.py asks it too: the AppImage's renderer)
 
+# (macos: Apple silicon, an AArch64 host: the guest's own FPU (RECOMP_FPX_HOST 1 in arm64_to_c.h), LSE atomics and the
+# rest of what the CPU has; host_march() gives a -mcpu name there. No -mcx16: 16-byte compare-and-swap is CASP /
+# LDXP+STXP, which clang emits inline here)
+ARM64 = platform.machine().lower() in ("arm64", "aarch64")
 MARCH = os.environ.get("RX_MARCH") or host_march()
-ARM64 = not MARCH.startswith("x86-64")   # (macos: Apple silicon. host_march() gives a -mcpu name there)
-if ARM64:
-    # (an AArch64 host: the guest's own FPU (RECOMP_FPX_HOST 1 in arm64_to_c.h), LSE atomics and the rest of what the
-    # CPU has. No -mcx16: 16-byte compare-and-swap is CASP / LDXP+STXP, which clang emits inline here)
-    CPU = ["-mcpu=" + MARCH, "-ffp-contract=off"]
-    CX16 = []
-else:
+if os.environ.get("RX_MARCH"):
     if MARCH != "x86-64-v3":
-        print("build: this CPU has no AVX2: the game is built for %s (a little slower)" % MARCH, flush=True)
-    CPU = ["-march=" + MARCH, "-ffp-contract=off"]
-    CX16 = ["-mcx16"]
+        print("build: the game is built for %s (RX_MARCH)" % MARCH, flush=True)
+elif MARCH.startswith("x86-64") and MARCH != "x86-64-v3":
+    print("build: this CPU has no AVX2: the game is built for %s (a little slower)" % MARCH, flush=True)
+CPU = ["-mcpu=" + MARCH, "-ffp-contract=off"] if ARM64 else ["-march=" + MARCH, "-ffp-contract=off"]
+CX16 = [] if ARM64 else ["-mcx16"]
+MTUNE = "" if ARM64 else os.environ.get("RX_MTUNE") or host_mtune()
+if MTUNE:
+    CPU += ["-mtune=" + MTUNE]
 OPT = "O1"   # (the lifted code's level; code_hot.c's is RX_HOT_OPT)
 
 
@@ -656,8 +692,76 @@ def flag_text(fl):
 
 
 def object_key(src, fl, deps):
-    """What an object depends on: its source, the flags (flag_text), and the headers."""
+    """What an object depends on: its source, the flags (flag_text), and the headers. (A lifted file the last build's clean-up let
+    go, KEPT, is named by the key that build wrote down: main puts it in PLANNED once it checked its flags and headers)"""
     return hashlib.sha1(open(src, "rb").read() + flag_text(fl).encode() + deps, usedforsecurity=False).hexdigest()
+
+
+# (a player's update: make_game.py deletes the lifted C (1.5 GB) once the game folder is ready, but keeps the compiled objects and
+# this list, gen/lifted_objects.txt: each lifted file's name, its object key, its size, and what of the key is not the source
+# (flags and headers, kept_part). The next build with the same lift key (make_game.py kept_before) skips the lift and passes
+# --kept-lift: the lifted files are then these names, linked from the object cache by these keys, the same objects as
+# before. When a key's object is gone or the flags or headers changed, the build stops with KEPT_STALE before compiling anything,
+# and make_game.py translates the game again)
+# The list's first line names the lift it was written for (the lift key in gen/.lift_key) and KEPT_SCHEME: a list another lift
+# left, or one of another format, is not used. KEPT_STALE is not 3, abort()'s exit status on Windows.
+KEPT_LIST = "lifted_objects.txt"
+KEPT_SCHEME = 1
+KEPT_STALE = 75
+KEPT = {}   # (source path -> (object key, size, kept_part)) for the lifted files that are not on disk
+
+
+def kept_part(fl, deps):
+    return hashlib.sha1(flag_text(fl).encode() + deps, usedforsecurity=False).hexdigest()
+
+
+def src_size(src):
+    """A source's size; a kept lifted file's as it was"""
+    if src in KEPT and not os.path.exists(src):
+        return KEPT[src][1]
+    return os.path.getsize(src)
+
+
+def lift_key_of(gen):
+    """The key of the lift in gen (the first line of make_game.py's .lift_key), or "-" without one"""
+    try:
+        with open(os.path.join(gen, ".lift_key"), encoding="utf-8") as f:
+            return (f.read().split() or ["-"])[0]
+    except OSError:
+        return "-"
+
+
+def kept_header(key):
+    return "# lift %s %d\n" % (key, KEPT_SCHEME)
+
+
+def read_kept(path):
+    """The list's files, or {} when its first line is not the header of this lift (lift_key_of) and scheme"""
+    kept = {}
+    gen = os.path.dirname(path)
+    with open(path, encoding="utf-8") as f:
+        if f.readline() != kept_header(lift_key_of(gen)):
+            return kept
+        for line in f:
+            parts = line.split()
+            if len(parts) == 4 and parts[2].isdigit():
+                kept[os.path.join(gen, parts[0])] = (parts[1], int(parts[2]), parts[3])
+    return kept
+
+
+def write_kept(gen, jobs):
+    """gen/lifted_objects.txt for the lifted files of a build that compiled every file (see KEPT_LIST)"""
+    lines = []
+    for cc, src, obj, fl, deps in jobs:
+        name = os.path.basename(src)
+        if os.path.dirname(src) == gen and name.startswith("code_") and name.endswith(".c"):
+            lines.append("%s %s %d %s\n" % (name, PLANNED.get((src, obj)) or object_key(src, fl, deps), src_size(src),
+                                            kept_part(fl, deps)))
+    tmp = os.path.join(gen, KEPT_LIST + ".new")
+    with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+        f.write(kept_header(lift_key_of(gen)))
+        f.writelines(sorted(lines))
+    os.replace(tmp, os.path.join(gen, KEPT_LIST))
 
 
 def times_from(path):
@@ -685,7 +789,7 @@ def per_file_seconds(jobs, history):
     """One expected duration for each job, in order: the seconds this PC measured for that module before, or, for a
     module it never compiled (a new release adds or renames files), the rate those measurements ran at. On a PC with
     no measurements at all, the first build uses the rates a full build on the development PC showed."""
-    sizes = [max(0.0, os.path.getsize(src) / (1 << 20)) for _, src, *_ in jobs]
+    sizes = [max(0.0, src_size(src) / (1 << 20)) for _, src, *_ in jobs]
     measured = [(history[os.path.basename(src)], mb) for (_, src, *_), mb in zip(jobs, sizes)
                 if os.path.basename(src) in history and mb > 0]
     rate = sum(secs for secs, _ in measured) / sum(mb for _, mb in measured) if measured else None
@@ -707,7 +811,7 @@ def plan_jobs(jobs):
     The keys go to compile_one, which then does not hash every source a second time."""
     work, keys = [], {}
     for cc, src, obj, fl, deps in jobs:
-        key = object_key(src, fl, deps)
+        key = PLANNED.get((src, obj)) or object_key(src, fl, deps)
         keys[(src, obj)] = key
         stamp = obj + ".sha1"
         if os.path.exists(obj) and os.path.exists(stamp) and open(stamp).read() == key:
@@ -761,12 +865,13 @@ def chunk_costs(gen):
 def compile_cost(src, costs):
     """A file's compile time, roughly (see HOT_COST)"""
     name = os.path.basename(src)
-    return costs.get(name, os.path.getsize(src)) * (HOT_COST if name.startswith("code_hot") else 1)
+    return costs.get(name, src_size(src)) * (HOT_COST if name.startswith("code_hot") else 1)
 
 
 def compile_one(job):
     cc, src, obj, fl, deps = job
     key = PLANNED.get((src, obj)) or object_key(src, fl, deps)
+    PLANNED[(src, obj)] = key   # (for write_kept)
     stamp = obj + ".sha1"
     if os.path.exists(obj) and os.path.exists(stamp) and open(stamp).read() == key:
         return src, 0.0, None
@@ -810,6 +915,8 @@ def main():
     # (CI: a player's build started from the tree the AppImage carries, with no game. Everything up to the compile, without the
     # lift's files; every other file the compile would read must be there, and nothing is compiled. scripts/linux/check_player_build.sh)
     p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--kept-lift", metavar="LIST", help="(make_game.py) the lifted C was let go after the last build: its objects "
+                   "by this list (KEPT_LIST); exit status KEPT_STALE when it no longer fits")
     a = p.parse_args()
     sa = os.path.join(kit.WORK, "sa")
     gen = os.path.join(sa if a.standalone else kit.WORK, "gen")
@@ -836,6 +943,16 @@ def main():
                    (["-DA64_POLL_CTX"] if a.dll else []), deps)   # (as fl below: the flags its objects were built with)
     migrate_stamps(gen, obj_dir, fl, deps)
     chunks = sorted(f for f in os.listdir(gen) if f.startswith("code_") and f.endswith(".c"))
+    if a.kept_lift and a.standalone and not chunks:   # (the lifted C of the last build, let go: KEPT_LIST)
+        try:
+            KEPT.update(read_kept(a.kept_lift))
+        except (OSError, UnicodeDecodeError) as e:
+            print("the list of the kept translation could not be read (%s): translating the game again" % e, flush=True)
+            return KEPT_STALE
+        if not KEPT:
+            print("the list of the kept translation is empty or from another translation: translating the game again", flush=True)
+            return KEPT_STALE
+        chunks = sorted(os.path.basename(s) for s in KEPT)
     srcs = [os.path.join(gen, c) for c in chunks]
     host_srcs = []
     srcs += [os.path.join(gen, f) for f in ("a64_table.c", "a64_hooks.c", "a64_suyu.c")] + \
@@ -846,7 +963,8 @@ def main():
         # its own stand-ins, host/posix/linux_stubs.c)
         have_wgpu = os.path.isfile(os.path.join(WGPU, "include", "webgpu", "webgpu.h"))
         host_srcs = sorted(os.path.join(HOST, f) for f in os.listdir(HOST) if f.endswith(".c") and (f != "pgo_rt.c" or PGO == "gen")
-                           and not (LINUX and f in ("display.c", "mf_av1.c", "rx_nowgpu.c")) and (f != "rx_nowgpu.c" or not have_wgpu))
+                           and not (LINUX and f in ("display.c", "mf_av1.c", "rx_nowgpu.c")) and (f != "rx_nowgpu.c" or not have_wgpu)
+                           and (f != "dav1d_av1.c" or dav1d_windows()))
         if LINUX:   # (the window on SDL2, the Win32 calls on POSIX, no Media Foundation and no WebGPU renderer)
             # (macos: prof_darwin.c has the thread profilers on Mach; prof.c's are /proc's and perf_event_open's)
             host_srcs += [os.path.join(POSIX, f) for f in ("win32_posix.c", "display_sdl.c", "linux_stubs.c",
@@ -875,13 +993,22 @@ def main():
     jobs = [(cc, s, os.path.join(obj_dir, os.path.basename(s)[:-2] + ".o"),
              hot_fl if os.path.basename(s).startswith("code_hot") else fl,
              shim_deps if os.path.dirname(s) == NX2_RT else deps) for s in srcs]
+    if KEPT:   # (the kept translation is used only as it was: the same flags and headers, and every object still cached)
+        stale = [os.path.basename(j[1]) for j in jobs if j[1] in KEPT and not os.path.exists(j[1]) and
+                 (kept_part(j[3], j[4]) != KEPT[j[1]][2] or not os.path.exists(os.path.join(OBJ_CACHE, KEPT[j[1]][0] + ".o")))]
+        if stale:
+            print("the translation kept from the last build does not fit this one (%d of %d files: %s): translating the game again"
+                  % (len(stale), len(KEPT), ", ".join(stale[:4])), flush=True)
+            return KEPT_STALE
+        print("the translation kept from the last build: %d files, their objects cached" % len(KEPT), flush=True)
+        PLANNED.update({(j[1], j[2]): KEPT[j[1]][0] for j in jobs if j[1] in KEPT and not os.path.exists(j[1])})
     # (issue 624) what the game code's object keys are made of, as short fingerprints: two builds' logs side by side say which part
     # changed when an update compiled everything again (the headers, the flags, the profile, or the lifted code itself)
     fp = lambda b: hashlib.sha1(b, usedforsecurity=False).hexdigest()[:10]
     norm = lambda f: flag_text(f).encode()
     code = hashlib.sha1(usedforsecurity=False)
     for code_src in sorted(x for x in srcs if os.path.basename(x).startswith("code_")):
-        code.update(os.path.basename(code_src).encode() + open(code_src, "rb").read())
+        code.update(os.path.basename(code_src).encode() + (KEPT[code_src][0].encode() if code_src in KEPT else open(code_src, "rb").read()))
     print("object keys: game-code headers %s, flags %s, hot flags %s, lifted code %s (%d files)" % (
         fp(deps), fp(norm(fl)), fp(norm(hot_fl)), code.hexdigest()[:10],
         sum(1 for x in srcs if os.path.basename(x).startswith("code_"))), flush=True)
@@ -892,15 +1019,24 @@ def main():
                                 if f.endswith(".h"))
     if LINUX:
         host_deps += b"".join(open(os.path.join(POSIX, f), "rb").read() for f in sorted(os.listdir(POSIX)) if f.endswith(".h"))
-        host_deps += open(os.path.join(GPU, "vk", "vk_api.h"), "rb").read()
+    host_deps += open(os.path.join(GPU, "vk", "vk_api.h"), "rb").read()   # (the renderer ABI used by host/rx_backend.c)
     host_deps += open(os.path.join(GPU, "vk", "dlss_math.h"), "rb").read()   # (host/rx_backend.c's DLSS jitter)
     host_deps += open(os.path.join(GPU, "vk", "compat", "hookshot_env.h"), "rb").read()   # (env_on: the switches' one rule)
     host_deps += ffmpeg_version_key()
+    dav1d = dav1d_windows() if host_srcs else None
+    dav1d_fl = ["-DHOOKSHOT_DAV1D", "-I" + os.path.join(dav1d, "include")] if dav1d else []
+    if dav1d:
+        host_deps += open(os.path.join(dav1d, "include", "dav1d", "version.h"), "rb").read()
+        print("AV1 movies: dav1d (%s)" % dav1d, flush=True)
+    zstd_api = b"".join(open(os.path.join(ZSTD, f), "rb").read() for f in sorted(os.listdir(ZSTD)) if f.endswith(".h"))   # (prompts.c's)
     jobs += [(cc, s, os.path.join(obj_dir, "host_" + os.path.basename(s)[:-2] + ".o"),
               host_fl + ["-I" + os.path.join(OPUS, "include")] +
               (["-I" + os.path.join(FFMPEG, "include")] if FFMPEG else []) +
               (FFMPEG_LX[0] if LINUX and FFMPEG_LX else []) +
-              ([stamp_def] if os.path.basename(s) == "hos_main.c" else []), host_deps) for s in host_srcs]
+              ([stamp_def] if os.path.basename(s) == "hos_main.c" else []) +
+              (["-I" + ZSTD] if os.path.basename(s) == "prompts.c" else []) +
+              (dav1d_fl if os.path.basename(s) in ("nn_video.c", "dav1d_av1.c") else []),
+              host_deps + (zstd_api if os.path.basename(s) == "prompts.c" else b"")) for s in host_srcs]
     # libopus 1.5.2 (third_party/opus, from TOTKPort): nn::codec's hardware Opus decoder (host/nn_codec.c)
     # (hookshot: built for the same CPU target as the rest (CPU), so its float code can be vectorized where the target has
     # AVX2: the vendored copy has no x86 intrinsics files of its own)
@@ -910,6 +1046,10 @@ def main():
         for rel in open(os.path.join(OPUS, "sources.txt")).read().split():
             jobs.append((cc, os.path.join(OPUS, rel), os.path.join(obj_dir, "opus_" + rel.replace("/", "_")[:-2] + ".o"),
                          oflags, b"opus-1.5.2"))
+    # zstd's decoder (as in the Vulkan back end): host/prompts.c reads a mod's resource size table to merge the prompts' into it
+    if host_srcs:
+        jobs += zstd_jobs(cc, target() + CPU + ["-O2", "-g0", "-DNDEBUG", "-Wno-everything", "-DZSTD_DISABLE_ASM",
+                                                "-DZSTD_LEGACY_SUPPORT=0", "-DZSTD_MULTITHREAD=0"], obj_dir, "zstd_")
     # the renderer (C++20, NDEBUG: no asserts in it or suyu), when a wgpu-native release is there
     wgpu = a.standalone and not LINUX and os.path.isfile(os.path.join(WGPU, "include", "webgpu", "webgpu.h"))
     if a.standalone and not wgpu and not LINUX:
@@ -999,7 +1139,7 @@ def main():
         # (hookshot) Dear ImGui (third_party/imgui) draws the overlays over the window's image (gpu/vk/vk_imgui.cpp; vk_menu.cpp
         # draws with it). Its objects see only its own headers; its headers are a dependency of the two files that include them
         imgui = os.path.normpath(os.path.join(kit.HERE, "..", "third_party", "imgui"))
-        zstd = os.path.normpath(os.path.join(kit.HERE, "..", "third_party", "zstd", "lib"))   # (the game's font files: vk_imgui.cpp)
+        zstd = ZSTD   # (the game's font files: vk_imgui.cpp)
         imgui_flags = ["-I" + imgui, "-I" + zstd, "-DIMGUI_IMPL_VULKAN_NO_PROTOTYPES", "-DIMGUI_DISABLE_DEFAULT_SHELL_FUNCTIONS",
                        "-DIMGUI_DISABLE_WIN32_FUNCTIONS", "-DIMGUI_DISABLE_DEMO_WINDOWS", "-DIMGUI_DISABLE_DEBUG_TOOLS"]
         imgui_deps = b"".join(open(os.path.join(d, f), "rb").read() for d in (imgui, os.path.join(imgui, "backends"), zstd)
@@ -1011,13 +1151,7 @@ def main():
         # (zstd's decoder, third_party/zstd, plain C)
         zflags = target() + CPU + (["-fPIC"] if LINUX else []) + ["-O2", "-g0", "-DNDEBUG", "-Wno-everything", "-fvisibility=hidden",
                                                                  "-DZSTD_DISABLE_ASM", "-DZSTD_LEGACY_SUPPORT=0", "-DZSTD_MULTITHREAD=0"]
-        zdeps = b"".join(open(os.path.join(d, f), "rb").read() for d in (zstd, os.path.join(zstd, "common"), os.path.join(zstd, "decompress"))
-                         for f in sorted(os.listdir(d)) if f.endswith(".h"))
-        for f in ("common/debug.c", "common/entropy_common.c", "common/error_private.c", "common/fse_decompress.c", "common/xxhash.c",
-                  "common/zstd_common.c", "decompress/huf_decompress.c", "decompress/zstd_ddict.c", "decompress/zstd_decompress.c",
-                  "decompress/zstd_decompress_block.c"):
-            vk_jobs.append((cc, os.path.join(zstd, *f.split("/")), os.path.join(obj_dir, "vk_zstd_" + os.path.basename(f)[:-2] + ".o"),
-                            zflags, zdeps))
+        vk_jobs += zstd_jobs(cc, zflags, obj_dir, "vk_zstd_")
         # (the bundled fonts, compiled in: nx2/ui_fonts.py's file of the build's own)
         vk_jobs.append((cxx, fonts_cpp, os.path.join(obj_dir, "vk_ui_fonts.o"), target() + (["-fPIC"] if LINUX else []) + ["-O0", "-g0", "-w"],
                         b""))
@@ -1079,7 +1213,7 @@ def main():
         submitted = {ex.submit(compile_one, job): job for job in jobs}
         for future in concurrent.futures.as_completed(submitted):
             src, secs, err = future.result()
-            size = os.path.getsize(src) >> 20
+            size = src_size(src) >> 20
             if err:
                 failed.append(submitted[future])
                 print("not compiled yet: %s (%d MB, %.0fs), tried again alone at the end:\n%s"
@@ -1097,7 +1231,7 @@ def main():
     still = 0
     for job in failed:
         src, secs, err = compile_one(job)
-        size = os.path.getsize(src) >> 20
+        size = src_size(src) >> 20
         if err:
             still += 1
             print("FAILED %s (%d MB, %.0fs, alone too):\n%s" % (os.path.basename(src), size, secs, err), flush=True)
@@ -1111,6 +1245,8 @@ def main():
     print("compiled in %.0fs, %d failed" % (time.time() - t0, still), flush=True)
     if still:
         return 1
+    if a.standalone and not vk_only:
+        write_kept(gen, jobs)
     vk_objs = {j[2] for j in vk_jobs}
     objs = [j[2] for j in jobs if j[2] not in vk_objs]
     rsp = os.path.join(out, "objs.rsp")
@@ -1121,9 +1257,9 @@ def main():
         # (--export-dynamic-symbol: the window's state, which the Vulkan back end's own Win32 calls read by name)
         # (macos: Apple's ld. Its -dead_strip is --gc-sections; -export_dynamic keeps the executable's global symbols in its
         # export table, where the Vulkan back end's dylib finds the window's state and the host's weak functions by name)
-        link_fl = (["-o", exe, "-Wl,-map," + exe + ".map", "-Wl,-dead_strip", "-Wl,-export_dynamic"] if MAC else
-                   ["-fuse-ld=lld", "-o", exe, "-Wl,-Map=" + exe + ".map", "-Wl,--gc-sections",
-                    "-Wl,--export-dynamic-symbol=hos_posix_*"])
+        link_fl = (["-o", exe] + linker("-map", exe + ".map") + ["-Wl,-dead_strip", "-Wl,-export_dynamic"] if MAC else
+                   ["-fuse-ld=lld", "-o", exe] + linker("-Map=" + exe + ".map") +
+                   ["-Wl,--gc-sections", "-Wl,--export-dynamic-symbol=hos_posix_*"])
         r = subprocess.run([cc] + target() + link_fl + ["@" + rsp] + HOT_ORDER() +
                            (["-fprofile-instr-generate"] if PGO == "gen" else []) +
                            (FFMPEG_LX[1] if FFMPEG_LX else []) + HOST_LIBS,
@@ -1142,7 +1278,7 @@ def main():
         exe = os.path.join(out, "hookshot.exe")   # (+ hookshot.map: crash offsets -> f_<guest address>)
         t = time.time()
         r = subprocess.run([cc] + toolchain.native_target() + toolchain.native_link() +
-                           ["-o", exe, toolchain.link_opt("/map:" + exe[:-4] + ".map"), toolchain.link_opt("/stack:8388608"), "@" + rsp] + HOT_ORDER() + HOST_LIBS +
+                           ["-o", exe] + linker("/map:" + exe[:-4] + ".map") + [toolchain.link_opt("/stack:8388608"), "@" + rsp] + HOT_ORDER() + HOST_LIBS +
                            ([toolchain.link_opt("/nodefaultlib:clang_rt.profile.lib")] if PGO == "gen" else []) +
                            ([os.path.join(kit.WORK, "hookshot.res")] if os.path.exists(os.path.join(kit.WORK, "hookshot.res")) else []) +   # (nx2/make_icon.py)
                            [win_manifest.write(os.path.join(out, "hookshot_manifest.res"))] +   # (UTF-8 paths: nx2/win_manifest.py)
@@ -1150,6 +1286,7 @@ def main():
                            ([os.path.join(WGPU, "lib", "wgpu_native.dll.lib")] if wgpu else []) +
                            ([os.path.join(FFMPEG, "lib", l + ".lib") for l in ("avcodec", "swscale", "swresample", "avutil")] +
                             ["-lbcrypt", "-lmfplat", "-lmfuuid", "-lstrmiids", "-lole32"] if FFMPEG else []) +
+                           ([os.path.join(dav1d_windows(), "lib", "libdav1d.a")] if dav1d_windows() else []) +
                            (["-lc++", "-lunwind"] if toolchain.mingw() else []),   # (llvm-mingw: the C++ parts' runtime, linked in; MSVC's comes by itself)
                            capture_output=True, text=True)
         undefined = sorted({l.strip() for l in (r.stdout + r.stderr).splitlines() if "undefined symbol" in l})
@@ -1191,17 +1328,15 @@ def main():
         open(vrsp, "w", encoding="utf-8").write("\n".join('"%s"' % j[2].replace("\\", "/") for j in vk_jobs))
         t = time.time()
         if MAC:   # (a Mach-O bundle-like dylib under the Linux name: what it takes from the host is looked up when it loads)
-            link = [toolchain.need(toolchain.find("clang++"))] + target() + [
-                "-dynamiclib", "-o", vdll, "-Wl,-map," + vdll + ".map", "-Wl,-dead_strip", "-Wl,-undefined,dynamic_lookup",
-                "@" + vrsp]
+            link = [toolchain.need(toolchain.find("clang++"))] + target() + ["-dynamiclib", "-o", vdll] + \
+                linker("-map", vdll + ".map") + ["-Wl,-dead_strip", "-Wl,-undefined,dynamic_lookup", "@" + vrsp]
         elif LINUX:   # (its C++ runtime inside: the game folder runs where the AppImage's sysroot is older than the system)
-            link = [toolchain.need(toolchain.find("clang++"))] + target() + [
-                "-fuse-ld=lld", "-shared", "-o", vdll, "-Wl,-Map=" + vdll + ".map", "-Wl,-Bsymbolic", "-Wl,--gc-sections",
-                "-static-libstdc++", "-static-libgcc", "@" + vrsp] + \
+            link = [toolchain.need(toolchain.find("clang++"))] + target() + ["-fuse-ld=lld", "-shared", "-o", vdll] + \
+                linker("-Map=" + vdll + ".map") + ["-Wl,-Bsymbolic", "-Wl,--gc-sections", "-static-libstdc++", "-static-libgcc", "@" + vrsp] + \
                 ([ngx_library(NGX_SDK, True)] if NGX_SDK else []) + ["-ldl", "-lpthread", "-lm"]
         else:
             link = [cc] + toolchain.native_target() + toolchain.native_link() + \
-                ["-shared", "-o", vdll, toolchain.link_opt("/map:" + vdll[:-4] + ".map"), "@" + vrsp, "-luser32"] +                 (["-lc++", "-lunwind"] if toolchain.mingw() else []) + ngx_link(NGX_SDK, toolchain.mingw())
+                ["-shared", "-o", vdll] + linker("/map:" + vdll[:-4] + ".map") + ["@" + vrsp, "-luser32"] +                 (["-lc++", "-lunwind"] if toolchain.mingw() else []) + ngx_link(NGX_SDK, toolchain.mingw())
         r = subprocess.run(link, capture_output=True, text=True)
         if r.returncode:
             undefined = sorted({l.strip() for l in (r.stdout + r.stderr).splitlines() if "undefined symbol" in l})
@@ -1215,7 +1350,7 @@ def main():
         dll = os.path.join(out, "hookshot_game.dll")   # (+ hookshot_game.map: crash offsets -> f_<guest address>)
         t = time.time()
         r = subprocess.run([cc] + toolchain.native_target() + toolchain.native_link() +
-                           ["-shared", "-o", dll, toolchain.link_opt("/map:" + dll[:-4] + ".map"), "@" + rsp],
+                           ["-shared", "-o", dll] + linker("/map:" + dll[:-4] + ".map") + ["@" + rsp],
                            capture_output=True, text=True)
         undefined = sorted({l.strip() for l in (r.stdout + r.stderr).splitlines() if "undefined symbol" in l})
         if r.returncode:

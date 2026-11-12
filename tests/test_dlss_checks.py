@@ -38,7 +38,14 @@ def check_sources():
     # it, rather than letting it go and making it again a frame later)
     prepare = dlss[dlss.index("int prepare(VkCommandBuffer cmd"):dlss.index("bool start()")]
     assert "dlss_checks::mode_for(rw, rh, ow, oh," in prepare, "prepare: the mode by dlss_checks::mode_for"
-    assert prepare.index("dlss_checks::mode_for(") < prepare.index("ReleaseFeature(old)"),         "prepare: the old feature let go before a mode was found"
+    assert prepare.index("dlss_checks::mode_for(") < prepare.index("ReleaseFeature(old)"), \
+        "prepare: the old feature let go before a mode was found"
+    # (a feature that was not made, out of video memory after quick DLSS model switches, should not be -1: if this
+    # setting is on, it would turn DLSS off until a restart. It is the game's upscale until the preset, output or HDR
+    # changes, then made again)
+    assert '"its feature was not made", -1' not in prepare, "prepare: a failed creation turns DLSS off for the run"
+    assert "s.refused = key;" in prepare and "if (s.refused == key)" in prepare, \
+        "prepare: a failed creation tried again once a DLSS setting changes"
 
 
 def main():

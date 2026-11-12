@@ -29,6 +29,9 @@ HEAD = r"""
 #include <mutex>
 #include <setjmp.h>
 #include <signal.h>
+#ifdef __linux__
+#include <sys/prctl.h>
+#endif
 using VkResult = int;
 using VkPipeline = uintptr_t;
 using VkPipelineCache = uintptr_t;
@@ -43,6 +46,8 @@ static int calls;
 static constexpr VkResult DRIVER_FAULT = -77;
 static int logged;
 void logf(const char *, ...) { ++logged; }
+static int faults_noted;
+void note_driver_fault() { ++faults_noted; }   /* (vk_draw.cpp: the preparation's watchdog counts them) */
 static void fault_now() { *(volatile int *)0x40 = 1; }
 VkResult vkCreateComputePipelines(uintptr_t device, VkPipelineCache cache, unsigned count,
                                   const VkComputePipelineCreateInfo *ci, const void *allocator, VkPipeline *out) {
@@ -64,6 +69,9 @@ VkResult vkCreateGraphicsPipelines(uintptr_t device, VkPipelineCache cache, unsi
 
 MAIN = r"""
 int main(int argc, char **argv) {
+#ifdef __linux__
+    prctl(PR_SET_DUMPABLE, 0, 0, 0, 0);   // (fault-outside ends it by SIGSEGV on purpose: without a core dump, a crash report)
+#endif
     const char *what = argc > 1 ? argv[1] : "ok";
     if (!std::strcmp(what, "fault-outside")) { fault_now(); std::printf("fail: the fault returned\n"); return 8; }
     VkComputePipelineCreateInfo ci;

@@ -89,6 +89,7 @@ void hos_fatal(Ctx *c, const char *fmt, ...);
 uint64_t hos_sys_alloc(uint64_t size, uint64_t align);     /* zeroed, from the system region, never freed */
 uint64_t hos_region_alloc(uint64_t size, uint64_t align);  /* address space above the heap */
 void hos_region_free(uint64_t addr);
+int hos_regions(uint64_t (*out)[2], int cap);   /* the regions: {start, end}, at most cap; how many */
 void hos_mem_init(uint64_t image_end);
 extern uint64_t hos_heap_size, hos_heap_used, hos_total_memory, hos_program_size;
 
@@ -120,6 +121,13 @@ int hos_vcores_on(void);
 int hos_vcore_away(void);
 void hos_vcore_back(void);
 void hos_vcore_checkpoint(void);
+/* HOS_CHAIN=<path> (hos_chain.c, diagnostic): blocks, wake-ups, sleeps and presents of the guest threads for
+   scripts/chain.py's critical path. kind: a wait that blocks begins / ends, a signal that can end one, a sleep begins /
+   ends, a present. lr 0: the current guest context's. */
+enum { HOS_CHAIN_WAIT = 1, HOS_CHAIN_WOKE, HOS_CHAIN_SIGNAL, HOS_CHAIN_SLEEP, HOS_CHAIN_AWAKE, HOS_CHAIN_PRESENT };
+extern volatile int hos_chain_on;
+void hos_chain_note(int kind, uint64_t key, uint64_t lr);
+#define HOS_CHAIN(kind, key) do { if (__builtin_expect(hos_chain_on, 0)) hos_chain_note((kind), (key), 0); } while (0)
 void hos_vcore_yield(void);
 int hos_cv_sleep(void *cv, void *srw_lock, unsigned ms);   /* SleepConditionVariableSRW (exclusive) for guest threads */
 void hos_thread_boost(int level);

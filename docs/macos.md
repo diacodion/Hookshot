@@ -65,7 +65,8 @@ their upscales become linear stretches: the 3D looks soft and blocky, and the ga
 blades, which the network resolves, stay as dots. On a Mac the first start therefore picks **AMD FSR 3.1** as the Upscaler
 (built from AMD's shaders, `vk_fsr3.cpp`; about 1 ms of an M4 Max's frame), and the Quality preset by the Mac's memory (8 GB
 Minimum, 16 GB Low, larger the defaults; before, every Apple GPU was "integrated" and had Minimum: the 3D at half size).
-FSR 3.1 also takes the shares whose networks do not translate (`fsr3_rejected_network`; before, it saw only the game's 3/4).
+FSR 3.1 also takes the shares whose networks do not translate (upstream's `temporal_rejected_network`, issue #1829), and
+since #2305 it runs on the temporal chain, with the characters' own motion.
 An options file saved before keeps its rows: Insert menu, Graphics, Upscaler and Render resolution.
 
 ## Performance (M4 Max, Kokiri Forest standing, headless, 2048x1152 output)
@@ -76,6 +77,16 @@ An options file saved before keeps its rows: Insert menu, Graphics, Upscaler and
 | 75% (the game's, Auto) | 28 ms | 30 |
 | 75%, FSR 3.1 | 29 ms | 31 |
 | 100% | 36 ms | 25 |
+
+Measured before the merge of upstream's main of 2026-11-11 (0ec31ff6). After it, same place and settings: 30.8 fps
+(the pre-merge build 32 in the same session), GPU time unchanged at 28 ms. The first start after an update that changes
+the shader translation builds every pipeline again (Metal's own cache misses): ~800 pipelines, several minutes in
+Kokiri Forest, during which draws are left out and the picture is washed out white.
+
+**VRAM mirrors on** (`mirror_on`, `RX_VK_MIRROR=0` to turn off). Upstream's #2419 makes a readback of GPU results wait for
+its submission's last part wherever a page is written in place, as on a GPU with no mirrors (issue 997's rule; #2602 lets
+mirrored pools wait only for the part that writes them back). The Mac had none: readbacks 3.3 ms each, 26.8 fps. With
+them, 0.4 ms and 30.8 fps, the same GPU time and picture.
 
 MoltenVK encodes a submission's Metal commands inside `vkQueueSubmit`; the host sets `MVK_CONFIG_SYNCHRONOUS_QUEUE_SUBMITS=0`
 (`driver_cache_room`, unless it is set already) so that this happens on MoltenVK's own thread: at 75% 30 -> 33.5 fps, the

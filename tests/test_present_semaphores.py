@@ -10,6 +10,7 @@ import tempfile
 
 # (env_on, the switches' rule, before the code cut out of the sources: gpu/vk/compat/hookshot_env.h)
 ENV_ON_H = str(Path(__file__).resolve().parents[1] / "gpu" / "vk" / "compat" / "hookshot_env.h")
+RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument('--source', type=Path, default=Path(__file__).resolve().parents[1])
@@ -40,7 +41,7 @@ loss = main[loss_start:main.index('\n}', loss_start) + 2]
 acquire_loss_start = present.index('    if (res == VK_ERROR_SURFACE_LOST_KHR)')
 acquire_loss = present[acquire_loss_start:present.index('\n#ifndef _WIN32', acquire_loss_start)]
 present_loss_start = present_out.index('    if (res == VK_ERROR_SURFACE_LOST_KHR)')
-present_loss = present_out[present_loss_start:present_out.index('\n    if (res < 0', present_loss_start)]
+present_loss = present_out[present_loss_start:present_out.index('\n    present_finish(res, false);', present_loss_start)]   # (the frame log and the failure line follow, in present_finish)
 commit_start = replay.index('bool present_commit(const PendingPresent& p)')
 commit = replay[commit_start:replay.index('\n}', commit_start) + 2]
 begin = present[present.index('{') + 1:present.index('    if (src) {')]
@@ -86,6 +87,8 @@ Reflex& rx(){return cached;}
 void reflex_swapchain_created(uint64_t sc) {cached.swapchain=sc;cached.latency=cached.frame_marked=true;cached.mode=1;}
 ''' + reset + r'''
 template<class... T> void logf(const char*,T...) {}
+void present_thread_drain() {}   // (RX_VK_PRESENT_THREAD off: nothing handed over)
+std::atomic<bool> presenter_surface_lost{false};   // (and nothing found lost by it)
 int vkCreateSwapchainKHR(int,const CreateInfo* ci,void*,uint64_t* out) {
     if(ci->oldSwapchain) {
         if(!chains.count(ci->oldSwapchain) || retired.count(ci->oldSwapchain))bad_chain=true;
@@ -137,12 +140,16 @@ bool create_swapchain(unsigned width,unsigned height) {
 }
 bool reflex_swapchain_stale() {return stale;}
 int menu_vsync() {return 0;}   // (vk_menu.cpp: the V-Sync row, Auto)
+int swapchain_framegen() {return 0;}   // (vk_main.cpp: frame generation's multiplier as the swapchain was made, none)
+bool swapchain_dlssg() {return false;}   // (vk_main.cpp: and DLSS-G makes its sets: no)
 std::mutex present_image_mu;
 struct PendingPresent {
     bool used;
     uint32_t index;
     uint64_t swapchain, swapchain_generation;
+    uint64_t reflex_frame = ~0ull;   // (NVIDIA Reflex: the frame it shows; vk_reflex.h reflex_present_frame)
 };
+thread_local uint64_t reflex_present_frame = ~0ull;   // (vk_reflex.cpp: the frame the present shows, kept around present_out)
 PendingPresent* present_defer_into=nullptr;
 unsigned committed=0, after_acquire=0;
 bool present_out(uint32_t, std::unique_lock<std::mutex>&) {++committed; return true;}

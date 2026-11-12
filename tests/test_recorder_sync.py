@@ -22,16 +22,17 @@ python -I -B tests/test_recorder_sync.py --headers <Vulkan-Headers/include> [--c
    wait is caught on a loaded runner too, each fake command buffer flagged in use for each call (two calls at once on one are a
    violation), the caller's memory poisoned and each packet poisoned once run; a handoff under the lock; a submit while another
    command buffer's commands are in flight; a pool reset while recording; the lock let go, then the recording ended on another
-   thread; an 8 KB ring (backpressure); a packet bigger than its room (made directly, in order); no memory for the ring; teardown with
-   work queued (stop, join, lazy restart, vkDestroyDevice); par_active; >= 1e6 packets through a 16 KB ring, twice, hashed against
-   the direct stream. --throw: a driver call that throws on the recorder thread ends the process (exit code 3, FATAL). Run with
-   RX_VK_RECORDER=thread (mode 3, logged once) and with RX_VK_PARALLEL=4 (refused).
+   thread; an 8 KB ring (backpressure); a packet bigger than its room (made directly, in order; again first in an empty ring); no
+   memory for the ring; teardown with work queued (stop, join, lazy restart, vkDestroyDevice); par_active; >= 1e6 packets through a
+   16 KB ring, twice, hashed against the direct stream. --throw: a driver call that throws on the recorder thread ends the process
+   (exit code 3, FATAL). Run with RX_VK_RECORDER=thread (mode 3, logged once) and with RX_VK_PARALLEL=4 (refused).
 3. The test has teeth: vk_recorder.h with a copy left shallow (all of them, or only the descriptor writes' image infos), with the
    fallback's drain left out, with no drain before vkEndCommandBuffer, with the replay lock let go without a drain, with a throwing
    allocation (exception safety broken), with the failure's drain left out, or with the parallel refusal left out, must fail it.
    Thread (each run with --only thread, so the recorder thread's checks alone catch it): no wait before vkEndCommandBuffer, before
    vkQueueSubmit2, at the replay lock's release, before vkResetCommandPool; no backpressure (the ring overwritten); no join at
-   teardown; the recorder's exception swallowed (--throw).
+   teardown; a packet bigger than its room written into the ring when the ring has more free; the recorder's exception swallowed
+   (--throw).
 4. (Windows) the process ends cleanly with the recorder parked in idle() holding its lock: tests/recorder_exit_test.cpp, a DLL with
    the real headers and an exe that calls ExitProcess (as the window's close does); exit code 0 within 20 s (a watchdog ends only
    that child) and the DLL's last global destructor run. Broken: the old global recorder with its destructor (wake, join).
@@ -66,7 +67,8 @@ BOUNDARY_OK = {
     "vk_coopmat.cpp": "the start-up probe: before any replay, its own vkCmd* direct (nothing held)",
     "vk_main.cpp": "retire_swapchain drains through device_wait_idle_locked before destroying views, semaphores and the chain. "
                    "Surface destruction follows retirement, or discards an unpublished surface without a chain.",
-    "vk_shader.cpp": "program_cache_borrow's and a dropped try's own modules and layouts, which no recorded command uses",
+    "vk_shader.cpp": "a dropped try's own modules, and those of a program already made, which no recorded command uses",
+    "vk_progcache.cpp": "program_cache_borrow's and a partial record's own modules and layouts, which no recorded command uses",
     "vk_imgui.cpp": "its own font/logo texture views, which only its direct recordings use",
 }
 # (the names a boundary has: a new one in a vk_work.h file must be in RX_REC_BOUNDARIES)
@@ -92,7 +94,7 @@ B_DIRECT_STMT = "::mkwvk::rec::boundary(::mkwvk::rec::B_DIRECT);"
 
 C_COMMENT_OR_STRING = re.compile(r'//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'', re.S)
 UI_RECORD_CALL = re.compile(r"\bui\s*::\s*record(?:_to)?\s*\(")
-NGX_RECORD_CALL = re.compile(r"\bNGX_VULKAN_\w+_EXT\s*\(")   # (NVIDIA NGX's create/evaluate: its own commands into cmd)
+NGX_RECORD_CALL = re.compile(r"\bNGX_(?:VULKAN_\w+_EXT|VK_\w+_DLSSG)\s*\(")   # (NVIDIA NGX's create/evaluate, DLSS's and frame generation's: its own commands into cmd)
 FFX_RECORD_CALL = re.compile(r"\bl\s*\.\s*dispatch\s*\(")   # (AMD FidelityFX's ffxDispatch, through its loaded pointer: its own commands into cmd)
 OPAQUE_RECORD_CALL = re.compile(UI_RECORD_CALL.pattern + "|" + NGX_RECORD_CALL.pattern + "|" + FFX_RECORD_CALL.pattern)
 B_DIRECT_BEFORE = re.compile(r"::\s*mkwvk\s*::\s*rec\s*::\s*boundary\s*\(\s*::\s*mkwvk\s*::\s*rec\s*::\s*B_DIRECT\s*\)\s*;\Z")
@@ -442,8 +444,11 @@ def main():
         ("thread: a command pool reset without waiting for the recorder", rec, no_wait(work_h, "vkResetCommandPool"), ("--only", None)),
         ("thread: no backpressure (the ring overwritten)",
          broken(broken(rec, "    void wait_room(uint64_t need) {\n", "    void wait_room(uint64_t need) {\n        if (need) return;\n", "room"),
-                "        lim = base + off + std::min<uint64_t>(tail, cap - (w - r_seen));", "        lim = base + off + tail;", "lim"), work_h,
+                "        lim = base + off + room;", "        lim = base + off + tail;", "lim"), work_h,
          ("--only", None)),
+        ("thread: a packet bigger than its room written into the ring when it has more free (the room not the limit)",
+         broken(rec, "        lim = base + off + room;", "        lim = base + off + std::min<uint64_t>(tail, cap - (w - r_seen));",
+                "room limit"), work_h, ("--only", None)),
         ("thread: no join at teardown", broken(rec, "    th.join();\n    ready.store(false);", "    ready.store(false);", "join"), work_h,
          ("--only", None)),
         ("thread: the recorder thread's exception swallowed",
