@@ -1,5 +1,29 @@
 # Changelog
 
+## [2.2.0-rc.2](https://github.com/NotRexed/Hookshot/compare/v2.2.0-rc.1...v2.2.0-rc.2) (2026-11-12)
+
+
+### Features
+
+* **menu:** a Quality preset "Auto (this PC)" that picks settings from the hardware and tunes them in play ([#2850](https://github.com/NotRexed/Hookshot/issues/2850)) ([f6cfd98](https://github.com/NotRexed/Hookshot/commit/f6cfd9876c4724b00dc84002b6fb6769cfd57d3c))
+
+
+### Bug Fixes
+
+* **input:** a pad's gyro stops with its buttons when the game is behind another window ([#2542](https://github.com/NotRexed/Hookshot/issues/2542)) ([0a5ec95](https://github.com/NotRexed/Hookshot/commit/0a5ec95e31267b0e3b31dcbb4d1bff096920bd49))
+* **release:** a draft keeps its tag when its notes are written, and a release just made is waited for ([#2626](https://github.com/NotRexed/Hookshot/issues/2626)) ([cf09841](https://github.com/NotRexed/Hookshot/commit/cf09841af03b5caaf4efc75d8f3c81722abd15d4))
+* **vk:** automatically query VK_EXT_device_fault on device lost when NV checkpoints and buffer markers are absent ([#2117](https://github.com/NotRexed/Hookshot/issues/2117)) ([ee64a96](https://github.com/NotRexed/Hookshot/commit/ee64a963b2ad6e127fbe79218f40898234d51b7f))
+
+
+### Build System
+
+* **linux:** ship third_party/zbic's sources so a build with NVIDIA DLSS compiles in the AppImage ([#2935](https://github.com/NotRexed/Hookshot/issues/2935)) ([e0e6092](https://github.com/NotRexed/Hookshot/commit/e0e60920991931f24cbe817bd5fff782ef4f5d9d))
+
+
+### Tests
+
+* **saves:** cover newest-first directory order in the late-link case ([#2888](https://github.com/NotRexed/Hookshot/issues/2888)) ([4dd972a](https://github.com/NotRexed/Hookshot/commit/4dd972a85ed5291ba7747ead68fbc38cdd69ec8e))
+
 ## [2.2.0-rc.1](https://github.com/NotRexed/Hookshot/compare/v2.1.0...v2.2.0-rc.1) (2026-11-12)
 
 
