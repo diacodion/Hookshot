@@ -19,7 +19,7 @@ with the request's ID and the action, so people can read it and type it by hand 
     🧪 T-7KQ2 claim: until 2026-11-12 16:40Z
     🧪 T-7KQ2 renew: until 2026-11-12 18:10Z
     🧪 T-7KQ2 release
-    🧪 T-7KQ2 done pass: https://github.com/NotRexed/Hookshot/pull/2711#issuecomment-123
+    🧪 T-7KQ2 done pass: https://git.notrexed.dev/Hookshot/Hookshot/pulls/12#issuecomment-123
     🧪 T-7KQ2 cancel
 
 The room's messages are the only record: list and every check below replay them in order. A request stays open until
@@ -27,13 +27,13 @@ the person who asked cancels it, and several people can test it at once: each ho
 own result. A claim lasts 90 minutes (at most 8 hours) and simply clears when it runs out, so a tester renews while
 testing (`renew` with no ID renews all of yours). done counts from anyone while the request is open, links to a comment
 on the request's PR, and replaces that person's earlier result. release is the claimer's; cancel is the requester's.
-A message that breaks these rules changes nothing. (The approval below is GitHub's, so the script checks it before
-claiming; a claim typed by hand on a request that isn't approved shows nowhere on Discord.)
+A message that breaks these rules changes nothing. (The approval below is git.magicbean.dev's, so the script checks it
+before claiming; a claim typed by hand on a request that isn't approved shows nowhere on Discord.)
 
-Only approved requests can be claimed: the PR's author is a collaborator on GitHub (owner, member or collaborator),
-or a maintainer put the "testing wanted" label on it. Anything else waits for a maintainer to add the label (the card
-on Discord says so, and list shows it last); this keeps strangers' code off testers' PCs until someone has looked at
-it. The script asks GitHub (no sign-in needed; GITHUB_TOKEN or GH_TOKEN is used when set).
+Requests are for Hookshot's pull requests on git.magicbean.dev. Only approved requests can be claimed: the PR's author
+may push to Hookshot, or a maintainer put the "testing wanted" label on it. Anything else waits for a maintainer to add
+the label (the card on Discord says so, and list shows it last); this keeps strangers' code off testers' PCs until
+someone has looked at it. The script asks git.magicbean.dev, with the team sign-in.
 
 list puts first what most needs a tester: requests nobody has tested or is testing, then the ones being tested with no
 result yet, then the ones with results; oldest first within each. Exit code 3: the action was refused (closed, not
@@ -49,30 +49,31 @@ import re
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import team_chat  # noqa: E402  (same folder; python -I does not add it to the path)
+import magicbean_login  # noqa: E402  (same folder; python -I does not add it to the path)
+import team_chat  # noqa: E402
 
 ROOM = "#test-requests:magicbean.dev"
-REPO = "https://github.com/NotRexed/Hookshot"
+REPO = "https://git.notrexed.dev/Hookshot/Hookshot"
 MARK = "\N{TEST TUBE}"
 ID_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # no 0/O, 1/I
 DEFAULT_TTL = 90
 MAX_TTL = 480
-PR_API = "https://api.github.com/repos/NotRexed/Hookshot/pulls/%d"
+API = "https://git.magicbean.dev/api/v1/repos/MagicBeanDev/Hookshot"
 LABEL = "testing wanted"
-TRUSTED = ("OWNER", "MEMBER", "COLLABORATOR")
+WRITERS = ("owner", "admin", "write")  # may push to Hookshot: their PRs need no label
 HISTORY_LIMIT = 50000  # messages read back; renews add one per tester every half hour
 EXIT_REFUSED = team_chat.EXIT_REFUSED
 
 LINE = re.compile(r"^%s\s*(T-[%s]{4})\s+(request|claim|renew|release|done|cancel)\b(?:\s+(pass|fail|mixed))?\s*:?\s*(.*)$"
                   % (MARK, ID_CHARS))
 UNTIL = re.compile(r"until\s+(\d{4}-\d\d-\d\d)[ T](\d\d:\d\d)Z", re.I)
-PR_URL = re.compile(r"https://github\.com/NotRexed/Hookshot/pull/(\d+)")
-COMMENT_URL = re.compile(r"^https://github\.com/NotRexed/Hookshot/pull/(\d+)"
-                         r"#(?:issuecomment-\d+|pullrequestreview-\d+|discussion_r\d+)$")
+PR_URL = re.compile(r"https://git\.magicbean\.dev/MagicBeanDev/Hookshot/pulls/(\d+)")
+COMMENT_URL = re.compile(r"^https://git\.magicbean\.dev/MagicBeanDev/Hookshot/pulls/(\d+)#issuecomment-\d+$")
 
 
 def parse(body):
@@ -162,33 +163,44 @@ def need(t):
     return (t.get("approved") is False, bool(t["results"]), bool(t["claims"]), t["requested"])
 
 
-def pr_info(number):
-    """The PR's state (open, draft, merged, closed), its labels and its author's standing, from GitHub."""
-    req = urllib.request.Request(PR_API % number, headers={"Accept": "application/vnd.github+json",
-                                                           "User-Agent": team_chat.USER_AGENT})
-    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+def forge_get(path, token=None):
+    req = urllib.request.Request(API + path, headers={"Accept": "application/json", "User-Agent": team_chat.USER_AGENT})
     if token:
         req.add_header("Authorization", "Bearer " + token)
+    with urllib.request.urlopen(req, timeout=20) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
+def pr_info(number):
+    """The PR's state (open, draft, merged, closed), its labels and whether its author may push to Hookshot, from
+    git.magicbean.dev (the author check needs the team sign-in; without it only the label counts)."""
     try:
-        with urllib.request.urlopen(req, timeout=20) as r:
-            pr = json.loads(r.read().decode("utf-8"))
+        pr = forge_get("/pulls/%d" % number)
     except urllib.error.HTTPError as error:
-        raise team_chat.ChatError("GitHub answered %d for PR #%d%s" % (
-            error.code, number, " (rate limit: set GITHUB_TOKEN)" if error.code in (403, 429) else "")) from None
+        raise team_chat.ChatError("git.magicbean.dev answered %d for PR #%d" % (error.code, number)) from None
     except (urllib.error.URLError, OSError, ValueError) as error:
-        raise team_chat.ChatError("cannot reach GitHub to check PR #%d: %s" % (number, error)) from None
-    state = "merged" if pr.get("merged_at") else "closed" if pr.get("state") == "closed" \
+        raise team_chat.ChatError("cannot reach git.magicbean.dev to check PR #%d: %s" % (number, error)) from None
+    state = "merged" if pr.get("merged") else "closed" if pr.get("state") == "closed" \
         else "draft" if pr.get("draft") else "open"
-    return {"state": state, "labels": [label.get("name") for label in pr.get("labels", [])],
-            "author": (pr.get("user") or {}).get("login"), "association": pr.get("author_association")}
+    author = (pr.get("user") or {}).get("login")
+    writer = False
+    signed_in = magicbean_login.forge_session()
+    if author and signed_in:
+        try:
+            perm = forge_get("/collaborators/%s/permission" % urllib.parse.quote(author), signed_in["access_token"])
+            writer = perm.get("permission") in WRITERS
+        except (urllib.error.URLError, OSError, ValueError):
+            pass
+    return {"state": state, "labels": [label.get("name") for label in pr.get("labels") or []], "author": author,
+            "writer": writer}
 
 
 def approved(info):
-    return info["association"] in TRUSTED or LABEL in info["labels"]
+    return info["writer"] or LABEL in info["labels"]
 
 
 def annotate(tests):
-    """Add each open request's PR state and approval (one call per PR); unknown when GitHub can't be asked."""
+    """Add each open request's PR state and approval (one call per PR); unknown when git.magicbean.dev can't be asked."""
     seen = {}
     for t in tests:
         if t["status"] != "open" or not t["pr"]:
@@ -245,7 +257,7 @@ def new_id(taken):
 def pr_number(text):
     m = PR_URL.search(text) or re.match(r"^#?(\d+)$", text.strip())
     if not m:
-        raise team_chat.ChatError("--pr takes a number or %s/pull/<number>" % REPO)
+        raise team_chat.ChatError("--pr takes a number or %s/pulls/<number>" % REPO)
     return int(m.group(1))
 
 
@@ -260,7 +272,7 @@ def until_line():
 def describe(t, me=None):
     def who(user):
         return "you" if user == me else user
-    head = "%s  %s  %s/pull/%s  %s" % (t["id"], t["status"].upper(), REPO, t["pr"], t["summary"])
+    head = "%s  %s  %s/pulls/%s  %s" % (t["id"], t["status"].upper(), REPO, t["pr"], t["summary"])
     lines = [head, "    asked by %s on %s" % (who(t["requester"]), stamp(t["requested"]))]
     if t["needs"]:
         lines.append("    needs: " + t["needs"])
@@ -269,7 +281,7 @@ def describe(t, me=None):
     for user, r in sorted(t["results"].items(), key=lambda kv: kv[1]["time"]):
         lines.append("    %s by %s: %s" % (r["result"], who(user), r["comment"]))
     if t.get("approved") is False:
-        lines.append('    waiting for a maintainer to add the "%s" label on GitHub: not claimable yet' % LABEL)
+        lines.append('    waiting for a maintainer to add the "%s" label on git.magicbean.dev: not claimable yet' % LABEL)
     elif not t["claims"] and not t["results"] and t["status"] == "open":
         lines.append("    nobody has tested it yet")
     if t.get("pr_state") in ("merged", "closed"):
@@ -309,7 +321,7 @@ def cmd_request(args, config):
     text = "%s %s request: %s\n" % (MARK, tid, summary)
     if needs:
         text += "Needs: %s\n" % needs
-    text += "%s/pull/%d" % (REPO, pr)
+    text += "%s/pulls/%d" % (REPO, pr)
     if args.notes and args.notes.strip():
         text += "\n" + args.notes.strip()
     send(config, rid, text)
@@ -320,7 +332,7 @@ def cmd_request(args, config):
         return 0
     if not approved(info):
         print('note: #%d is not from a collaborator and has no "%s" label, so nobody can claim it until a maintainer '
-              "adds the label on GitHub" % (pr, LABEL))
+              "adds the label on git.magicbean.dev" % (pr, LABEL))
     return 0
 
 
@@ -358,7 +370,7 @@ def cmd_claim(args, config):
     if me in t["results"] and not args.again:
         return refuse("you already tested %s (%s); --again to test it again" % (t["id"], t["results"][me]["result"]))
     if t["pr"]:
-        info = pr_info(t["pr"])  # no answer from GitHub: no claim
+        info = pr_info(t["pr"])  # no answer from git.magicbean.dev: no claim
         if not approved(info):
             return refuse('%s waits for a maintainer: #%d is not from a collaborator and has no "%s" label'
                           % (t["id"], t["pr"], LABEL))
@@ -408,7 +420,7 @@ def cmd_done(args, config):
         return refuse("%s is closed" % t["id"])
     link = COMMENT_URL.match(url)
     if not link:
-        return refuse("--comment must be the link to your comment on the PR (%s/pull/<n>#issuecomment-...)" % REPO)
+        return refuse("--comment must be the link to your comment on the PR (%s/pulls/<n>#issuecomment-...)" % REPO)
     if t["pr"] and int(link.group(1)) != t["pr"]:
         return refuse("that comment is on #%s, the request is for #%s" % (link.group(1), t["pr"]))
     send(config, rid, "%s %s done %s: %s" % (MARK, t["id"], args.result, url))

@@ -58,9 +58,9 @@ build, look at what the PR changes that runs on this PC (build and Python script
 downloads, deletes or reaches outside the repository); if something does what the PR doesn't explain, stop, release
 the claim and tell the user.
 
-1. Get the PR's head in its own folder, not on top of the user's work: `git worktree add --detach
-   ../Hookshot-test-<pr>`, then `gh pr checkout <pr>` inside it (this works in a jj repository too: a jj workspace
-   has no `.git` for `gh` to use). Note the commit you built.
+1. Get the PR's head in its own folder, not on top of the user's work: `python -I scripts/forge.py pr checkout <pr>`
+   (it fetches the head as the branch, or jj bookmark, `pr/<pr>`), then `git worktree add --detach
+   ../Hookshot-test-<pr> pr/<pr>`. Note the commit you built.
 2. Build and run as in [docs/development.md](../../../docs/development.md) (*Use*, *Building*, *Running a test*). If
    the notes compare against main, build main the same way and run both under the same conditions, swapping the
    order once.
@@ -72,7 +72,8 @@ the claim and tell the user.
 
 ## 5. Report on the PR, then mark it done
 
-Write the results as a comment on the PR, as the user (`gh pr comment <pr> --body-file <file>`), starting with the
+Write the results as a comment on the PR, as the user (`python -I scripts/forge.py pr comment <pr> --body-file <file>`),
+starting with the
 request's ID:
 
 ```
@@ -87,10 +88,10 @@ Result: ... (numbers in a small table when comparing; the log lines that matter;
 - [CONTRIBUTING.md](../../../CONTRIBUTING.md) applies: **no game files or anything made from them** attached or
   pasted (screenshots and lines of `hookshot_log.txt` are fine), no local paths, user names or anything personal.
 
-Then mark it done with that comment's link (the URL `gh pr comment` prints):
+Then mark it done with that comment's link (the URL `forge.py pr comment` prints):
 
 ```
-python -I scripts/test_requests.py done T-XXXX --result pass --comment https://github.com/NotRexed/Hookshot/pull/<pr>#issuecomment-<n>
+python -I scripts/test_requests.py done T-XXXX --result pass --comment https://git.notrexed.dev/Hookshot/Hookshot/pulls/<pr>#issuecomment-<n>
 ```
 
 `--result` is `pass`, `fail` or `mixed`. The script checks the link is a comment on the request's PR. Discord then

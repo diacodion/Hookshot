@@ -4,7 +4,7 @@ claim at once, a claim clears when it runs out (capped at 8 hours) and renew/rel
 from anyone with a link to a comment on the same PR and replaces that person's earlier result, cancel is the
 requester's and nothing counts after it; list puts untested and unclaimed requests first and the ones waiting for a
 maintainer last; a claim needs an approved PR (its author a collaborator, or the "testing wanted" label) that is still
-open, and no claim goes out when GitHub can't be asked; and the commands refuse with exit code 3 what the replay would
+open, and no claim goes out when git.magicbean.dev can't be asked; and the commands refuse with exit code 3 what the replay would
 ignore, and post the documented lines otherwise.
 
     python -I -B tests/test_test_requests.py
@@ -24,7 +24,7 @@ tr = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(tr)
 
 T = "\N{TEST TUBE}"
-PR = "https://github.com/NotRexed/Hookshot/pull/2711"
+PR = "https://git.notrexed.dev/Hookshot/Hookshot/pulls/2711"
 COMMENT = PR + "#issuecomment-123"
 FAILS = []
 ANN, BOB, CAT = ("@%s:magicbean.dev" % n for n in ("ann", "bob", "cat"))
@@ -116,7 +116,7 @@ def test_done_cancel():
     check("@dan:magicbean.dev" in state([walk_in], 4)["results"], "done without a claim counts")
     redo = ev("bob", 9, "%s T-7KQ2 done pass: %s" % (T, PR + "#issuecomment-9"))
     check(state([bob, done, redo], 10)["results"][BOB]["result"] == "pass", "a later result replaces the earlier")
-    wrong = ev("bob", 5, "%s T-7KQ2 done pass: https://github.com/NotRexed/Hookshot/pull/1#issuecomment-1" % T)
+    wrong = ev("bob", 5, "%s T-7KQ2 done pass: https://git.notrexed.dev/Hookshot/Hookshot/pulls/1#issuecomment-1" % T)
     check(not state([bob, wrong], 6)["results"], "done on another PR ignored")
     nolink = ev("bob", 5, "%s T-7KQ2 done pass: works" % T)
     check(not state([bob, nolink], 6)["results"], "done needs a comment link")
@@ -139,18 +139,18 @@ def test_order():
     check(order == ["T-AAAD", "T-AAAE", "T-AAAB", "T-AAAC"], "untested and unclaimed first: %s" % order)
 
 
-GITHUB = {}  # PR number -> what pr_info returns, or an exception to raise
+FORGE = {}  # PR number -> what pr_info returns, or an exception to raise
 
 
 def fake_pr_info(number):
-    got = GITHUB.get(number, {"state": "open", "labels": [], "author": "x", "association": "COLLABORATOR"})
+    got = FORGE.get(number, {"state": "open", "labels": [], "author": "x", "writer": True})
     if isinstance(got, Exception):
         raise got
     return got
 
 
 def run(events, user, *argv):
-    """A command against a stand-in room and GitHub: (exit code, lines it sent, standard output)."""
+    """A command against a stand-in room and git.magicbean.dev: (exit code, lines it sent, standard output)."""
     sent = []
     config = {"user_id": "@%s:magicbean.dev" % user, "base_url": "http://x", "access_token": "t"}
     out, err = io.StringIO(), io.StringIO()
@@ -203,10 +203,10 @@ def test_commands():
 
 def test_approval():
     now_min = int(tr.time.time() // 60)
-    stranger = {"state": "open", "labels": ["bug"], "author": "x", "association": "CONTRIBUTOR"}
-    events = [ev("ann", now_min - 9, "%s T-AAAB request: a\n%s/pull/1" % (T, tr.REPO)),
-              ev("ann", now_min - 8, "%s T-AAAC request: b\n%s/pull/2" % (T, tr.REPO))]
-    GITHUB.update({1: stranger, 2: dict(stranger, association="OWNER")})
+    stranger = {"state": "open", "labels": ["bug"], "author": "x", "writer": False}
+    events = [ev("ann", now_min - 9, "%s T-AAAB request: a\n%s/pulls/1" % (T, tr.REPO)),
+              ev("ann", now_min - 8, "%s T-AAAC request: b\n%s/pulls/2" % (T, tr.REPO))]
+    FORGE.update({1: stranger, 2: dict(stranger, writer=True)})
     try:
         code, sent, _ = run(events, "bob", "claim", "T-AAAB")
         check(code == 3 and not sent, "a stranger's PR without the label can't be claimed")
@@ -215,19 +215,19 @@ def test_approval():
         check(got == [("T-AAAC", True), ("T-AAAB", False)], "waiting requests list last: %s" % got)
         code, _, out = run(events, "bob", "list")
         check("waiting for a maintainer" in out, "list says it waits for a maintainer")
-        GITHUB[1] = dict(stranger, labels=["bug", "testing wanted"])
+        FORGE[1] = dict(stranger, labels=["bug", "testing wanted"])
         code, sent, _ = run(events, "bob", "claim", "T-AAAB")
         check(code == 0 and sent, "the label approves it")
-        GITHUB[2] = dict(stranger, association="MEMBER", state="merged")
+        FORGE[2] = dict(stranger, writer=True, state="merged")
         code, sent, _ = run(events, "bob", "claim", "T-AAAC")
         check(code == 3 and not sent, "a merged PR can't be claimed")
-        GITHUB[2] = tr.team_chat.ChatError("cannot reach GitHub")
+        FORGE[2] = tr.team_chat.ChatError("cannot reach git.magicbean.dev")
         code, sent, _ = run(events, "bob", "claim", "T-AAAC")
-        check(code == 1 and not sent, "no claim when GitHub can't be asked")
+        check(code == 1 and not sent, "no claim when git.magicbean.dev can't be asked")
         code, _, out = run(events, "bob", "list", "--json")
-        check(code == 0 and len(json.loads(out)) == 2, "list still works without GitHub")
+        check(code == 0 and len(json.loads(out)) == 2, "list still works without git.magicbean.dev")
     finally:
-        GITHUB.clear()
+        FORGE.clear()
 
 
 for test in (test_parse, test_request, test_claims, test_done_cancel, test_order, test_commands, test_approval):

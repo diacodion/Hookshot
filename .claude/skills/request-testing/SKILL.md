@@ -13,7 +13,7 @@ Windows and Linux; run it with `python -I` from the repository root). It uses th
 
 ## 1. Ask
 
-Only for a PR that is pushed, open and tested on your own hardware: a tester builds what is on GitHub, and their time
+Only for a PR that is pushed, open and tested on your own hardware: a tester builds what is on git.magicbean.dev, and their time
 is the scarce part. Then:
 
 ```
@@ -36,7 +36,7 @@ python -I scripts/test_requests.py request --pr 2711 --summary "Keep 8 GB cards 
   few minutes (the PR's title as the summary, no needs or notes: put what to test in the PR's description). Don't
   post a second one for the same PR; `list` shows it as asked by the relay. It closes when the label comes off or
   the PR is merged or closed.
-- **Approval:** a request can be claimed only when the PR's author is a collaborator on GitHub, or a maintainer has put
+- **Approval:** a request can be claimed only when the PR's author may push to Hookshot, or a maintainer has put
   the `testing wanted` label on the PR. Otherwise the script says so, and the Discord card shows "Waiting for a
   maintainer" until the label is added (the card opens by itself within a few minutes). Tell the user to ask a
   maintainer for the label; don't add it yourself unless the user is a maintainer and asks you to.
@@ -54,8 +54,7 @@ python -I scripts/test_requests.py show T-XXXX --json
 - Several people can test one request. `claims` lists who is testing it now (a claim clears by itself when its
   tester stops renewing it); `results` has each tester's result (pass, fail or mixed) and `comment`, the link to their
   comment on the PR. Read it:
-  `gh api repos/NotRexed/Hookshot/issues/comments/<number after #issuecomment->` (a review:
-  `gh api repos/NotRexed/Hookshot/pulls/<pr>/reviews/<number>`), or `gh pr view <pr> --comments`.
+  `python -I scripts/forge.py pr view <pr> --comments`.
 - Report it to the user in a few lines: who tested, on what, the result, the numbers or the failure. If it failed,
   continue with the failure on the PR (reproduce, fix, push), then close the request and ask again with a new one.
 
@@ -74,7 +73,7 @@ Needs: AMD RX 6000 or newer, Windows                (then the PR link, then the 
 🧪 T-7KQ2 claim: until 2026-11-12 16:40Z
 🧪 T-7KQ2 renew: until 2026-11-12 18:10Z
 🧪 T-7KQ2 release
-🧪 T-7KQ2 done pass: https://github.com/NotRexed/Hookshot/pull/2711#issuecomment-123
+🧪 T-7KQ2 done pass: https://git.notrexed.dev/Hookshot/Hookshot/pulls/12#issuecomment-123
 🧪 T-7KQ2 cancel
 ```
 
