@@ -312,7 +312,7 @@ def main():
         logs = section("hookshot_log.txt")
         check("hookshot v2.0.14" in logs and "CRASH: exception 0xc0000005" in logs, "the logs' section: " + logs)
         check("picture.png" in section("Screenshots or video"), "the picture is not named")
-        link = report[report.index("https://github.com/NotRexed/Hookshot/issues/new?template=1-game-problem.yml"):].split()[0]
+        link = report[report.index("https://git.notrexed.dev/Hookshot/Hookshot/issues/new?template=1-game-problem.yml"):].split()[0]
         for part in ("&version=v2.1.0-rc.3-39-gbdfe09c%20%28source%20763271ad%29", "&gpu=NVIDIA%20GeForce%20RTX%204090",
                      "&where=HyruleField_Child%20%28child%29", "&system=", "&settings=Upscaler", "HOS_HEADLESS", "RX_VK_MENU_SCRIPT"):
             check(part in link, "the link does not fill in " + part)
@@ -370,7 +370,7 @@ def main():
         # switches there are; report.txt lists them all
         folders, out = run(exe, "many", game, str(now_log), home, user, windows)
         report = (game_path / folders[0] / "report.txt").read_text(encoding="utf-8")
-        link = report[report.index("https://github.com/NotRexed/Hookshot/issues/new?template=1-game-problem.yml"):].split()[0]
+        link = report[report.index("https://git.notrexed.dev/Hookshot/Hookshot/issues/new?template=1-game-problem.yml"):].split()[0]
         check(len(link) <= 2000, "the link with 98 switches: %d characters" % len(link))
         settings = hw.section(report, "Changes from the defaults")
         listed = [ln for ln in settings.splitlines() if re.match(r"[A-Z_][A-Z0-9_]*=", ln)]

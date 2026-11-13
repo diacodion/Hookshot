@@ -12,7 +12,7 @@ import urllib.request
 from . import REPO, paths, setup_parts
 from .core import Tools
 
-LATEST = "https://api.github.com/repos/%s/releases/latest" % REPO
+LATEST = "https://git.notrexed.dev/api/v1/repos/%s/releases/latest" % REPO
 
 
 def latest_tag():
