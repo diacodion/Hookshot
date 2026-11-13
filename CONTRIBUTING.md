@@ -91,8 +91,9 @@ break.
 ## Development setup
 
 You need your own supported dump: program `0400486024DEC000`, update v131072, build `e0f3ccfa`. Other versions don't
-work, and the build reads the dump where it lies without changing it. A build needs about 60 GB free and a run about
-10 GB of RAM. Build on an SSD if you can: a hard drive works but takes much longer.
+work, and the build reads the dump where it lies without changing it. A build needs about 60 GB free. For runtime
+memory, see the README's [requirements](README.md#what-you-need): the game alone can exceed 16 GiB, depending on the
+build, driver and scene. Build on an SSD if you can: a hard drive works but takes much longer.
 
 Where a step below needs files from the Builder, use the Windows builder of the newest
 [Hookshot release](https://git.notrexed.dev/Hookshot/Hookshot/releases).
