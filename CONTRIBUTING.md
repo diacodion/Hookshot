@@ -277,62 +277,87 @@ python -I scripts/forge.py pr create fix/arc-walls --title "fix(vk): walls missi
 1. Name the branch for the change: `fix/...`, `linux/...`, `builder/...`, `docs/...`. One topic per pull request: a fix
    doesn't carry a refactor, and two unrelated fixes are two PRs.
 2. Write the title as a Conventional Commit ([below](#pull-request-titles)).
-3. Fill in the description from [the template](.forgejo/pull_request_template.md). The web page puts it in the box for
-   you; with `forge.py pr create --body-file`, start your file from a copy of it. It is the one list of what a pull
-   request needs:
-   - **Why**, in one or two plain sentences a player could follow ("The menu's text is cut off at 4K");
-   - **What changed**;
-   - **Measurements**: before (`main` at a named commit) against after, the hardware, the scene, the method, a
-     `| | Before | After |` table and the log lines the numbers come from ([what counts](#measurements));
-   - **Not tested**, with a [test request](docs/test-requests.md) for the hardware you don't have;
-   - **Screenshots** when it shows on screen, before and after from the same spot (a screenshot of the game is fine:
-     the rule above is about game files);
+3. Fill in the description from [the template](.forgejo/pull_request_template.md): the web page puts it in the box,
+   and `forge.py pr create` starts from it when you give no `--body-file`, with the commits filled in. Each heading
+   says in a line what a good answer looks like:
+   - **Why**: the problem or goal a player would notice, in one or two sentences ("The menu's text is cut off at 4K");
+   - **What changed**: bullets by area, with the files and functions a reviewer should read;
+   - **Flags and settings**: a row per switch, menu row, ini key or build flag added or changed (what it does, its
+     default, whether it should be on by default, where it helps and where it is untested), or "None";
+   - **Measurements**: `main` and this PR, each at its commit, the hardware, the scene, the method, how to reproduce
+     it, the table and the log lines ([what counts](#measurements));
+   - **Not tested**, and tested but not measured, with a [test request](docs/test-requests.md) for the hardware you
+     don't have;
+   - **Screenshots** when it shows on screen, from the same spot (a screenshot of the game is fine: the rule above is
+     about game files);
+   - **Risk and rollback**: what could break, and how to turn it off or revert it; **Reviewer notes** if any;
    - `Fixes #123` (one line per issue) closes the issue when the PR merges; `See #123` keeps it open;
    - the **checklist**: every box of *For everyone* ticked, the *If applicable* ones that apply.
-4. An untested change is opened as a draft (`pr create --draft`, a `WIP:` title). A pull request without
-   measurements goes back to draft until it has them.
-5. When `main` moves, rebase onto it (`git rebase forge/main`, or `jj rebase -d main@forge`) and resolve conflicts in
-   your branch.
+4. **A pull request is work in progress until it is measured and ready for review.** On Forgejo that is a title
+   starting with `WIP:` (or `[WIP]`). `pr create` opens it so (`--ready` when the description is complete already);
+   `pr ready <n>` marks it ready once the Measurements have real numbers and every *For everyone* box is ticked, and
+   refuses until then (the same check runs on every pull request: `scripts/check_pr_description.py`). Reviewers
+   don't review a WIP pull request. One that turns out to need more work goes back to WIP (`pr wip <n>`); one without
+   measurements also gets the label `needs measurements`.
+5. **Keep the description current.** It is the pull request's summary of record: when the change, the measurements or
+   what was tested change, edit it (`pr edit <n> --body-file F`), so that it always describes the PR as it is now.
+6. **Post a comment for each new thing**: new commits after a review, new measurements, a new test run, an answer to
+   a review. A short comment says what changed and why, for the reviewers following the thread. The description
+   holds the current state, the comments the history: `pr update <n> --body-file F --comment "..."` does both.
+7. When `main` moves, rebase onto it (`git rebase forge/main`, or `jj rebase -d main@forge`) and resolve conflicts in
+   your branch; measure again, or say in the comment why the numbers still hold.
 
-A maintainer reviews and squash-merges it. `forge.py pr list --mine`, `pr view <n> --comments` and `pr comment` follow
-up from the command line ([docs/forge.md](docs/forge.md)).
+A maintainer reviews and squash-merges it. `forge.py pr status <n>`, `pr list --mine` and `pr view <n> --comments`
+follow up from the command line ([docs/forge.md](docs/forge.md)).
 
 ### Measurements
 
-Every pull request shows its effect with numbers or proof, before against after:
+Every pull request shows its effect with numbers or proof, `main` against this PR:
 
 | Change | What counts as its measurement |
 |---|---|
 | `perf` | fps (average and 1% low), median and p99 frame time, and the number the change targets |
-| `fix` | the bug reproduced on `main` and gone on the branch: a log line, a screenshot, or a test failing before and passing after |
+| `fix` | the bug reproduced on `main` and gone with this PR: a log line, a screenshot, or a test failing on `main` and passing here |
 | `feat` | it working in the game, and no cost when off: fps or frame time with it on against off |
-| `build`, tools | time or size before and after, or test output |
-| `docs`, `test` only | test output before and after (a new test failing on `main` is the best proof) |
+| `build`, tools | time or size on `main` and with this PR, or test output |
+| `docs`, `test` only | test output on `main` and with this PR (a new test failing on `main` is the best proof) |
 
-For before and after to compare:
+Every number says plainly what it was measured on. The columns are `main @ <hash>` and `this PR @ <hash>` (`main @
+7afe6ae1`, `this PR @ 992a2420`), never a bare Before and After, and the same names caption the screenshots. One
+column is the change, the other the baseline it is compared with. When something else is compared, each column says
+exactly what, with its hash: `this PR @ 992a2420, RX_VK_X=0` against `this PR @ 992a2420, RX_VK_X=1`, or a build by
+its name (`nightly @ 55b976c0`, `nightly-123-abcd1234`). Then a `Baseline: <its column>` line says which one is the
+baseline, and a line says why `main` against this PR wasn't the comparison. A Δ column is optional; its sign is the
+change against the baseline. When the PR is rebased onto a newer `main`, measure again, or say why the numbers still
+hold.
 
-- before is `main` at a named commit;
+For the two sides to compare:
+
+- `main` at a named commit (the merge base: `pr create` fills it in);
 - the same PC, save, scene, settings and build type;
-- at least 2 runs each, interleaved (before, after, before, after), after a warm-up, and the median reported;
+- at least 2 runs each, interleaved (`main`, this PR, `main`, this PR), after a warm-up, and the median reported;
 - no overlays, ReShade or shader-cache tools;
 - the actual log lines pasted, not only the numbers taken from them.
 
 The numbers come from the FPS counter's **Breakdown** or **Dev** level (Insert menu, Gameplay), the `fps` lines of
 `hookshot_log.txt`, `RX_VK_DRAW_STATS`, or a test. A filled-in Measurements section, from a real run (a
-full one also names the driver, CPU, RAM, the settings and where each number comes from):
+full one also names the driver, CPU, RAM, the settings and where each number comes from). This one compares against
+another baseline, so it names it:
 
 ```
-Before: main @ 87991bc8
-After: nightly @ 55b976c0
+Baseline: nightly @ 55b976c0 (last nightly before #2602)
+main: 87991bc8 (2026-11-12), with #2602
+#2602 had merged already, so this is main against the last nightly before it; main also carried about 50 other merges.
 Hardware: RTX 3080, Windows 11
 Scene: adult Link in Hyrule Field, uncapped
-Method: 120 s each after a warm-up, two interleaved pairs (before, after, before, after)
+Method: 120 s each after a warm-up, two interleaved pairs (nightly, main, nightly, main)
+How to reproduce: a save in Hyrule Field by the ranch gate, Ultra preset, the FPS counter at Breakdown
 
-| | Before | After |
-|---|---|---|
-| fps (run 1 / run 2) | 59.7 / 60.8 | 78.4 / 79.3 |
-| median frame time | 16.35 ms | 12.2 ms |
-| readback waits | ~5.7 ms | <0.1 ms |
+| | nightly @ 55b976c0 (last nightly before #2602) | main @ 87991bc8 (with #2602) | Δ |
+|---|---|---|---|
+| fps (run 1 / run 2) | 59.7 / 60.8 | 78.4 / 79.3 | +31% |
+| median frame time | 16.35 ms | 12.2 ms | -4.15 ms |
+| readback waits | ~5.7 ms | <0.1 ms | -5.6 ms |
 ```
 
 followed by the log lines themselves. Add a row to [tested configurations](docs/tested-configurations.md) for each run
@@ -363,8 +388,9 @@ type or scope (`feat(builder)!: ...`) marks a breaking change. The other types m
 inside a branch can say anything: only the title reaches `main`. The version rules are in
 [docs/versioning.md](docs/versioning.md).
 
-Maintainer commits record AI assistance with `Assisted-by:` and `Co-Authored-By:` trailers. If you used a tool, add the
-trailers that describe it; if you wrote the change yourself, there is nothing to add.
+AI assistance is recorded with `Assisted-by:` and `Co-Authored-By:` trailers where the account allows it: if you
+used a tool, add the trailers that describe it (the template's box is under *If applicable*, since some maintainer
+accounts add no attribution); if you wrote the change yourself, there is nothing to add.
 
 ## Licensing
 

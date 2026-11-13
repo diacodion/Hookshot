@@ -51,19 +51,27 @@ What CONTRIBUTING.md doesn't spell out, and agents trip on:
 
 ```
 jj git push --remote forge-fork -b <branch>                      (or: git push forge-fork <branch>)
-python -I scripts/forge.py pr create <branch> --title "fix(vk): ..." --body-file <file>
+python -I scripts/forge.py pr create <branch> --title "fix(vk): ..." [--body-file <file>]       opens as WIP
+python -I scripts/forge.py pr update <n> --body-file <file> --comment "what changed and why"   after each push or run
+python -I scripts/forge.py pr ready <n>                          once measured: refuses while the description is incomplete
 ```
 
-Never push to `forge`: Hookshot's `main` takes reviewed pull requests only. `pr create` prints the link; `pr list
---mine`, `pr view <n> --comments` and `pr comment <n>` follow up.
+Never push to `forge`: Hookshot's `main` takes reviewed pull requests only. `pr create` prints the link; `pr status
+<n>`, `pr list --mine` and `pr view <n> --comments` follow up ([docs/forge.md](docs/forge.md)).
+
+- **Work in progress until measured.** A PR opens as WIP (a `WIP:` title; `pr create` does it) and is marked ready
+  (`pr ready`) only when the Measurements have real numbers and every *For everyone* box is ticked. Don't `--force`
+  it, and don't review a WIP PR. One that needs more work goes back (`pr wip <n>`).
+- **The description is the PR as it is now; the comments are its history.** When the change, the numbers or what was
+  tested change, edit the description and post a short comment saying what changed and why, in one step: `pr update`.
 
 - **The title is a Conventional Commit** ([CONTRIBUTING.md](CONTRIBUTING.md#pull-request-titles)): it becomes the
   commit on `main` and decides the release. `pr create` refuses anything else.
 - **The description opens with why the PR is needed**, in one or two plain sentences, and **includes screenshots
   when the change shows on screen**.
-- **It is tested before it is opened, and carries the measurements.** Passing the checks is not enough on its own:
+- **It is tested and measured before it is marked ready.** Passing the checks is not enough on its own:
   - **Run the change in the game** and say where (the area, the GPU, the driver, the OS) and what you saw. If you
-    couldn't run it, say so, and open it as a draft (`--draft`) until someone has, or ask for a
+    couldn't run it, say so, and leave it WIP until someone has, or ask for a
     [test request](#test-requests).
   - **A performance change carries numbers from the same scene before and after**, on the same build otherwise: fps
     or frame time, the log line it moves, memory where it is about memory. Several runs or an in-session A/B, since a

@@ -44,18 +44,46 @@ jj new main@forge -m "Fix the walls on Intel Arc"                (or: git switch
 ... edit, build, test ...
 jj bookmark create fix-arc-walls -r @
 jj git push --remote forge-fork -b fix-arc-walls                 (or: git push forge-fork fix-arc-walls)
-python -I scripts/forge.py pr create fix-arc-walls --title "fix(vk): walls missing on Intel Arc" --body-file pr.md
+python -I scripts/forge.py pr create fix-arc-walls --title "fix(vk): walls missing on Intel Arc"
+... measure, fill in the description ...
+python -I scripts/forge.py pr update 12 --body-file pr.md --comment "Measured on an Arc A770: the table is in."
+python -I scripts/forge.py pr ready 12
 ```
 
 `pr create` prints the pull request's link. Title and description follow
-[CONTRIBUTING.md](../CONTRIBUTING.md#commits-and-pull-requests). `--draft` marks it work in progress.
+[CONTRIBUTING.md](../CONTRIBUTING.md#commits-and-pull-requests). It opens the PR as **work in progress** (a `WIP: `
+title, Forgejo's draft mark), with the description started from
+[the template](../.forgejo/pull_request_template.md) when you give no `--body-file`, and main's and the branch's
+commits filled in where the Measurements name them. `--ready` opens it ready, when the description is complete already
+(`--draft`, the earlier flag, is now the default and still accepted).
+
+## Work in progress, ready, and keeping the PR current
+
+```
+python -I scripts/forge.py pr ready 12 [--force]                 take WIP: off once the description passes the check
+python -I scripts/forge.py pr wip 12 [--needs-measurements]      put WIP: back: it needs more work (the label: maintainers)
+python -I scripts/forge.py pr edit 12 [--title T] [--body-file F]   the title or the description; WIP stays as it is
+python -I scripts/forge.py pr update 12 [--body-file F] --comment "what changed and why"
+python -I scripts/forge.py pr comment 12 ("text" | --body-file F)
+python -I scripts/forge.py pr status 12                          WIP or ready, the check, the checklist, reviews, comments
+```
+
+- `pr ready` runs the PR description check (`scripts/check_pr_description.py`, the same one the `PR description`
+  workflow runs) on the description and the PR's diff, and refuses while a section is empty or still holds the
+  template's `<...>`, the Measurements don't name `main @ <hash>` and `this PR @ <hash>`, a switch the diff adds is
+  missing from the Flags table, or a *For everyone* box is unticked. It prints what is missing; `--force` goes on with a
+  warning. It also takes off the label `needs measurements`.
+- `pr update` is the "I pushed more" step: it edits the description (with `--body-file`) and posts the comment saying
+  what changed, so the description stays the PR as it is now and the comments keep the history. With `--comment` only,
+  it only comments.
+- `pr edit` and `pr update` warn when a PR marked ready no longer passes the check: `pr wip` it if it needs more work.
 
 ## Other commands
 
 ```
 python -I scripts/forge.py pr list [--mine] [--state open|closed|all]
 python -I scripts/forge.py pr view 12 [--comments]
-python -I scripts/forge.py pr comment 12 "Tested on an RX 6700 XT: fixed."
+python -I scripts/forge.py pr comment 12 "Tested on an RX 6700 XT: fixed."   (or --body-file F)
 python -I scripts/forge.py pr checkout 12                         its head as the bookmark (jj) or branch (git) pr/12
 python -I scripts/forge.py issue list [--label bug]
 python -I scripts/forge.py issue view 40 --comments
