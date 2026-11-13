@@ -11,7 +11,7 @@ name: Game-free source regressions
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'ci/**']   # (TEST BRANCH ONLY: the fork's CI check)
   pull_request:
     branches: [main]
   workflow_dispatch:
