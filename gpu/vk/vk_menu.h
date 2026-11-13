@@ -55,7 +55,7 @@ struct Options {
     int fullscreen = 0;   // borderless, at the monitor's size: F11 is the same setting
     int gpu_device = 0;   // graphics card index: 0 Auto, 1..N device 0..N-1 (gpu/vk/vk_main.cpp; RX_VK_DEVICE)
     int pad_background = 0;   // the controllers count while another window has the focus (host/nn_hid.c; HOS_INPUT_BACKGROUND)
-    int mouse_native = 0; // the mouse turns the camera's own angles (host/mouse_native.c); 0: as the right stick
+    int mouse_native = 0; // the mouse turns the camera's own angles (host/mouse_native.c); 0: as the right stick; 2: off (never captured)
     int disable_camera_centering = 0; // 0: stock movement-follow turning; 1: keep the player's horizontal direction
     int mouse_sens = 100; // the mouse's sensitivity in percent: 0.1 degrees a count at 100 with native look (host/nn_hid.c)
     int mouse_invert = 0; // the mouse's up and down swapped

@@ -240,7 +240,7 @@ typedef struct MkwVkRenderer {
     void (*nvn_texture_created)(const nvn_tex *t);
     /* the CPU set an event's value: in order with the submits (the GPU's waits on it) */
     void (*nvn_event_signal)(uint64_t gpu, uint32_t value);
-    int (*option)(int id);   /* (hookshot, the Insert menu) 0: game time follows the clock, 1: the menu is open, 2: dynamic resolution, 3: its fixed scale in percent, 4: the controllers count behind other windows, 5: text speed (0 normal to 3 instant), 6: native mouse look (host/mouse_native.c),
+    int (*option)(int id);   /* (hookshot, the Insert menu) 0: game time follows the clock, 1: the menu is open, 2: dynamic resolution, 3: its fixed scale in percent, 4: the controllers count behind other windows, 5: text speed (0 normal to 3 instant), 6: Mouse camera (host/mouse_native.c; 1 native mouse look, 2 off: the mouse is never captured),
                                 7: the mouse's sensitivity in percent, 8: its up and down swapped (host/nn_hid.c),
                                 18 to 23: the Motion page (HOS_OPT_GYRO*: motion controls from a pad's gyroscope, host/pad_sdl.c;
                                 the horizontal and vertical sensitivity in percent, each turned around, the deadzone),

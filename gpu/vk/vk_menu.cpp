@@ -155,7 +155,7 @@ const char* tx_gyro(int v) {
     if (status == 0) return v ? "On (no controller)" : "Off (no controller)";
     return v ? "On" : "Off";
 }
-const char* tx_mousecam(int v) { return v ? "Native" : "As the stick"; }
+const char* tx_mousecam(int v) { return v == 2 ? "Off" : v ? "Native" : "As the stick"; }
 const char* tx_sens(int v) {
     static char b[12];
     snprintf(b, sizeof b, "%.2f", v / 100.0);
@@ -1128,7 +1128,8 @@ MENU_HINTS(hn_text_size, 0, "The game's original size.", "A little larger.", "La
 MENU_HINTS(hn_background, 0, "Only while the game's window has the focus.",
            "Also behind other windows, for streaming or other apps. The keyboard and mouse still need the game's window.")
 MENU_HINTS(hn_mousecam, 0, "The mouse stands in for the right stick, with its curve and top speed.",
-           "The mouse turns the camera itself, one to one, as in a PC game.")
+           "The mouse turns the camera itself, one to one, as in a PC game.",
+           "The mouse plays no part: a click in the window doesn't capture it. For a controller or the keyboard alone.")
 MENU_HINTS(hn_mouse_invert, 0, nullptr, "Moving the mouse forward tilts the camera down.")
 MENU_HINTS(hn_gyro, 0, "The sticks alone aim.",
            "Switch Pro controllers and pads in Switch mode, DualSense and DualShock 4. The value says whether the "
@@ -1275,7 +1276,7 @@ Row rows[] = {
     // Controls (12 rows; Motion opens the 6 TAB_MOTION rows, Controls its page with the 2 TAB_PAGE rows)
     {TAB_CONTROLS, "Controller in background", &opts.pad_background, 0, 1, 1, tx_onoff,
      "Whether the controller plays the game while another window has the focus.", hn_background, false, true},
-    {TAB_CONTROLS, "Mouse camera", &opts.mouse_native, 0, 1, 1, tx_mousecam, "How the captured mouse turns the camera.",
+    {TAB_CONTROLS, "Mouse camera", &opts.mouse_native, 0, 2, 1, tx_mousecam, "How the captured mouse turns the camera.",
      hn_mousecam, false, true},
     {TAB_CONTROLS, "Disable camera centering", &opts.disable_camera_centering, 0, 1, 1, tx_onoff,
      "Stops the camera gradually turning toward the direction you move, useful with native mouse look. Off keeps the "
