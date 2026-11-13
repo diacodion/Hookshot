@@ -50,7 +50,9 @@ history: pr update edits the description and posts a comment saying what changed
 pr review posts one review: the verdict, a summary and comments on lines of the diff, each on the line of the PR's
 version of the file (PATH:LINE), or of main's for a line the PR removes (PATH:-LINE; "old_line" in --inline's JSON,
 a list of {"path", "line", "body"}). A line outside the diff's hunks is refused before anything is posted, since
-Forgejo would put the comment on no line. A work-in-progress PR can be commented on, not approved.
+Forgejo would put the comment on no line. A work-in-progress PR can be commented on, not approved. The verdict
+follows what the review asks for: --request-changes for a change that has to land before the merge (a bug, a broken
+rule), on a WIP PR too; --comment for questions and suggestions; --approve when it can merge as it is.
 """
 import argparse
 import json
@@ -782,12 +784,16 @@ def main(argv=None):
                       "and inline comments, each on a line of the diff: --at PATH:LINE TEXT (the line in the PR's "
                       "version of the file; PATH:-LINE for a line the PR removes), or --inline F, a JSON list of "
                       "{\"path\", \"line\" (or \"old_line\"), \"body\"}. Lines outside the diff's hunks are refused "
-                      "before anything is posted. A work-in-progress PR can be commented on, not approved.")
+                      "before anything is posted. A work-in-progress PR can be commented on, not approved. "
+                      "A review that asks for a change that has to land before the merge requests changes.")
     s.add_argument("number", type=int)
     g = s.add_mutually_exclusive_group(required=True)
-    g.add_argument("--approve", dest="event", action="store_const", const="approve")
-    g.add_argument("--comment", dest="event", action="store_const", const="comment")
-    g.add_argument("--request-changes", dest="event", action="store_const", const="request_changes")
+    g.add_argument("--approve", dest="event", action="store_const", const="approve",
+                   help="it can merge as it is (nits may ride along as inline comments)")
+    g.add_argument("--comment", dest="event", action="store_const", const="comment",
+                   help="questions and suggestions the author may take or leave")
+    g.add_argument("--request-changes", dest="event", action="store_const", const="request_changes",
+                   help="a change has to land before the merge: a bug, a broken rule (a WIP PR too)")
     body_args(s, what="the review's summary")
     s.add_argument("--inline", metavar="F", help="the inline comments, a JSON list (UTF-8)")
     s.add_argument("--at", nargs=2, action="append", metavar=("PATH:LINE", "TEXT"), help="an inline comment (repeatable)")

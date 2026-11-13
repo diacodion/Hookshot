@@ -109,6 +109,14 @@ A line outside the diff's hunks is refused before anything is posted, since the 
 review is tied to the PR's head commit, so a later push marks its comments outdated. A work-in-progress PR can be
 commented on, not approved: it isn't measured yet.
 
+Pick the verdict by what the review asks for:
+
+- `--request-changes` when it asks for a change that has to land before the merge: a bug, a broken rule from
+  CONTRIBUTING.md, a check that fails. Forgejo then shows the PR as blocked until the reviewer approves it. Use it on a
+  work-in-progress PR too, so the author sees the blocker before marking the PR ready.
+- `--comment` for questions and suggestions the author may take or leave.
+- `--approve` when the PR can merge as it is. Nits may ride along as inline comments; a blocking change may not.
+
 ## Other commands
 
 ```
