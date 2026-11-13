@@ -25,6 +25,10 @@ scripts/macos/run-vk.sh --window --sound --seconds 3600       # or headless, wit
 The game is `$OOT_WORK/sa/build/hookshot` with `hookshot_vk.so` beside it (a Mach-O dylib under the Linux name).
 `make_game.py` and the builders have no macOS route yet.
 
+CI (`.github/workflows/source-regressions.yml`, job `macos`, a macOS 15 Apple silicon runner) builds the Vulkan back end alone
+(`RX_VK_ONLY=1`: no game needed) and runs the game-free checks of the code the port changed; the SPIR-V fixture job checks the
+global memory helpers' one exit (`tests/global_load_16`, `--single-exit`).
+
 ## The dev loop: edit, build, measure in a scene
 
 ```sh
