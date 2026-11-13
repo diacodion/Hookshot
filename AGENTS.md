@@ -69,6 +69,9 @@ Never push to `forge`: Hookshot's `main` takes reviewed pull requests only. `pr 
 
 - **The title is a Conventional Commit** ([CONTRIBUTING.md](CONTRIBUTING.md#pull-request-titles)): it becomes the
   commit on `main` and decides the release. `pr create` refuses anything else.
+- **The description follows the [pull request template](.forgejo/pull_request_template.md)**, every section, the
+  whole *For everyone* list and only the *If applicable* boxes that apply, all ticked
+  ([CONTRIBUTING.md](CONTRIBUTING.md#commits-and-pull-requests)); `pr create` starts from it.
 - **The description opens with why the PR is needed**, in one or two plain sentences, and **includes screenshots
   when the change shows on screen**.
 - **It is tested and measured before it is marked ready.** Passing the checks is not enough on its own:

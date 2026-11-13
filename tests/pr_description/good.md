@@ -14,9 +14,9 @@ The pause menu's text is cut off at the right edge at 4K, so the last option of 
 
 ## Flags and settings
 
-| Flag | New or changed | What it does | Default now | Goal: on by default? | Helps on | Doesn't help on | Untested on | Untested, but should help on |
-|---|---|---|---|---|---|---|---|---|
-| `RX_VK_MENU_FONT_SCALE` | New | Sets the menu font's scale (0.5 to 3); unset follows the output height | Unset | No: a testing switch | 4K and 1440p outputs | 1080p and lower (same as before) | Steam Deck | Ultrawide 3440x1440 |
+| Flag | What it does | Default now | Recommendation | Helps on | Doesn't help on | Untested on |
+|---|---|---|---|---|---|---|
+| `RX_VK_MENU_FONT_SCALE` (new) | Sets the menu font's scale (0.5 to 3); unset follows the output height | Unset | Off by default: a testing switch | 4K and 1440p outputs | 1080p and lower (same as before) | Steam Deck |
 
 ## Measurements
 
@@ -69,8 +69,6 @@ Fixes #42
 
 ## Checklist
 
-<!-- n/a: the boxes left unticked below. -->
-
 ### For everyone
 
 - [x] One topic.
@@ -86,13 +84,9 @@ Fixes #42
 
 ### If applicable
 
-- [ ] AI assistance recorded with `Assisted-by:` / `Co-Authored-By:` trailers.
-- [x] Flags table filled in; README / docs/development.md switch reference updated.
+- [x] Flags noted, and the switch reference updated (docs/development.md, the README).
 - [x] Screenshots for a change that shows on screen.
-- [ ] A row in `docs/tested-configurations.md` for each measured run.
-- [ ] `MKWVK_API_VERSION` bumped (`gpu/vk/vk_api.h`'s `MkwVkHost` or `MkwVkRenderer` changed).
-- [ ] The SPIR-V headers regenerated with glslang (a shader changed).
 - [x] A game-free test added for the fix, failing on `main` and passing here.
-- [ ] A check under `tests/` that reads changed source updated in this PR, not weakened.
-- [ ] Host code builds on both Windows (llvm-mingw) and Linux, with UTF-8 paths.
+- [x] A check under `tests/` that reads changed source updated in this PR, not weakened.
+- [x] Host code builds on both Windows (llvm-mingw) and Linux, with UTF-8 paths.
 - [x] Docs updated.
