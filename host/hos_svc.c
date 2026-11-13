@@ -116,11 +116,7 @@ static void release_locked(uint64_t mutex) {
 #include <emmintrin.h>
 #endif
 static int spin_for_release(uint64_t mutex, uint32_t held) {
-    static int64_t limit = -1;
-    if (limit < 0) {
-        const char *e = getenv("HOS_SPIN_US");
-        limit = (e ? atoll(e) : 20) * 1000;
-    }
+    const int64_t limit = hos_spin_ns();
     static int misses[256], tries[256];
     const unsigned slot = (unsigned)(mutex >> 3 ^ mutex >> 11) & 255;
     const int m = __atomic_load_n(&misses[slot], __ATOMIC_RELAXED);

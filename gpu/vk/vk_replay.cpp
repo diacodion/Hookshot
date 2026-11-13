@@ -54,6 +54,7 @@
 #ifndef HOOKSHOT_ENV_H   // (env_on: the switches' one rule)
 #include "hookshot_env.h"
 #endif
+#include "vk_programs.h"
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 
 namespace mkwvk {
@@ -3091,6 +3092,7 @@ void log_frame_stats() {
     log_slow_frame();
     made_ring[presents % 32] = texture_made();
     made_ring_present = presents;
+    if (presents % 600 == 0) programs_census_log("play");
     if (++fps_n == 120) {
         const auto now = std::chrono::steady_clock::now();
         const double secs = std::chrono::duration<double>(now - fps_t).count();
@@ -3120,6 +3122,7 @@ void log_frame_stats() {
         logf("vk: a frame: %.0f draws kept their neighbour's descriptors (%.0f of them through other slots' registrations)",
              (draw_desc_reused() - l_reused) / 120.0, (draw_slotgen_saves() - l_saves) / 120.0);
         l_reused = draw_desc_reused(), l_saves = draw_slotgen_saves();
+        programs_frames_note();   // (the load default's safety net: vk_programs.h)
         logf("vk: a frame: %.1f draws left out (not ready), %.2f waits for shaders or pipelines (%.1f ms); "
              "translation %.0f ms in all, %d jobs queued%s",
              (pskip - l_pskip) / 120.0, (pwaits - l_pwaits) / 120.0, (pwait_ms - l_pwait_ms) / 120.0,
@@ -3184,6 +3187,7 @@ void log_frame_stats() {
         {   // (issue 109: the movie networks too slow on this card: left out from now on, vk_draw.cpp movie_networks_slow)
             static const bool keep_all = getenv("RX_VK_NETWORK_KEEP") && !strcmp(getenv("RX_VK_NETWORK_KEEP"), "all");
             const double gpu_ms = (st_gpu_ns - l_gpu) / 120.0 / 1e6, draws = (d - l_d) / 120.0;
+            menu_auto_tune(gpu_ms, draws, 120.0 / secs);   // (the Quality preset Auto (this PC): measured in play)
             if (!keep_all && gpu_ms > 40.0 && draws < 40.0 && !movie_networks_slow.exchange(true))
                 logf("vk: %.0f ms of GPU time a frame for %.0f draws (a movie): its upscaler networks are left out from now on "
                      "(a linear upscale; RX_VK_NETWORK_KEEP=all keeps them)", gpu_ms, draws);
@@ -4821,6 +4825,7 @@ void submit(const uint64_t* handles, int n) {
 }
 void present(const nvn_tex* t, const int crop[4]) {
     fps_presented();   // (the FPS counter: the game's frame ends here, on its presenting thread)
+    programs_presented();   // (the programs' life: whether the game is in a load)
     FpsRender fr;
     if (!async_on()) {
         std::lock_guard order(sync_order_mu);
@@ -4863,6 +4868,7 @@ void texture_released_of(const nvn_tex* t) {
 }
 void program_released_locked(const nvn_prog* p) {
     if (!p) return;
+    programs_freed(p);   // (the program's life: the game's call, now; the replay's part follows in order below)
     if (!async_on()) {
         if (hold_releases() && sync_waits_on() && blocked_n.load()) {   // (PR 430: as texture releases, on held_mu)
             {
@@ -5065,6 +5071,8 @@ void fill_replay_table(MkwVkRenderer& t) {
     t.nvn_set_texture_pool_size = set_texture_pool_size;
     t.nvn_texture_released = texture_released_of;
     t.nvn_program_released = program_released_locked;
+    t.nvn_program_created = programs_created;
+    programs_life_on(), programs_load_at_create();
     t.nvn_read_texels = read_texels;
     t.nvn_write_texels = write_texels;
     t.nvn_invalidate = invalidate;

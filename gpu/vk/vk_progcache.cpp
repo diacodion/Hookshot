@@ -35,10 +35,12 @@
 
 #include "shader_recompiler/shader_info.h"
 #include "hookshot_env.h"
+#include "fallback_loaded.h"
 #include "fallback_size_policy.h"
 #include "vk_paths.h"
 #include "vk_internal.h"
 #include "vk_progcache.h"
+#include "vk_programs.h"
 
 namespace mkwvk {
 
@@ -442,6 +444,15 @@ bool program_cache_payload(const uint8_t* stored, size_t stored_size, uint32_t k
 void program_cache_read(FILE* in, std::mutex* mu, uint64_t key, const std::vector<DiskRecord>& recs,
                         std::vector<std::unique_ptr<Program>>& variants) {
     for (const DiskRecord& d : recs) {
+        // (the census: the records each thread reads, and those read in play, vk_programs.h)
+        struct Counted {
+            const std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+            ~Counted() {
+                const int64_t ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count();
+                use_counters.loads++, use_counters.load_ns += ns;
+                if (programs_in_play.load(std::memory_order_relaxed) && !use_counters.background) census.play_loads++, census.play_load_ns += ns;
+            }
+        } counted;
         const size_t head_size = disk_zstd ? kZstdHead : 16;
         std::vector<uint8_t> data(head_size + d.size);   // (with its head: the key, size and kind are checked against the file's)
         {
@@ -516,10 +527,122 @@ void program_cache_read(FILE* in, std::mutex* mu, uint64_t key, const std::vecto
     }
 }
 
+// ---- (hookshot) A compute program's kept variants, read at its first dispatch without their code. A key has up to 64 kept
+// variants (the texture answers the prepare tried), and the dispatch runs one: which one is decided from each variant's answers
+// and its stage's descriptors (vk_shader.cpp still_valid), not from its SPIR-V. Reading every variant whole and making a module
+// of each was half of what a first dispatch cost on the thread replaying (RTX 3090, a tour with no compute program kept ready:
+// 148 first dispatches read 865 variants, 111 MB, 541 ms of their 1,048 ms; a 64-variant program 48 to 72 ms). Now each
+// variant's head and descriptors are read by position around its SPIR-V, the program is given to the pick as it is, and the
+// one the dispatch takes gets its code read and its module made (program_cache_complete). RX_VK_LOAD_ALL_VARIANTS=1: every
+// variant whole, as before ----
+// (where the code of a program read without it is: kept in the program itself, Program::code_at and code_words, not in a table
+// by the program's address, which a program let go and another made at the same address would find a stale entry in)
+namespace {
+std::mutex light_mu;
+}   // namespace
+/// A kept record's program without its code. nullptr: not a record to read this way (more than one stage, a head longer than
+/// kFront or a tail longer than kTailMost, one that does not read): it is read whole, as before
+std::unique_ptr<Program> program_cache_read_light(FILE* in, std::mutex* mu, uint64_t key, const DiskRecord& d) {
+    // (the compressed cache, RX_VK_PROGRAM_CACHE_ZSTD: a record is one zstd frame behind a 20-byte head, and nothing in it has
+    // a place of its own in the file. Not a record to read this way: the caller reads it whole, program_cache_read unpacks it)
+    if (disk_zstd) return nullptr;
+    constexpr size_t kFront = 4096, kTailMost = 8u << 20;
+    struct Counted {   // (the census, as program_cache_read counts)
+        const std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+        ~Counted() {
+            const int64_t ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count();
+            use_counters.loads++, use_counters.load_ns += ns;
+            if (programs_in_play.load(std::memory_order_relaxed) && !use_counters.background) census.play_loads++, census.play_load_ns += ns;
+        }
+    } counted;
+    std::vector<uint8_t> front(16 + std::min(d.size, kFront));
+    {
+        std::unique_lock<std::mutex> lk;
+        if (mu) lk = std::unique_lock<std::mutex>(*mu);
+        _fseeki64(in, d.at - 16, SEEK_SET);
+        if (fread(front.data(), 1, front.size(), in) != front.size()) return nullptr;
+    }
+    uint64_t head[2];
+    std::memcpy(head, front.data(), 16);
+    if (head[0] != key || head[1] != d.size) return nullptr;
+    Reader r{front.data() + 16, front.data() + front.size()};
+    auto p = std::make_unique<Program>();
+    p->key = key;
+    get_head(r, *p);
+    p->variant = answers_hash(*p);
+    if (r.get<uint64_t>() != 1 || r.bad || !p->compute) return nullptr;   // (one stage: a compute program's)
+    p->stages.emplace_back();
+    Stage& st = p->stages.back();
+    st.nvn_stage = r.get<int>();
+    st.vk_stage = r.get<VkShaderStageFlagBits>();
+    const uint64_t words = r.get<uint64_t>();
+    if (r.bad) return nullptr;
+    const size_t code_at = (size_t)(r.p - (front.data() + 16));
+    if (!words || words > (d.size - code_at) / 4) return nullptr;
+    const size_t tail_at = code_at + (size_t)words * 4;
+    if (d.size - tail_at > kTailMost) return nullptr;
+    std::vector<uint8_t> tail(d.size - tail_at);
+    if (!tail.empty()) {
+        std::unique_lock<std::mutex> lk;
+        if (mu) lk = std::unique_lock<std::mutex>(*mu);
+        _fseeki64(in, d.at + (int64_t)tail_at, SEEK_SET);
+        if (fread(tail.data(), 1, tail.size(), in) != tail.size()) return nullptr;
+    }
+    Reader t{tail.data(), tail.data() + tail.size()};
+    t.list(st.c1);
+    get_info(t, st.info);
+    if (t.bad || !answers_fit(*p, p->answers)) return nullptr;
+    p->code_at = d.at + (int64_t)code_at, p->code_words = words;
+    p->ready.store(true, std::memory_order_release);
+    return p;
+}
+namespace {
+/// (in: a handle on the cache's file, used under mu when given) the code read and the module made
+bool complete_from(Program& p, FILE* in, std::mutex* mu) {
+    if (!p.code_words) return !p.failed;
+    const int64_t code_at = p.code_at;
+    std::vector<uint32_t> spirv((size_t)p.code_words);
+    p.code_words = 0;
+    bool ok = in != nullptr;
+    if (ok) {
+        std::unique_lock<std::mutex> dk;
+        if (mu) dk = std::unique_lock<std::mutex>(*mu);
+        _fseeki64(in, code_at, SEEK_SET);
+        ok = fread(spirv.data(), 4, spirv.size(), in) == spirv.size();
+    }
+    Stage& st = p.stages[0];
+    if (ok) st.module = make_module(spirv);
+    if (!ok || !st.module) {
+        static std::atomic<int> logged{0};
+        if (logged++ < 20)
+            logf("vk: program cache: the code of compute program %016llx at %lld did not read or made no module: left out",
+                 (unsigned long long)p.key, (long long)code_at);
+        p.failed = true;
+        return false;
+    }
+    st.phis = fallback_size::spirv_phis(spirv.data(), spirv.size());
+    module_id_learned(p.key, p.variant, st.module);   // (the next run's load makes its pipeline without this read: vk_programs.h)
+    return true;
+}
+}   // namespace
+bool program_cache_complete(Program& p) {
+    std::lock_guard lk(light_mu);
+    return complete_from(p, disk_in, &disk_mu);
+}
+/// (the load at a program's create call, vk_programs.cpp) the same for a program no other thread has yet, with the worker's
+/// own handle on the file: neither light_mu nor disk_mu is held through its read, which a dispatch on the replay's thread
+/// would wait behind
+bool program_cache_complete_unshared(Program& p, FILE* in) {
+    return complete_from(p, in, nullptr);
+}
+
 /// (shader_mu held) the kept variants of key go to its list, ready, once
 void program_cache_load(uint64_t key, std::vector<std::unique_ptr<Program>>& variants, bool keep) {
     disk_init();
     if (!disk_on) return;
+    // (a load the game's create call queued for this key (vk_programs.cpp) is run or waited for here, and what it read is in the
+    // list before the rest is looked for: its records are not read twice, and its program is not translated a second time)
+    if (!keep) programs_load_wait(key);
     std::vector<DiskRecord> recs;
     {
         std::lock_guard lk(disk_mu);
@@ -539,7 +662,111 @@ void program_cache_load(uint64_t key, std::vector<std::unique_ptr<Program>>& var
         }
     }
     PROF_EXACT();   // (from disk: a mesh program's too)
-    program_cache_read(disk_in, &disk_mu, key, recs, variants);
+    static const bool whole = env_on("RX_VK_LOAD_ALL_VARIANTS");
+    if (keep || whole || recs.empty() || !(recs[0].kind & 1)) {
+        program_cache_read(disk_in, &disk_mu, key, recs, variants);
+        return;
+    }
+    // (a compute program at its first pick: each variant without its code, in the file's order as before; one that does not
+    // read that way, whole)
+#ifndef _WIN32
+    // (two small reads a variant, anywhere in a file of gigabytes that is seldom in memory: all asked of the disk first, so
+    // that it serves them together and not one after the other. A record's head is its first bytes, its descriptors its last)
+    if (disk_in)
+        for (const DiskRecord& d : recs) {
+#if defined(__APPLE__)   // (macos: no posix_fadvise; F_RDADVISE asks for the same read-ahead)
+            radvisory head{(off_t)(d.at - 16), 4096};
+            fcntl(fileno(disk_in), F_RDADVISE, &head);
+            if (d.size > 8192) {
+                radvisory tail{(off_t)(d.at + (int64_t)d.size - 8192), 8192};
+                fcntl(fileno(disk_in), F_RDADVISE, &tail);
+            }
+#else
+            posix_fadvise(fileno(disk_in), d.at - 16, 4096, POSIX_FADV_WILLNEED);
+            if (d.size > 8192) posix_fadvise(fileno(disk_in), d.at + (int64_t)d.size - 8192, 8192, POSIX_FADV_WILLNEED);
+#endif
+        }
+#endif
+    for (const DiskRecord& d : recs) {
+        if (std::unique_ptr<Program> p = program_cache_read_light(disk_in, &disk_mu, key, d)) {
+            variants.push_back(std::move(p));
+            st_cache_hits++;
+        } else {
+            program_cache_read(disk_in, &disk_mu, key, {d}, variants);
+        }
+    }
+}
+
+// ---- (hookshot) The records by position, for the load when the game makes a program (vk_programs.cpp) ----
+bool program_cache_has(uint64_t key) {
+    disk_init();
+    if (!disk_on) return false;
+    std::lock_guard lk(disk_mu);
+    const auto it = disk_records.find(key);
+    return it != disk_records.end() && !it->second.empty();
+}
+std::vector<DiskRecord> program_cache_records(uint64_t key) {
+    disk_init();
+    if (!disk_on) return {};
+    std::lock_guard lk(disk_mu);
+    const auto it = disk_records.find(key);
+    return it == disk_records.end() ? std::vector<DiskRecord>{} : it->second;
+}
+bool program_cache_variant(FILE* in, uint64_t key, const DiskRecord& d, uint64_t* variant) {
+    if (disk_zstd) return false;   // (a compressed record's head is not read by its place: the caller takes the record whole)
+    // (a record's head: its key and size, the kind word, then the answers, which are what its variant is the hash of)
+    constexpr size_t kFront = 1024;
+    std::vector<uint8_t> front(16 + std::min(d.size, kFront));
+    if (!in || _fseeki64(in, d.at - 16, SEEK_SET) || fread(front.data(), 1, front.size(), in) != front.size()) return false;
+    uint64_t head[2];
+    std::memcpy(head, front.data(), 16);
+    if (head[0] != key || head[1] != d.size) return false;
+    Reader r{front.data() + 16, front.data() + front.size()};
+    Program p;
+    r.get<uint32_t>();
+    r.list(p.answers);
+    if (r.bad) return false;   // (more answers than the front holds: the caller reads the record whole)
+    *variant = answers_hash(p);
+    return true;
+}
+std::vector<DiskRecord> program_cache_take(uint64_t key, const std::vector<DiskRecord>& want) {
+    std::vector<DiskRecord> taken;
+    std::lock_guard lk(disk_mu);
+    const auto it = disk_records.find(key);
+    if (it == disk_records.end()) return taken;
+    auto& have = it->second;
+    for (const DiskRecord& w : want) {
+        const auto at = std::find_if(have.begin(), have.end(), [&](const DiskRecord& d) { return d.at == w.at; });
+        if (at == have.end()) continue;
+        taken.push_back(*at);
+        have.erase(at);
+    }
+    auto& gone = disk_taken[key];
+    gone.insert(gone.end(), taken.begin(), taken.end());
+    if (have.empty()) disk_records.erase(it);
+    return taken;
+}
+std::unordered_set<uint64_t> program_cache_kept_keys() {
+    disk_init();
+    std::unordered_set<uint64_t> keys;
+    if (!disk_on) return keys;
+    std::lock_guard lk(disk_mu);
+    for (const auto& kv : disk_records)
+        if (!kv.second.empty()) keys.insert(kv.first);
+    return keys;
+}
+std::vector<uint64_t> program_cache_compute_keys() {
+    disk_init();
+    std::vector<uint64_t> keys;
+    if (!disk_on) return keys;
+    std::lock_guard lk(disk_mu);
+    for (const auto& kv : disk_records)
+        if (!kv.second.empty() && (kv.second[0].kind & 1)) keys.push_back(kv.first);
+    return keys;
+}
+std::string program_cache_path() {
+    disk_init();
+    return disk_on ? disk_path : std::string();
 }
 
 /// (the precompile, before the game: vk_draw.cpp) the kept compute programs and those named, ready, each given to fn. The rest of the
@@ -592,6 +819,16 @@ size_t program_cache_load_some(const std::unordered_set<uint64_t>& wanted, const
         auto& variants = programs[work[i].first];
         for (auto& p : made[i]) variants.push_back(std::move(p));
         for (auto& p : variants) n++, fn(*p);
+    }
+    // (and the mesh fallback programs in memory already, whose records an earlier read took: the state lists' programs in the
+    // start that prepared the shaders. They had no compute pipelines until their first draw, which was left out: fallback_loaded.h)
+    static const bool loaded_too = fallback_loaded::on(getenv("RX_VK_FALLBACK_LOADED"));
+    if (fallbacks && loaded_too) {
+        std::unordered_set<uint64_t> given;
+        for (const auto& w : work) given.insert(w.first);
+        const size_t loaded = fallback_loaded::each(programs, given, fn);
+        if (loaded) logf("vk: %zu mesh fallback programs read in earlier in this start are made ready with the rest", loaded);
+        n += loaded;
     }
     return n;
 }

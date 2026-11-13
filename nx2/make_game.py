@@ -602,7 +602,7 @@ def check_cpu():
 
 
 def check(a, work):
-    check_windows_sdk()   # (first: said in plain words when the game is chosen, not after it has been read)
+    check_windows_sdk(work)   # (first: said in plain words when the game is chosen, not after it has been read)
     check_cpu()
     if a.nup:
         probe = os.path.join(work, "probe")
@@ -712,26 +712,57 @@ def check_cpp_library(toolchain):
              "Visual Studio 2022 (or install it), then build again.")
 
 
-def check_linux_compiler():
-    """(linux) A C compiler that builds and links a program here (the AppImage's own clang and sysroot, else the system's):
-    found now, not 40 minutes in"""
-    sys.path.insert(0, os.path.join(ROOT, "third_party", "a64-kit", "tools"))
-    import toolchain
-    cc = toolchain.find("clang")
-    if not os.path.isfile(cc):
-        fail("No C compiler was found. Install clang (and lld), or use the Hookshot AppImage, which brings its own.")
-    sysroot = os.environ.get("HOOKSHOT_SYSROOT")
-    with tempfile.TemporaryDirectory() as d:
-        src = os.path.join(d, "t.c")
-        with open(src, "w") as f:
-            f.write(chr(10).join(("#include <stdio.h>", "#include <pthread.h>", "int main(void) { return 0; }", "")))
-        r = subprocess.run([cc] + (["--sysroot=" + sysroot] if sysroot else []) + ["-fuse-ld=lld", src, "-o", os.path.join(d, "t")],
-                           capture_output=True, text=True, encoding="utf-8", errors="replace")
-    if r.returncode:
-        print(r.stdout + r.stderr, flush=True)
-        errors = [l for l in r.stderr.splitlines() if "error" in l]
-        fail("The compiler could not build a test program: %s (install clang, lld and your system's C library headers: "
-             "libc6-dev on Debian and Ubuntu, glibc-devel on Fedora)" % (errors[0] if errors else "no message"))
+def check_linux_prerequisites(work=None):
+    """Use the compile's own resolvers before reading a dump; report all missing prerequisites together."""
+    import build
+    missing = []
+    requirements = os.path.join(ROOT, "requirements.txt")
+    source_build = os.path.isfile(requirements)
+    if source_build:   # (the AppImage already carries its Python environment)
+        with open(requirements, encoding="utf-8") as f:
+            for line in f:
+                # The top-level pins are mandatory; -r nx2/prompt_requirements.txt is optional.
+                pin = re.match(r"([A-Za-z0-9_]+)==", line)
+                if pin and importlib.util.find_spec(pin[1]) is None:
+                    missing.append("Python module %s (not on %s's isolated import path; install requirements.txt "
+                                   "with that Python)" % (pin[1], sys.executable))
+    prebuilt = build.prebuilt_renderer()
+    if prebuilt:
+        if not os.path.isfile(prebuilt):
+            missing.append("Vulkan renderer %s (HOOKSHOT_VK_PREBUILT)" % prebuilt)
+    else:
+        for (name, package, probe, env), found in zip(build.VK_HEADERS, build.vulkan_headers(work)):
+            if not found:
+                missing.append("%s header %s (CPM package %s: RX_CPM, clone/cpm, work/eg/.cache/cpm, then sibling "
+                               "mkw-recomp/Eglantine caches; then %s, package root or include/; then /usr/local, /usr)"
+                               % (name, probe, package, env))
+    build.ffmpeg_linux(missing)
+    cc = build.toolchain.find("clang")
+    # A source checkout also builds a64emit with clang++, even with a prebuilt renderer.
+    tools = [("clang", cc)]
+    if source_build or not prebuilt:
+        tools.append(("clang++", build.toolchain.find("clang++")))
+    for name, path in tools:
+        if not os.path.isfile(path):
+            missing.append("%s compiler %s (EMSDK/upstream/bin, else ~/emsdk/upstream/bin, then PATH; "
+                           "install clang or use the AppImage)" % (name, path))
+    if os.path.isfile(cc):
+        with tempfile.TemporaryDirectory() as d:
+            src = os.path.join(d, "t.c")
+            with open(src, "w") as f:
+                f.write(chr(10).join(("#include <stdio.h>", "#include <pthread.h>", "int main(void) { return 0; }", "")))
+            try:
+                r = subprocess.run([cc] + build.target() + ["-fuse-ld=lld", src, "-o", os.path.join(d, "t")],
+                                   capture_output=True, text=True, encoding="utf-8", errors="replace")
+                if r.returncode:
+                    missing.append("C compiler/linker test (clang -fuse-ld=lld, HOOKSHOT_SYSROOT when set; install "
+                                   "clang, lld and C library development headers): " + (r.stdout + r.stderr).strip())
+            except OSError as e:
+                missing.append("C compiler/linker test (%s): %s" % (cc, e))
+    if missing:
+        # One protocol message: GUI builders show the whole set, not only its first line.
+        fail("Missing Linux build prerequisites: " + "; ".join(" ".join(m.splitlines()) for m in missing))
+    print("Linux build prerequisites: OK", flush=True)
 
 
 def requested_jobs(value):
@@ -810,10 +841,10 @@ def check_mingw():
     print("the compiler: %s (no Visual Studio needed)" % os.environ["HOOKSHOT_MINGW"], flush=True)
 
 
-def check_windows_sdk():
+def check_windows_sdk(work=None):
     """The compiler is bundled; Microsoft's C library and Windows SDK may not be, by their licences. Found now, not 40 minutes in."""
     if LINUX:
-        return check_linux_compiler()
+        return check_linux_prerequisites(work)
     if bundled_mingw():
         return check_mingw()
     if CROSS:
@@ -2099,15 +2130,12 @@ def main(a=None):
     a.language = build_language(a, out)   # (now: the folder's own language.txt is still the one the player left)
     warn_slow_disk(out, work)   # (a warning, not a stop: a hard drive still builds, only much slower)
     check_writable(out)
-    # (linux) the compiler probe waits until the compile. The game-free cache test stops at the lift, and a missing
-    # compiler is still said before the long compile, not after the package has been read
     check_cpu()   # (no game read yet: the AppImage on a CPU without AVX2 stops here)
-    if not LINUX:
-        check_windows_sdk()
+    if getattr(a, "fetch_ngx_sdk", False):
+        fetch_ngx_sdk(a)   # (the SDK selects a source renderer instead of HOOKSHOT_VK_PREBUILT)
+    check_windows_sdk(work)
     stop_stray_compilers(work, a.default_work)
     drop_stale_objects(work)
-    if getattr(a, "fetch_ngx_sdk", False):
-        fetch_ngx_sdk(a)
     # (AMD FSR 4: the build's switch for nx2/build.py, and the folder's mark for the next --update)
     if fsr_wanted(a, out):
         os.environ["HOOKSHOT_FSR"] = "1"
@@ -2285,8 +2313,6 @@ def main(a=None):
 
     translate()
 
-    if LINUX:
-        check_linux_compiler()
     # (the compile's timer: build.py reads the record of the earlier builds on this PC, says which files this run really
     # rebuilds and how long the rest will take, and reports each module's seconds; they go into the record below)
     env["HOOKSHOT_TIMES"] = times_path(work)

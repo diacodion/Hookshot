@@ -276,26 +276,26 @@ def zstd_jobs(cc, flags, obj_dir, prefix):
                       "decompress/zstd_decompress.c", "decompress/zstd_decompress_block.c")]
 
 
-def cpm_dirs():
+def cpm_dirs(work=None):
     """CPM packages: RX_CPM, packaged tools/cpm, then legacy project caches.
     The packages provide Vulkan and SPIR-V headers, VMA and FFmpeg."""
     eden_ns2 = os.path.dirname(kit.ROOT)
     return [d for d in (os.environ.get("RX_CPM"), os.path.join(kit.ROOT, "cpm"),
-                        os.path.join(kit.WORK, "eg", ".cache", "cpm"),
+                        os.path.join(work if work is not None else kit.WORK, "eg", ".cache", "cpm"),
                         os.path.join(eden_ns2, "mkw-recomp", "work", "eg", ".cache", "cpm"),
                         os.path.join(eden_ns2, "Eglantine", ".cache", "cpm")) if d and os.path.isdir(d)]
 
 
-def cpm_package(name):
+def cpm_package(name, work=None):
     """The newest version of a package in the first CPM cache that has it (cpm_dirs), or None"""
-    for root in cpm_dirs():
+    for root in cpm_dirs(work):
         d = os.path.join(root, name)
         if os.path.isdir(d) and os.listdir(d):
             return os.path.join(d, sorted(os.listdir(d))[-1])
     return None
 
 
-def header_package(cpm_name, probe, env=None):
+def header_package(cpm_name, probe, env=None, work=None):
     """A package root with include/<probe>: CPM first, then env (package root or its include/ folder),
     then common system prefixes (/usr/local, /usr). Distro vulkan-headers / spirv-headers install
     under /usr/include; this is what makes a source build find them without a CPM tree."""
@@ -304,7 +304,7 @@ def header_package(cpm_name, probe, env=None):
     def ok(root):
         return bool(root) and os.path.isfile(os.path.join(root, "include", *parts))
 
-    pkg = cpm_package(cpm_name)
+    pkg = cpm_package(cpm_name, work)
     if ok(pkg):
         return pkg
     if env:
@@ -317,10 +317,24 @@ def header_package(cpm_name, probe, env=None):
                 parent = os.path.dirname(e)
                 if os.path.normpath(os.path.join(parent, "include")) == os.path.normpath(e):
                     return parent
-    for prefix in ("/opt/homebrew", "/usr/local", "/usr"):   # (macos: Homebrew's prefix on Apple silicon first)
+    for prefix in (("/opt/homebrew",) if MAC else ()) + ("/usr/local", "/usr"):   # (macos: Homebrew's prefix on Apple silicon first)
         if ok(prefix):
             return prefix
     return None
+
+
+VK_HEADERS = (("Vulkan", "vulkanheaders", "vulkan/vulkan.h", "HOOKSHOT_VULKAN_HEADERS"),
+              ("SPIR-V", "spirv-headers", "spirv/unified1/spirv.h", "HOOKSHOT_SPIRV_HEADERS"),
+              ("VMA", "vulkanmemoryallocator", "vk_mem_alloc.h", "HOOKSHOT_VMA_HEADERS"))
+
+
+def vulkan_headers(work=None):
+    return [header_package(package, probe, env, work) for _, package, probe, env in VK_HEADERS]
+
+
+def prebuilt_renderer():
+    # The AppImage's renderer has no NGX: an SDK build compiles its own instead.
+    return "" if NGX_SDK else os.environ.get("HOOKSHOT_VK_PREBUILT", "")
 
 
 def cache_put(obj, key):
@@ -583,20 +597,38 @@ def dav1d_windows():
         os.path.exists(os.path.join(d, "include", "dav1d", "dav1d.h")) else None
 
 
-def ffmpeg_linux():
+def ffmpeg_linux(missing=None):
     """(linux) FFmpeg's compile and link flags: HOOKSHOT_FFMPEG=<prefix> with static libraries (the AppImage's, with
-    dav1d for OoT's AV1 movies), else the system's through pkg-config; None without either"""
+    dav1d for OoT's AV1 movies), else the system's through pkg-config; None without either.
+    missing, when supplied, collects the prerequisites absent from the selected route."""
     pre = os.environ.get("HOOKSHOT_FFMPEG")
     if pre and os.path.exists(os.path.join(pre, "lib", "libavcodec.a")):
         libs = [os.path.join(pre, "lib", "lib%s.a" % l) for l in FFMPEG_LIBS]
+        if missing is not None:
+            for path in libs + [os.path.join(pre, "include", "lib" + l, l + ".h") for l in FFMPEG_LIBS]:
+                if not os.path.isfile(path):
+                    missing.append("FFmpeg: %s (HOOKSHOT_FFMPEG's selected static prefix)" % path)
         libs += [os.path.join(pre, "lib", "libdav1d.a")] if os.path.exists(os.path.join(pre, "lib", "libdav1d.a")) else []
         return ["-I" + os.path.join(pre, "include")], libs + ["-lm", "-lpthread"]
+    names = ["lib" + l for l in FFMPEG_LIBS]
     try:
-        names = ["lib" + l for l in FFMPEG_LIBS]
         cflags = subprocess.run(["pkg-config", "--cflags"] + names, capture_output=True, text=True, check=True).stdout.split()
         libs = subprocess.run(["pkg-config", "--libs"] + names, capture_output=True, text=True, check=True).stdout.split()
         return cflags, libs
-    except (OSError, subprocess.CalledProcessError):
+    except (OSError, subprocess.CalledProcessError) as e:
+        if missing is not None:
+            absent = []
+            for name in names:
+                try:
+                    r = subprocess.run(["pkg-config", "--exists", name], capture_output=True)
+                    if r.returncode:
+                        absent.append(name)
+                except OSError:
+                    absent = ["pkg-config", *names]
+                    break
+            missing.append("FFmpeg: %s (HOOKSHOT_FFMPEG with lib/libavcodec.a first, else pkg-config --cflags/--libs "
+                           "for %s; install the development libraries or set HOOKSHOT_FFMPEG). %s" %
+                           (", ".join(absent or names), " ".join(names), str(e)))
         return None
 
 
@@ -1170,11 +1202,8 @@ def main():
             jobs.append((cxx, src, os.path.join(obj_dir, "gpu_" + name + ".o"), gflags, gdeps))
     # the Vulkan back end, a DLL of its own (RX_BACKEND=vulkan): CPM cache, HOOKSHOT_*_HEADERS, or system includes
     vk_jobs = []
-    vk_headers = header_package("vulkanheaders", "vulkan/vulkan.h", "HOOKSHOT_VULKAN_HEADERS")
-    spirv_headers = header_package("spirv-headers", "spirv/unified1/spirv.h", "HOOKSHOT_SPIRV_HEADERS")
-    vma_headers = header_package("vulkanmemoryallocator", "vk_mem_alloc.h", "HOOKSHOT_VMA_HEADERS")
-    # (the AppImage's prebuilt hookshot_vk.so is built without NVIDIA's SDK: a build with HOOKSHOT_NGX_SDK compiles its own)
-    vk_prebuilt = "" if NGX_SDK else os.environ.get("HOOKSHOT_VK_PREBUILT", "")
+    vk_headers, spirv_headers, vma_headers = vulkan_headers()
+    vk_prebuilt = prebuilt_renderer()
     build_vk = a.standalone and not vk_prebuilt and vk_headers and spirv_headers and vma_headers
     if a.standalone and vk_prebuilt:
         print("the Vulkan back end: %s, as built" % vk_prebuilt)

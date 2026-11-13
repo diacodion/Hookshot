@@ -332,7 +332,8 @@ jobs:
           python -I -B tests/run_all.py
           pipeline_play_cache recorder_sync seed_variant_cleanup amd_subgroup_profiles cpu_target link_path_comma
           mirror_trim test_control test_hookshot_ctl env_on program_stamp_knobs driver_faults linux_driver_fault_guard
-          global_table_loop vendor_fixes native_float_atomic_add
+          global_table_loop vendor_fixes native_float_atomic_add auto_settings pipeline_cache_file fallback_pipeline_state
+          linux_preflight
       - name: Byte-compile the macOS scripts
         if: ${{ !cancelled() }}
         run: python -I -m py_compile scripts/macos/scene.py

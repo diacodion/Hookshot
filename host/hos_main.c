@@ -285,18 +285,25 @@ static int is_link(const char *p) {
     struct stat st;
     return lstat(p, &st) == 0 && S_ISLNK(st.st_mode);
 }
-static const char *move_old, *move_new;   /* (the user folder on the move, as realpath names it, and the new place) */
+static const char *move_old, *move_from, *move_new;   /* (the user folder on the move, as realpath names it and as given, and the new place) */
+static int moved_to(char *target, const char *dir) {   /* (a target under dir: named where it will be) */
+    char there[MAX_PATH];
+    const size_t n = dir && dir[0] == SEP ? strlen(dir) : 0;
+    if (!n || strncmp(target, dir, n) || target[n] != SEP) return 0;
+    snprintf(there, sizeof there, "%s%s", move_new, target + n);
+    snprintf(target, MAX_PATH, "%s", there);
+    return 1;
+}
 static int copy_link(const char *from, const char *to) {   /* (to what it names, in full; one that names nothing: as written) */
-    char target[MAX_PATH], there[MAX_PATH];
-    const size_t old = move_old ? strlen(move_old) : 0;
+    char target[MAX_PATH];
     if (!realpath(from, target)) {
         const ssize_t n = readlink(from, target, sizeof target - 1);
         if (n < 0) return 0;
         target[n] = 0;
-    } else if (old && !strncmp(target, move_old, old) && target[old] == SEP) {   /* (to an entry that moves too: where it will be) */
-        snprintf(there, sizeof there, "%s%s", move_new, target + old);
-        snprintf(target, sizeof target, "%s", there);
     }
+    /* (to an entry that moves too: where it will be. One whose entry went first names nothing by now, so its text is
+       checked too: else it named the old place, and only when the folder listed it before the entry) */
+    if (!moved_to(target, move_old)) moved_to(target, move_from);
     return symlink(target, to) == 0;
 }
 static int has_link(const char *p) {
@@ -386,7 +393,7 @@ static const char *saves_dir(const char *beside) {
     snprintf(pattern, sizeof pattern, "%s" SEP_S "*", beside);
     int moved = 0, kept = 0;
     char real[MAX_PATH];
-    move_old = realpath(beside, real), move_new = dir;
+    move_old = realpath(beside, real), move_from = beside, move_new = dir;
     /* (looked at first, then moved: with an entry the new place has already, the old place is kept, and it keeps them all.
        The others used to go all the same, and the game then ran here without them) */
     for (int move = 0; move < 2 && !kept; move++) {

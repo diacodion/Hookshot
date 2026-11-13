@@ -4,6 +4,7 @@
 // this test covers module ownership, not Shader::Info layout or SPIR-V validity.
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
@@ -20,6 +21,7 @@
 #ifdef _WIN32
 #include <io.h>
 #else
+#include <fcntl.h>   // (posix_fadvise: program_cache_load)
 #define _fseeki64 fseeko
 #define _ftelli64 ftello
 #endif
@@ -82,6 +84,7 @@ void vkDestroyShaderModule(uintptr_t device, VkShaderModule module, const void* 
 }
 void disk_init() {}
 void logf(const char*, ...) {}
+bool env_on(const char*) { return false; }   // (RX_VK_LOAD_ALL_VARIANTS: program_cache_load)
 bool disk_on = true, disk_listing = true;
 bool disk_zstd = false;   // (vk_progcache.cpp's RX_VK_PROGRAM_CACHE_ZSTD; the tests below use the uncompressed records)
 constexpr size_t kZstdHead = 20;
@@ -112,6 +115,12 @@ std::unordered_map<uint64_t, std::vector<DiskRecord>> disk_records;
 std::unordered_map<uint64_t, std::vector<DiskRecord>> disk_taken;   // (vk_shader.cpp: the records read in, for the prediction)
 std::atomic<int64_t> st_cache_hits{0};
 #define PROF_EXACT()   // (vk_prof.h's exact-timing scope, since #989: nothing to time here)
+// (the census's counters, gpu/vk/vk_programs.h: counted, not checked here)
+struct { int64_t loads = 0, load_ns = 0; bool background = false; } use_counters;
+struct { int64_t play_loads = 0, play_load_ns = 0; } census;
+std::atomic<bool> programs_in_play{false};
+void programs_load_wait(uint64_t) {}   // (the load at a program's create call, gpu/vk/vk_programs.cpp: none here)
+void module_id_learned(uint64_t, uint64_t, VkShaderModule) {}   // (shader module identifiers, vk_programs.cpp: none here)
 #include "cache_functions.inc"
 
 void save(uint64_t key, bool empty_second = false, int bad_answer = 0) {

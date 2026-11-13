@@ -339,16 +339,8 @@ static void poke_multiwait(Obj *o) {
 #else
 #include <emmintrin.h>
 #endif
-static int64_t spin_ns(void) {
-    static int64_t ns = -1;
-    if (ns < 0) {
-        const char *e = getenv("HOS_SPIN_US");
-        ns = (e ? atoll(e) : 20) * 1000;
-    }
-    return ns;
-}
 static int spin_begin(Obj *o, int *misses) {
-    if (spin_ns() <= 0) return 0;
+    if (hos_spin_ns() <= 0) return 0;
     static int adaptive = -1;
     if (adaptive < 0) adaptive = !env_on("HOS_SPIN_ALWAYS");
     *misses = __atomic_load_n(&o->spin_misses, __ATOMIC_RELAXED);
@@ -361,7 +353,7 @@ static void spin_end(Obj *o, int misses, int ok) {
 static void spin_until_set(Obj *o, volatile int *flag) {
     int misses;
     if (*flag > 0 || !spin_begin(o, &misses)) return;
-    const int64_t end = hos_now_ns() + spin_ns();
+    const int64_t end = hos_now_ns() + hos_spin_ns();
     for (;;) {
         for (int i = 0; i < 16; i++) {
             if (*flag > 0) {
@@ -379,7 +371,7 @@ static void spin_until_set(Obj *o, volatile int *flag) {
 static void spin_until_free(Obj *o) {
     int misses;
     if (!__atomic_load_n(&o->owner, __ATOMIC_RELAXED) || !spin_begin(o, &misses)) return;
-    const int64_t end = hos_now_ns() + spin_ns();
+    const int64_t end = hos_now_ns() + hos_spin_ns();
     for (;;) {
         for (int i = 0; i < 16; i++) {
             if (!__atomic_load_n(&o->owner, __ATOMIC_RELAXED)) {

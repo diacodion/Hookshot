@@ -62,6 +62,7 @@ with Metal's cache cold) the first run compiles ~800 pipelines: ~2.5-3.3 minutes
 | `host/hos_setjmp.c` | the lifted setjmp/longjmp for AAPCS64 |
 | `host/posix/prof_darwin.c` | `HOS_PROFILE` and `HOS_THREAD_TIMES` on Mach; no `HOS_SAMPLE*` (use `sample <pid>`) and no `HOS_WATCH` |
 | `host/posix/display_sdl.c` | the Vulkan surface (a Metal view) is made on the main thread, which the renderer's thread asks |
+| `gpu/vk` cache files | `F_PREALLOCATE` for `posix_fallocate` (`pipeline_cache_file.h`), `F_RDADVISE` for `posix_fadvise` (`vk_progcache.cpp`), no per-thread page fault count (`vk_programs.cpp`'s life log: 0) |
 
 ## MoltenVK
 
@@ -105,8 +106,12 @@ OoT draws its 3D below the output size and scales it up with a network of its ow
 whose matrix multiplies want cooperative matrices. Without them (MoltenVK, as AMD RDNA 2) the networks are left out and
 their upscales become linear stretches: the 3D looks soft and blocky, and the game's dithering and the distant grass
 blades, which the network resolves, stay as dots. On a Mac the first start therefore picks **AMD FSR 3.1** as the Upscaler
-(built from AMD's shaders, `vk_fsr3.cpp`; about 1 ms of an M4 Max's frame), and the Quality preset by the Mac's memory (8 GB
-Minimum, 16 GB Low, larger the defaults; before, every Apple GPU was "integrated" and had Minimum: the 3D at half size).
+(built from AMD's shaders, `vk_fsr3.cpp`; about 1 ms of an M4 Max's frame). The Quality preset is upstream's "Auto (this
+PC)" (#2850, `auto_settings.h`), whose rule for an Apple GPU is the port's: the tier by the Mac's memory less the ~10 GB the
+game takes itself (8 GB Minimum, 16 GB Low, 18 GB Balanced, 24 GB and up Ultra), FSR 3.1 at every tier. Upstream's own rule
+would put every Mac on Minimum, the 3D at half size: an Apple GPU is integrated and has no mesh shaders under MoltenVK.
+From Low up the Render resolution is 75% (FSR 3.1 would keep a tier's 100%: 25 fps on the M4 Max), and Auto's tuning in
+play may take it up to two steps lower while frames miss the 60 fps cap.
 FSR 3.1 also takes the shares whose networks do not translate (upstream's `temporal_rejected_network`, issue #1829), and
 since #2305 it runs on the temporal chain, with the characters' own motion.
 An options file saved before keeps its rows: Insert menu, Graphics, Upscaler and Render resolution.

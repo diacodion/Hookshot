@@ -15,7 +15,7 @@
 extern "C" {
 #endif
 
-#define MKWVK_API_VERSION 20
+#define MKWVK_API_VERSION 21
 enum { HOS_OPT_CHEAT_HEARTS = 32, HOS_OPT_CHEAT_FLIGHT, HOS_OPT_CHEAT_ACTION, HOS_OPT_CHEAT_CAMERA, HOS_OPT_CHEAT_SPEED };
 /* (hookshot) the Gameplay tab's Text size (host/oot_text_size.c): 0 the game's, 1 110%, 2 125%, 3 150%, 4 175% */
 enum { HOS_OPT_TEXT_SIZE = 10 };
@@ -266,6 +266,10 @@ typedef struct MkwVkRenderer {
        to choose on this PC, -2 no step of a list row reaches value here, left as it was) */
     int (*setting)(int index, MkwVkSetting *out);
     int (*setting_set)(const char *key, int value, MkwVkSetting *out);
+    /* (version 21, hookshot: 20 is the host's screen_size, which main added while this was 20 on its branch) the game gave a program its shaders (nvnProgramSetShaders, nvnProgramInitializeFromBuilder), on the
+       game's thread, before any draw uses it: what the back end kept ready for it can be loaded now (gpu/vk/vk_programs.cpp).
+       Its stages' code and control sections are in the game's memory at this call */
+    void (*nvn_program_created)(const nvn_prog *p);
 } MkwVkRenderer;
 
 /* the DLL's one export: null when Vulkan is not usable (the executable then falls back to WebGPU) */
@@ -281,7 +285,7 @@ __attribute__((visibility("default"))) const MkwVkRenderer *mkwvk_init(const Mkw
 #ifndef _WIN32
 /* (linux) what start() is given in place of a window handle (host/posix/display_sdl.c): the window makes the
    surface (SDL_Vulkan_CreateSurface: X11 or Wayland) and says its size in pixels */
-#define MKWVK_WINDOW_VERSION 2
+#define MKWVK_WINDOW_VERSION 3
 typedef struct MkwVkWindow {
     uint32_t version;   /* MKWVK_WINDOW_VERSION */
     int (*create_surface)(void *window, void *instance, void *surface_out);   /* (VkInstance, VkSurfaceKHR *): 1 if made */
@@ -289,6 +293,8 @@ typedef struct MkwVkWindow {
     void *window;
     /* (version 2) the refresh rate of the display the window is on, in mHz; 0 when not known (frame generation's Auto) */
     int (*refresh_mhz)(void *window);
+    /* (version 3) the desktop's size in pixels, 0 x 0 when not known (the Quality preset Auto (this PC)) */
+    void (*desktop_size)(void *window, int *width, int *height);
 } MkwVkWindow;
 #endif
 

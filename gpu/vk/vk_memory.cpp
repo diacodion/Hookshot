@@ -3391,17 +3391,22 @@ void mirrors_give_back(uint64_t want_bytes) {   // (pools_mu held)
     }
 }
 
-// ---- imports given back under pressure (16 GB PCs). The driver pins every imported pool and counts it in the system heap
-// the GPU reaches, whose budget is about half the PC's RAM (7.5 GB of 16): imports were kept for the session, the heap
-// went past its budget (7758 of 7503 MB on an RTX 3060 with 16 GB) and new imports failed with VK_ERROR_OUT_OF_DEVICE_MEMORY:
-// terrain left out, load zones stuck. Past RX_VK_IMPORT_HIGH percent of the budget (85) the pools bound least lately give
-// their imports back down to RX_VK_IMPORT_LOW percent (75): only pools without a mirror, not bound for kImportIdle
-// submissions and done on the GPU. They leave the table as a retired pool does (the page table's entries 0, the caches
-// emptied) and are imported again at their next binding; their memory is freed once everything recorded until now is
-// done. On Linux, on by default only where that heap's budget is under 12 GB (where it ran out); off by default on Windows.
-// RX_VK_IMPORT_HIGH=0: off, =85: on anywhere. (Caveat: last_value counts bindings, not shaders reaching a pool through the
-// page table; a pool only reached that way would read zeros until it is bound again. Not seen in play: the pools given back
-// were long unbound.) ----
+// ---- imports given back under pressure. The driver pins every imported pool and counts it in the system heap
+// the GPU reaches, whose budget is about half the PC's RAM (7.5 GB of 16, 15.4 GB of 32): imports were kept for the session,
+// the heap went past its budget (7758 of 7503 MB on an RTX 3060 with 16 GB) and new imports failed with
+// VK_ERROR_OUT_OF_DEVICE_MEMORY: terrain left out, load zones stuck; on 32 GB+ Linux PCs (where the budget is 12 GB or more
+// and this valve was off) 200+ idle unmirrored pools piled up over a two-hour session (7.4 GB live), bloating every amdgpu
+// submit's buffer list and the submit-time capture scan. Past RX_VK_IMPORT_HIGH percent (85) of the effective budget the pools
+// bound least lately give their imports back down to RX_VK_IMPORT_LOW percent (75): only pools without a mirror, not bound for
+// kImportIdle submissions and done on the GPU. Under a 12 GB heap budget (16 GB PCs and the Steam Deck) the effective budget is
+// the heap's own, as before; at 12 GB and above it is capped at 4500 MB by default (RX_VK_IMPORT_CAP_MB=<MB> sets another cap,
+// and RX_VK_IMPORT_CAP_MB=0 turns the >= 12 GB cap off; setting RX_VK_IMPORT_HIGH or RX_VK_IMPORT_LOW explicitly without
+// RX_VK_IMPORT_CAP_MB uses the full heap budget instead of the 4500 MB cap). They leave the table as a retired pool does (the
+// page table's entries 0, the caches emptied) and are imported again at their next binding; their memory is freed once
+// everything recorded until now is done. On by default on Linux; off by default on Windows. RX_VK_IMPORT_HIGH=0: off, =85: on
+// anywhere against the full budget. (Caveat: last_value counts bindings, not shaders reaching a pool through the page table; a
+// pool only reached that way would read zeros until it is bound again. Not seen in play: the pools given back were long
+// unbound.) ----
 bool system_heap_usage(uint64_t* used, uint64_t* budget);   // (vk_vma.cpp)
 std::deque<std::map<uint64_t, Pool>::node_type> evicted_pools;
 int64_t st_imports_evicted = 0;
@@ -3421,29 +3426,37 @@ void imports_give_back() {   // (pools_mu held)
     // watermarks (retired_imports_give_back), on by default on Windows AMD and Intel whatever the budget: that one
     // frees pools nothing uses any more, this one pools still live that have been idle
     static const char* env_high = getenv("RX_VK_IMPORT_HIGH");
+    static const char* env_low = getenv("RX_VK_IMPORT_LOW");
+    static const int cap_mb = env_int("RX_VK_IMPORT_CAP_MB", -1);
 #ifdef _WIN32
-    static const int high = env_high ? atoi(env_high) : 0;
+    static const int high = std::clamp(env_int("RX_VK_IMPORT_HIGH", 0), 0, 100);
 #else
-    static const int high = env_high ? atoi(env_high) : 85;
+    static const int high = std::clamp(env_int("RX_VK_IMPORT_HIGH", 85), 0, 100);
 #endif
-    static const int low = getenv("RX_VK_IMPORT_LOW") ? std::clamp(atoi(getenv("RX_VK_IMPORT_LOW")), 10, 95) : 75;
+    static const int low = std::clamp(env_int("RX_VK_IMPORT_LOW", 75), 10, 95);
     static uint64_t calls = 0;
     if (high <= 0 || ++calls % 16) return;   // (the driver asked every 16 submissions)
     uint64_t used = 0, budget = 0;
     if (!system_heap_usage(&used, &budget)) return;
-    static const bool small = [&] {   // (on by default where the budget is small: 16 GB of RAM and less)
-        const bool on = env_high || budget < (12ull << 30);
-        logf("vk: imports given back past %d%% of a %llu MB system heap budget: %s", high, (unsigned long long)(budget >> 20),
-             on ? "on" : "off (RX_VK_IMPORT_HIGH=85 turns it on)");
-        return on;
+    const uint64_t cap = retired_give_back::live_budget(budget, (env_high && *env_high) || (env_low && *env_low), cap_mb);
+    static const bool logged_cfg = [&] {
+        if (!cap)
+            logf("vk: imports given back past %d%% of a %llu MB system heap budget: off (RX_VK_IMPORT_CAP_MB=0)", high,
+                 (unsigned long long)(budget >> 20));
+        else if (cap < budget)
+            logf("vk: imports given back past %d%% of a %llu MB cap (%llu MB system heap budget): on", high,
+                 (unsigned long long)(cap >> 20), (unsigned long long)(budget >> 20));
+        else
+            logf("vk: imports given back past %d%% of a %llu MB system heap budget: on", high, (unsigned long long)(budget >> 20));
+        return true;
     }();
+    (void)logged_cfg;
     // (with both valves on, the other ran just before, on this same submission (the two count alike): what it queued is
     // still in the driver's figure until the GPU is past it, and live pools would go for the same bytes. Only where
     // retired imports wait; elsewhere they go back at every submission and this valve reads what it always read)
     if (retired_mode() == retired_give_back::Mode::GRACE) used = retired_give_back::settled(used, dead_import_bytes);
-    if (!small || used <= budget / 100 * (uint64_t)high) return;
-    const uint64_t target = budget / 100 * (uint64_t)low;
-    const uint64_t want = used > target ? used - target : 0;
+    const uint64_t want = retired_give_back::want(used, cap, high, low);
+    if (!want) return;
     std::vector<std::map<uint64_t, Pool>::iterator> idle;
     for (auto it = imported.begin(); it != imported.end(); ++it) {
         const Pool& p = it->second;
