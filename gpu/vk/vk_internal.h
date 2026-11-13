@@ -32,6 +32,9 @@ namespace mkwvk {
 extern std::vector<std::string> gpu_device_names;
 extern const MkwVkHost* host;
 void logf(const char* fmt, ...);
+// (hookshot) A line at another level than info, as host/hos.h's hos_log_at: "[trace] " leads its text, after the host's thread tag
+enum LogLevel : int { log_error, log_warn, log_info, log_debug, log_trace };
+void logf_at(LogLevel level, const char* fmt, ...);
 void queue_flush_locked();   // (vk_replay.cpp, RX_VK_BATCH: held submits out; dev.present_mu held)
 void queue_flush();          // (the same, taking dev.present_mu)
 // (hookshot) held submits out, then vkDeviceWaitIdle with the present queue's lock taken too (dev.present_mu held): the device's
@@ -51,7 +54,7 @@ struct Device {
     bool mesh_shader = false, mesh_queries = false, external_memory_host = false, external_memory_fd = false, dma_buf_import = false, pipeline_library = false,
          graphics_pipeline_library = false, custom_border_color = false, dynamic_state3 = false,
          depth_clip_control = false, null_descriptor = false, index_uint8 = false, push_descriptor = false,
-         conditional_rendering = false, provoking_vertex = false, vertex_divisor = false, stencil_export = false, memory_budget = false,
+         conditional_rendering = false, occlusion_precise = false, host_query_reset = false, provoking_vertex = false, vertex_divisor = false, stencil_export = false, memory_budget = false,
          checkpoints = false,   // (RX_VK_CHECKPOINTS: VK_NV_device_diagnostic_checkpoints)
          buffer_marker = false, // (RX_VK_CHECKPOINTS=1 without the NV extension: VK_AMD_buffer_marker, AMD and Intel)
          device_fault = false,  // (VK_EXT_device_fault: what a lost device faulted on)
@@ -363,12 +366,20 @@ void state_list_run();                        // (an update: the state list's pi
 /// (hookshot) A prediction a start began and did not finish (closed, or ended in it): the next start runs it again
 bool predict_pending();   // vk_draw.cpp
 void predict_run(void (*progress)(size_t done, size_t total));   // (after a prepare_run that prepared: the notes' predictions)
+/// (hookshot) Compile shaders: whether a preparation builds the predicted pipelines too (All), or leaves them out (Most, the
+/// default). RX_VK_COMPILE_SHADERS=all or most (the game's --compile-shaders), else compile_shaders= in hookshot_options.ini
+/// (1 All, 0 Most)
+bool compile_all();   // vk_draw.cpp
 /// (hookshot) The CPUs this process may run on: its affinity mask (sched_getaffinity on Linux, through host/posix), not every CPU
 /// the PC has. The prepare's pools are sized from it: a process limited to 12 of 24 CPUs ran 24 threads on them
 unsigned usable_cpus();   // vk_progcache.cpp
 /// (hookshot) Half the PC's CPUs (one a core where a core runs two threads: the translation's and the stage libraries' workers, at
 /// below normal priority), and never more than usable_cpus: on 12 of 24 CPUs, 6 workers made the translation 40% slower than 12
 unsigned half_cpus();   // vk_progcache.cpp
+/// (hookshot) The workers of the preparation's first part (prepare_run): half_cpus, or with the segment heap every usable CPU as far
+/// as the free memory allows (gpu/vk/prepare_workers.h, where the measurements are)
+unsigned prepare_cpus();   // vk_progcache.cpp
+bool segment_heap();       // vk_progcache.cpp (the process heap is the segment heap: nx2/win_manifest.py)
 /// (hookshot) The driver's shader cache folders' size, logged with when: at the start, after the prediction
 void driver_cache_log(const char* when);   // vk_draw.cpp
 /// (hookshot) At the start after a preparation, behind the game: a sample of its predicted pipelines asked of the driver without

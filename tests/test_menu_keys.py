@@ -194,7 +194,6 @@ static std::string ini_path() { return ini_file; }
 static int parse_output(const char*) { return 0; }
 static std::string mic_want;
 [[maybe_unused]] static uint64_t auto_for = 0, auto_tuned = 0;   // (the Quality preset Auto (this PC)'s fingerprints, which save() writes)
-[[maybe_unused]] static struct { uint32_t w = 0, h = 0; } auto_output;   // (and the Output resolution it set, by its size)
 static struct { int steps = 0; bool went_down = false; } auto_tuning;   // (and its tuning's steps)
 static std::string mic_key(const char* name) { return name; }
 static void mic_tell_host() {}
@@ -214,6 +213,7 @@ static int loaded_as(int shortcut, int version) {
     opts = Options{};
     mic_want.clear();
     bool has_options = false, has_vram_budget = false, has_memory_budget = false;
+    [[maybe_unused]] bool has_output = false;   // (menu_init's: an output_res= line read)
     // LOAD_OPTIONS
     CHECK(has_options && !has_vram_budget && !has_memory_budget);
     return opts.menu_shortcut;

@@ -94,7 +94,6 @@ std::string ini_file;
 std::string ini_path() { return ini_file; }
 std::string mic_want;
 uint64_t auto_for = 0, auto_tuned = 0;   // (the Quality preset Auto (this PC)'s fingerprints, which save() writes)
-struct { uint32_t w = 0, h = 0; } auto_output;   // (and the Output resolution it set, by its size)
 struct { int steps = 0; bool went_down = false; } auto_tuning;   // (and its tuning's steps)
 constexpr int HOS_KEY_N = 1, HOS_SW_N = 1, HOS_BIND_PAD = 0, HOS_BIND_KEY = 1;
 constexpr int HOS_KEY_OC_NOTE_L = 1, HOS_KEY_OC_NOTE_X = 1;   /* (the note rows: past this stub's one row) */
@@ -163,7 +162,7 @@ int main(int argc, char** argv) {
     CHECK(opts.output_res == 3 && output_at(3).w == 2560 && output_at(3).h == 1440);
     save();
     CHECK(has("output_res=2560x1440\n"));
-    // A preset (or the Upscaler's snap) sets an overridden row to the very value the environment forced: the menu's, saved
+    // A preset sets an overridden row to the very value the environment forced: the menu's, saved
     CHECK(has("game_speed=0\n"));
     env_release(&opts.realtime);
     save();

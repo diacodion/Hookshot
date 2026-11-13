@@ -108,14 +108,25 @@ int64_t steady_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 std::atomic<int64_t> last_log_ms{0};   // (when logf last wrote: the preparation's status line comes after a silence)
-void logf(const char* fmt, ...) {
+static void vlogf(LogLevel level, const char* fmt, std::va_list a) {
+    static const char* const tags[] = {"[error] ", "[warn] ", "", "[debug] ", "[trace] "};
     char b[1024];
-    std::va_list a;
-    va_start(a, fmt);
-    std::vsnprintf(b, sizeof b, fmt, a);
-    va_end(a);
+    const int n = std::snprintf(b, sizeof b, "%s", tags[level >= log_error && level <= log_trace ? level : log_info]);
+    std::vsnprintf(b + n, sizeof b - n, fmt, a);
     last_log_ms.store(steady_ms(), std::memory_order_relaxed);
     if (host) host->log(b);
+}
+void logf(const char* fmt, ...) {
+    std::va_list a;
+    va_start(a, fmt);
+    vlogf(log_info, fmt, a);
+    va_end(a);
+}
+void logf_at(LogLevel level, const char* fmt, ...) {
+    std::va_list a;
+    va_start(a, fmt);
+    vlogf(level, fmt, a);
+    va_end(a);
 }
 
 namespace {
@@ -538,6 +549,10 @@ bool create_device() {
     pv.transformFeedbackPreservesProvokingVertex = VK_FALSE;
     dev.provoking_vertex = dev.provoking_vertex && pv.provokingVertexLast;
     dev.conditional_rendering = dev.conditional_rendering && cond.conditionalRendering;
+    // (hookshot) the occlusion queries' real counts (vk_replay.cpp, RX_VK_OCC_QUERIES): a sample count, not only "any", and
+    // their reset from the CPU once read (both on when the device has them: the queried chain is what it is created with)
+    dev.occlusion_precise = f.features.occlusionQueryPrecise == VK_TRUE;
+    dev.host_query_reset = f12.hostQueryReset == VK_TRUE;
     dev.custom_border_color = dev.custom_border_color && border.customBorderColors && border.customBorderColorWithoutFormat;
     dev.depth_clip_control = dev.depth_clip_control && clip.depthClipControl;
     dev.graphics_pipeline_library = dev.graphics_pipeline_library && gpl.graphicsPipelineLibrary;
@@ -1162,7 +1177,7 @@ void prepare_with_screen() {
         const bool prepared = !update && prepare_run(prep_progress, false);
         if (!prepared) prep_skip[0].store(true);
         // (a first start, or one after a start that did not finish them: the pipelines the notes predict, into the driver's cache)
-        if ((prepared || (!update && predict_pending())) && !prepare_stopped()) {
+        if ((prepared || (!update && predict_pending())) && compile_all() && !prepare_stopped()) {
             prep_done.store(0), prep_total.store(0);
             prep_stage.store(1);
             predict_run(prep_progress);
@@ -1299,11 +1314,12 @@ bool started_up() {
         }
         part = 0;
         const bool prepared = prepare_run(progress, false, true);
-        const bool predict = prepared || predict_pending();   // (or the last run did not finish the prediction)
-        if (!prepared) {
-            if (!bar.counted[0]) bar.skip(0);   // (an already prepared seed can still import pipeline states)
-            if (!predict) bar.skip(1);
-        }
+        // (or the last run did not finish the prediction; Compile shaders on Most: never, compile_all)
+        const bool predict = (prepared || predict_pending()) && compile_all();
+        if (!prepared && !bar.counted[0]) bar.skip(0);   // (an already prepared seed can still import pipeline states)
+        // (no prediction: its part of the bar goes. On Most after a preparation too: left in, the step to the noted pipelines
+        // counted it done at its guess, and the bar jumped by the prediction's share, about half of it)
+        if (!predict) bar.skip(1);
         part = 1;
         prepare_moved(1, 0, 0);
         if (predict) predict_run(progress);
@@ -1371,7 +1387,7 @@ bool started_up() {
             WriteFile(console, line, (DWORD)n, &wrote, nullptr);
         };
         const bool update = prepare_is_update();   // (an update: what the notes name now, the rest in play)
-        if (!update && (prepare_run(progress, false) || predict_pending())) predict_run(progress);
+        if (!update && (prepare_run(progress, false) || predict_pending()) && compile_all()) predict_run(progress);
         if (update) state_list_run();
         precompile_run(progress);
         if (update) prepare_background();
@@ -1458,16 +1474,21 @@ void auto_profile() {
     mi.cbSize = sizeof mi;
     DEVMODEW dm{};
     dm.dmSize = sizeof dm;
-    if (main_window && GetMonitorInfoW(MonitorFromWindow(main_window, MONITOR_DEFAULTTOPRIMARY), &mi) &&
-        EnumDisplaySettingsW(mi.szDevice, ENUM_CURRENT_SETTINGS, &dm))
+    // (no window, the Builder's shader preparation and a headless start: the primary monitor, MonitorFromWindow(NULL, ...).
+    // A 0x0 screen made a fingerprint no options file had, so such a run chose Auto again for no screen and wrote it over
+    // the player's settings: issue 165)
+    if (GetMonitorInfoW(MonitorFromWindow(main_window, MONITOR_DEFAULTTOPRIMARY), &mi) &&
+        EnumDisplaySettingsW(mi.szDevice, ENUM_CURRENT_SETTINGS, &dm)) {
         hw.screen_w = (int)dm.dmPelsWidth, hw.screen_h = (int)dm.dmPelsHeight;
+        if (!main_window && dm.dmDisplayFrequency > 1) hw.refresh_hz = (int)dm.dmDisplayFrequency;   // (as display_refresh_mhz)
+    }
 #else
     const long pages = sysconf(_SC_PHYS_PAGES), page = sysconf(_SC_PAGE_SIZE);
     if (pages > 0 && page > 0) hw.ram_mb = (uint32_t)(((uint64_t)pages * (uint64_t)page) >> 20);
     const MkwVkWindow* w = (const MkwVkWindow*)main_window;
     if (w && w->version >= 3 && w->desktop_size) w->desktop_size(w->window, &hw.screen_w, &hw.screen_h);
 #endif
-    hw.refresh_hz = (display_refresh_mhz() + 500) / 1000;
+    if (main_window || !hw.refresh_hz) hw.refresh_hz = (display_refresh_mhz() + 500) / 1000;
     menu_auto_for_gpu(p, hw);
 }
 

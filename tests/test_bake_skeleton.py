@@ -249,7 +249,7 @@ class BakeTranslateTests(unittest.TestCase):
 
 
 class BakeStampTrapTests(unittest.TestCase):
-    """BAKE.md s6 trap 1: build.py hashes sorted(translator) + the four
+    """docs/BAKE.md s6 trap 1: build.py hashes sorted(translator) + the four
     named files APPENDED, not merged. My translator_stamp must follow the
     appended order; this fails if someone 'simplifies' it into one sort."""
 

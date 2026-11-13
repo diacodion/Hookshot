@@ -5,7 +5,7 @@
    guest main thread, run every module's DT_INIT in rtld's order (the SDK crt's _init: TLS registration with musl,
    then the module's constructors), then nninitStartup and nnMain.
 
-   Usage: <game>.exe [image.bin] [--romfs <dir>] [--user <dir>] [--trace] [--prepare-shaders]
+   Usage: <game>.exe [image.bin] [--romfs <dir>] [--user <dir>] [--trace] [--prepare-shaders] [--compile-shaders all|most]
    Environment: HOS_TRACE=1 (log HLE calls), HOS_MEMORY_MB (memory the game is told it has),
                 HOS_NVN_CONTINUE=1 (go on past nvnBootstrapLoader). */
 #include "hos.h"
@@ -1706,11 +1706,22 @@ static void occlusion_switch(void) {
     hos_occlusion_off = e && e[0] == '1';
     if (hos_occlusion_off) hos_log("occlusion off: the game makes no occlusion queries (HOOKSHOT_OCCLUSION_OFF=1)");
 }
-/* (hookshot, issue 1241) The game needs about 10 GB of memory and swap together (the page file on Windows): on 8 GB of RAM
-   and no swap it closed before the title with no word of why, and adding swap let it play. Below that, the log says so and
-   a message says it once at boot; the game starts anyway. The text, or 0 when there is enough */
+/* (issues 1241, 2838) Swap can keep a small Linux PC from running out of backing storage without keeping it responsive.
+   Warn below the existing 10 GiB floor in physical RAM there too; this is not a promise that 10 GiB is enough.
+   The game starts anyway, and headless runs only log the warning. Windows keeps its commit-limit check. */
 #define HOS_MEMORY_NEEDED_MB 10240ull
 static int memory_notice_text(unsigned long long ram_mb, unsigned long long swap_mb, char *out, size_t cap) {
+#if defined(__linux__) && !defined(_WIN32)
+    if (ram_mb < HOS_MEMORY_NEEDED_MB) {
+        snprintf(out, cap,
+                 "This PC has %.1f GiB of RAM and %.1f GiB of swap. Hookshot recommends 16 GB of RAM or more; "
+                 "the game alone can use more than 13 GiB.\n\n"
+                 "Swap can prevent an out-of-memory exit, but heavy swapping can make the game and desktop unresponsive. "
+                 "Close other programs before playing. More swap is not a replacement for RAM. The game starts anyway.",
+                 ram_mb / 1024.0, swap_mb / 1024.0);
+        return 1;
+    }
+#endif
     if (ram_mb + swap_mb >= HOS_MEMORY_NEEDED_MB) return 0;
     snprintf(out, cap,
              "This PC has %.1f GB of memory and %.1f GB of swap (the page file on Windows). The game needs about %llu GB of the "
@@ -1739,7 +1750,12 @@ static void memory_notice(void) {
         hos_log("boot: %llu MB of memory, %llu MB of swap", ram, swap);
         return;
     }
+#if defined(__linux__) && !defined(_WIN32)
+    hos_log("boot: LOW MEMORY: %llu MB of memory, %llu MB of swap; below %llu MB of physical RAM: heavy swapping can make "
+            "the game and desktop unresponsive (16 GB RAM or more recommended)", ram, swap, HOS_MEMORY_NEEDED_MB);
+#else
     hos_log("boot: LOW MEMORY: %llu MB of memory, %llu MB of swap, below the ~%llu MB the game needs", ram, swap, HOS_MEMORY_NEEDED_MB);
+#endif
     if (env_on("HOS_HEADLESS")) return;
 #ifndef _WIN32
     int hos_sdl_load(void);
@@ -1847,8 +1863,21 @@ static int game_main(int argc, char **argv) {
     void hos_control_start(const char *version);
     hos_control_start(HOOKSHOT_VERSION);   /* (HOS_CONTROL=<socket>: the control bridge, host/control.c) */
     const char *image = NULL;
+    /* (hookshot) --compile-shaders all or most: what a preparation of this run builds (gpu/vk/vk_draw.cpp compile_all), over
+       compile_shaders= in hookshot_options.ini; as RX_VK_COMPILE_SHADERS, set before --prepare-shaders runs, wherever it stands */
+    for (int i = 1; i + 1 < argc; i++)
+        if (!strcmp(argv[i], "--compile-shaders")) {
+#ifdef _WIN32
+            char set[64];
+            snprintf(set, sizeof set, "RX_VK_COMPILE_SHADERS=%s", argv[i + 1]);
+            _putenv(set);
+#else
+            setenv("RX_VK_COMPILE_SHADERS", argv[i + 1], 1);
+#endif
+        }
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--romfs") && i + 1 < argc) hos_romfs_dir = argv[++i];
+        else if (!strcmp(argv[i], "--compile-shaders") && i + 1 < argc) i++;   /* (taken above) */
         else if (!strcmp(argv[i], "--user") && i + 1 < argc) hos_user_dir = argv[++i];
         else if (!strcmp(argv[i], "--trace")) hos_trace = 1;
         else if (!strcmp(argv[i], "--prepare-shaders")) {   /* (hookshot) a build's last step: no game */
@@ -1897,7 +1926,7 @@ static int game_main(int argc, char **argv) {
         }
     }
     if (!image) {
-        fprintf(stderr, "usage: %s [image.bin] [--romfs <dir>] [--user <dir>] [--trace] [--prepare-shaders]\n",
+        fprintf(stderr, "usage: %s [image.bin] [--romfs <dir>] [--user <dir>] [--trace] [--prepare-shaders] [--compile-shaders all|most]\n",
                 argv[0]);
         return 2;
     }
@@ -2104,7 +2133,7 @@ int main(int argc, char **argv) {
     int prepare_shaders = 0;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--prepare-shaders")) prepare_shaders = 1;
-        else if (!strcmp(argv[i], "--romfs") || !strcmp(argv[i], "--user")) i++;
+        else if (!strcmp(argv[i], "--romfs") || !strcmp(argv[i], "--user") || !strcmp(argv[i], "--compile-shaders")) i++;
     }
     /* The builder's preparation worker needs Vulkan, but no SDL display. */
     const int window = prepare_shaders ? 0 : hos_display_init();

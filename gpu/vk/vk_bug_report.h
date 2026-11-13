@@ -1,6 +1,6 @@
 // The Insert menu's Bug report (vk_menu.cpp, the Gameplay tab): one press writes what an issue needs into a folder of its
 // own, bug-reports/<date>_<time> in the game folder, and nothing else. report.txt holds the answers the issue form asks for
-// (.github/ISSUE_TEMPLATE/1-game-problem.yml: the version, where the player is, the GPU and its driver, CPU, RAM and system,
+// (.forgejo/ISSUE_TEMPLATE/1-game-problem.yml: the version, where the player is, the GPU and its driver, CPU, RAM and system,
 // the options and switches changed from their defaults) under the form's own headings, so scripts/hardware_report.py reads
 // them as it reads an issue; beside it this run's log and the last run's, the home folder and the user's name taken out of
 // their paths, and a picture of the game's frame without the menu (vk_replay.cpp's shot_ask takes it at its next present). Nothing is

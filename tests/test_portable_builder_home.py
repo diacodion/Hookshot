@@ -1,4 +1,4 @@
-"""Compile the actual Windows Builder home/storage paths over authored roots; no install, game or process launch."""
+"""Compile the actual Windows Builder home paths over authored roots; no install, game or process launch."""
 import argparse
 from pathlib import Path
 import shutil
@@ -18,7 +18,7 @@ def main():
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="portable-builder-home-") as folder:
         root = Path(folder)
-        for name in ("BuilderHome.cs", "Storage.cs"):
+        for name in ("BuilderHome.cs",):
             shutil.copyfile(args.source / "builder/HookshotBuilder" / name, root / name)
         shutil.copyfile(ROOT / "tests/portable_builder_home_test.cs", root / "Program.cs")
         (root / "NuGet.Config").write_text("<configuration><packageSources><clear/></packageSources></configuration>", encoding="utf-8")
