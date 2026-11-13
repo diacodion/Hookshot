@@ -1300,10 +1300,10 @@ bool started_up() {
         const bool prepared = prepare_run(progress, false, true);
         // (or the last run did not finish the prediction; Compile shaders on Most: never, compile_all)
         const bool predict = (prepared || predict_pending()) && compile_all();
-        if (!prepared) {
-            if (!bar.counted[0]) bar.skip(0);   // (an already prepared seed can still import pipeline states)
-            if (!predict) bar.skip(1);
-        }
+        if (!prepared && !bar.counted[0]) bar.skip(0);   // (an already prepared seed can still import pipeline states)
+        // (no prediction: its part of the bar goes. On Most after a preparation too: left in, the step to the noted pipelines
+        // counted it done at its guess, and the bar jumped by the prediction's share, about half of it)
+        if (!predict) bar.skip(1);
         part = 1;
         prepare_moved(1, 0, 0);
         if (predict) predict_run(progress);
