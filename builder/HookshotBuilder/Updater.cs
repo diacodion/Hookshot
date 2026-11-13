@@ -7,8 +7,8 @@ namespace HookshotBuilder;
 /// this builder's own tools (nx2/make_game.py --update, from the game files the folder keeps), and the way to the launcher.
 static class Updater
 {
-    /// Where players get the launcher, which keeps the builder and the game up to date
-    public const string LauncherReleases = "https://git.notrexed.dev/Hookshot/HookshotLauncher/releases";
+    /// Where players get the launcher, which keeps the builder and the game up to date: the website's download page
+    public const string LauncherDownload = "https://hookshot.magicbean.dev/download";
 
     public static void FromCommandLine(MainWindow w)
     {
@@ -30,5 +30,5 @@ static class Updater
         w.UpdateBuild(tools, folder);
     }
 
-    public static void OpenLauncherReleases() => Process.Start(new ProcessStartInfo(LauncherReleases) { UseShellExecute = true });
+    public static void OpenLauncherDownload() => Process.Start(new ProcessStartInfo(LauncherDownload) { UseShellExecute = true });
 }

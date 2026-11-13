@@ -489,7 +489,7 @@ def start_link():
 
 
 def folder_link(game_folder):
-    """The game folder's own launcher: Play, and Update left of it when a newer release is out (the setup exe's launch mode)"""
+    """The game folder's own launcher: Play, and Update left of it when its builder is newer than the game (the setup exe's launch mode)"""
     return os.path.join(game_folder, "Hookshot.lnk")
 
 

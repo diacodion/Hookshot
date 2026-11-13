@@ -2392,7 +2392,7 @@ def main(a=None):
     # (the new files are copied in beside the old ones as <name>.new and swapped in only once all are complete: a build stopped while
     # copying, or a full disk, left a half-written 460 MB hookshot.exe and no game to play. The old game stays playable until the swap)
     # (Windows) hookshot.exe in the folder is the game's launcher: the builder's small setup, which opens the installed builder as a
-    # launcher for this folder (Play, and Update left of it when a newer release is out: builder/setup/setup.c launch mode), or starts
+    # launcher for this folder (Play, and Update left of it when its builder is newer than the game: builder/setup/setup.c launch mode), or starts
     # the game when no builder is installed. The game and its DLLs are in bin\; its files (image.bin, romfs, saves, settings, caches)
     # stay in the folder (host/hos_paths.h). Without the setup (a development build) the game stays hookshot.exe in the folder
     staged = []

@@ -34,6 +34,15 @@ The AppImage uses tools.lock's Linux tools (builder/linux/linux_tools.py sets `E
 `HOOKSHOT_FFMPEG`, `HOOKSHOT_SDL2` and `RX_CPM` to them),
 and `RX_TARGET=windows` keeps the Windows toolchain checks rather than requiring Linux development libraries.
 The button-prompt packages in `nx2/prompt_requirements.txt` remain optional; this check installs nothing.
+The sysroot (`scripts/linux/deps.sh tools`) copies the system libraries it takes by value: a host's absolute
+development alias such as `libmvec.so` becomes the library's bytes, so the packed tool does not depend on the player's
+filesystem. Only its own relative `lib -> usr/lib` stays a link.
+
+On Linux, a game folder's `hookshot` (`builder/linux/hookshot-folder`) starts the builder named by `builder=` in
+`hookshot_version.txt`, the one that built the folder, with `--launch <folder>`; when that one is gone, it starts
+`bin/hookshot`. The Linux builder never looks for or installs another version (the Hookshot Launcher does): its Update
+builds a game older than itself again with its own version, and a newer game gets Play. Building a newer game back
+with older tools, for instance after changing NVIDIA DLSS, asks first (`tests/test_linux_downgrade.py`).
 
 Run everything with `python -I` from this folder.
 

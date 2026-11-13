@@ -4,5 +4,5 @@ Qt's DLLs (both signed by their makers), with no executable of Hookshot's own to
 into %LOCALAPPDATA%\\HookshotBuilder\\versions\\<tag>. It looks for no release itself: the Hookshot Launcher installs and updates
 the builder (docs/releases.md)."""
 APP_ID = "MagicBean.Hookshot.Builder"   # (Windows' AppUserModelID: the taskbar groups and shows the window as Hookshot, not Python)
-# (where players get the launcher, which installs and updates the builder)
-LAUNCHER_RELEASES = "https://git.notrexed.dev/Hookshot/HookshotLauncher/releases"
+# (where players get the launcher, which installs and updates the builder: the website's download page)
+LAUNCHER_DOWNLOAD = "https://hookshot.magicbean.dev/download"

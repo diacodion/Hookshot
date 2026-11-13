@@ -17,7 +17,7 @@ import urllib.error
 import urllib.request
 import zipfile
 
-from . import LAUNCHER_RELEASES, paths
+from . import LAUNCHER_DOWNLOAD, paths
 
 UA = "HookshotBuilder-Setup/2.0"
 WAITS = (3, 6, 12, 20, 30, 45, 60)   # (8 tries over ~3 minutes)
@@ -105,7 +105,7 @@ def manifest_url(tag=None):
     e = os.environ.get("HOOKSHOT_SETUP_LIST")
     if e:
         return e
-    raise SetupError("The builder does not download versions: the Hookshot Launcher installs and updates it (%s)." % LAUNCHER_RELEASES)
+    raise SetupError("The builder does not download versions: the Hookshot Launcher installs and updates it (%s)." % LAUNCHER_DOWNLOAD)
 
 
 def read_manifest(status, tag=None, cancel=None):
@@ -126,7 +126,7 @@ def read_manifest(status, tag=None, cancel=None):
                 break
     if text is None:
         if http.status == 404:
-            raise SetupError("The parts list was not found (%s). Get the Hookshot Launcher: %s" % (url, LAUNCHER_RELEASES))
+            raise SetupError("The parts list was not found (%s). Get the Hookshot Launcher: %s" % (url, LAUNCHER_DOWNLOAD))
         if http.status:
             raise SetupError("The download server is failing right now (an error 500 or above, tried 8 times over 3 minutes). "
                              "Try again in a few minutes, or later today.")

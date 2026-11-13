@@ -2,10 +2,12 @@
 follows its @@ lines (make_game.py's docstring), then offers to start the game. The AppImage starts it (builder/linux/AppRun),
 with the compiler, sysroot and libraries it brings in the environment.
 
-    hookshot_builder.py                     the window. Its button is Build, Update, Play, or Update builder
+    hookshot_builder.py                     the window. Its button is Build, Update or Play
     hookshot_builder.py --play              the game built last time, if there is one (else the window)
-    hookshot_builder.py --launch <folder>   that folder's launcher: Play, and Update when a newer release is out
-    hookshot_builder.py --update <folder>   download the new release (only parts that changed) and build the folder again
+    hookshot_builder.py --launch <folder>   that folder's launcher: Play, and Update when this builder is newer than the game
+    hookshot_builder.py --update <folder>   that folder built again with this builder's version (make_game.py --update)
+
+The builder does not look for or install versions: the Hookshot Launcher does (docs/releases.md).
 """
 import math
 import os
@@ -26,7 +28,7 @@ ROOT = os.environ.get("HOOKSHOT_TOOLS") or os.path.dirname(os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(ROOT, "nx2"))
 sys.path.insert(0, os.path.join(ROOT, "third_party", "a64-kit", "tools"))
-import linux_update  # noqa: E402  (the release check and the part download)
+import linux_update  # noqa: E402  (the versions of these tools and of a game folder)
 import make_game  # noqa: E402  (LANGUAGES, BUILD_ID)
 import pipeline_share  # noqa: E402  (Save my pipeline list: the zip for the "Submit your pipelines" issue)
 import toolchain  # noqa: E402  (default_jobs: RX_JOBS)
@@ -125,9 +127,6 @@ def left_text(seconds):
         return "about a minute left"
     minutes = int(round(seconds / 60))
     return "about %d h %d min left" % (minutes // 60, minutes % 60) if minutes >= 60 else "about %d minutes left" % minutes
-
-
-TRACK_NAMES = {"release": "Release", "rc": "Release candidate", "nightly": "Nightly"}
 
 
 def load_config():
@@ -493,7 +492,7 @@ def _arg(name):
 
 
 class Builder(tk.Tk):
-    def __init__(self, launch=None, update=None, fetched=False, tag=None, allow_downgrade_from=None):
+    def __init__(self, launch=None, update=None):
         super().__init__()
         self.title("Hookshot Builder")
         self.apply_scale()
@@ -502,22 +501,14 @@ class Builder(tk.Tk):
         move_old_ngx_sdk()   # (before the settings are read: it may record the license in them)
         self.cfg = load_config()
         self.proc = None
-        self.stop_update = threading.Event()   # (Cancel while an update downloads: its thread ends the download)
         self.lines = queue.Queue()
         self.started = 0.0
         self.launch_folder = launch
         self.update_folder = update
-        self.fetched = fetched
-        self.update_tag = tag
-        self.allow_downgrade_from = allow_downgrade_from
         self.mode = "build"
-        self.latest = None
         self.source_picked = False
         self.dlss_toggled = False
         self.tools = linux_update.tools_tag(linux_update.running_root() or ROOT)
-        # (the update track: the one chosen in the Track menu, saved; by default these tools' own)
-        own = linux_update.track_of(self.tools)
-        self.track = tk.StringVar(value=TRACK_NAMES[self.cfg.get("track") if self.cfg.get("track") in linux_update.TRACKS else own])
         self.status = tk.StringVar()
         self.kind = tk.StringVar(value=self.cfg.get("kind", "nup"))
         self.nup = tk.StringVar(value=self.cfg.get("nup", ""))
@@ -541,7 +532,6 @@ class Builder(tk.Tk):
             self.show_launch(launch)
         else:
             self.show_form()
-            self.after(200, self.lookup_latest)
         self.after(100, self.pump)
         self.protocol("WM_DELETE_WINDOW", self.close)
 
@@ -1004,12 +994,6 @@ class Builder(tk.Tk):
             self.lines.put(("check", text))
         threading.Thread(target=run, daemon=True).start()
 
-    def lookup_latest(self):
-        """The newest version known. The builder asks no server: the Hookshot Launcher finds new versions and installs their
-        builders (docs/releases.md). HOOKSHOT_LATEST_TAG names one, for the tests and for a list given with HOOKSHOT_LINUX_LIST"""
-        forced = os.environ.get("HOOKSHOT_LATEST_TAG")
-        self.lines.put(("latest", "" if forced in (None, "none") else forced))
-
     def apply_mode(self):
         if self.launch_folder and self.build_button is None:
             self.apply_launch()
@@ -1017,7 +1001,7 @@ class Builder(tk.Tk):
         folder = self.out.get().strip()
         expanded = os.path.expanduser(folder) if folder else ""
         game, kept = linux_update.game_version(expanded) if expanded else (None, False)
-        self.mode = linux_update.choose_mode(game, self.tools, self.latest, self.source_picked, kept, self.switching())
+        self.mode = linux_update.choose_mode(game, self.tools, self.source_picked, kept)
         dlss_changed = bool(kept and game and not self.source_picked and getattr(self, "dlss_toggled", False) and
                             hasattr(self, "dlss") and bool(self.dlss.get()) != folder_has_dlss(expanded))
         if self.mode == "up-to-date" and dlss_changed:
@@ -1030,30 +1014,25 @@ class Builder(tk.Tk):
                 return
         except tk.TclError:
             return
-        button.configure(text={"update-game": "Update", "up-to-date": "Play", "update-builder": "Update builder",
-                                "build": "Build the game"}[self.mode])
+        button.configure(text={"update-game": "Update", "up-to-date": "Play", "build": "Build the game"}[self.mode])
         about = getattr(self, "about_label", None)   # (Windows: the time only for a build)
         try:
             if about is not None and about.winfo_exists():
                 about.configure(text="About 45 min" if self.mode == "build" else "")
         except tk.TclError:
             pass
-        target = linux_update.update_target(self.latest, self.tools, self.switching())
+        target = self.tools
         if self.mode == "update-game" and dlss_changed and game == target:
             self.status.set("Update builds your game again %s NVIDIA DLSS."
                             % ("with" if self.dlss.get() else "without"))
         elif self.mode == "update-game":
-            self.status.set("Hookshot %s is available. Your game is %s. Update downloads only what changed, then compiles what changed."
-                            % (target, game))
+            self.status.set("This builder is Hookshot %s. Your game is %s. Update builds it again with %s, compiling only what changed."
+                            % (target, game, target))
         elif self.mode == "up-to-date" and linux_update.older_version(target, game):
-            self.status.set("Your game is %s, newer than this builder's update target %s. Play keeps this version; "
-                            "choose another update track to change versions." % (game, target))
-        elif self.mode == "up-to-date" and self.latest is None:
-            self.status.set("Your game is %s, as this builder. Newer versions come with the Hookshot Launcher." % game)
+            self.status.set("Your game is %s, newer than this builder (%s). Play keeps this version; the Hookshot Launcher "
+                            "changes versions." % (game, target))
         elif self.mode == "up-to-date":
-            self.status.set("%s is the latest version." % game)
-        elif self.mode == "update-builder":
-            self.status.set("Hookshot Builder %s is available (this one is %s). Update it first, then build." % (target, self.tools or "this one"))
+            self.status.set("Your game is %s, as this builder. Newer versions come with the Hookshot Launcher." % game)
         else:
             self.status.set("")
 
@@ -1061,19 +1040,17 @@ class Builder(tk.Tk):
         if not self.launch_folder or not hasattr(self, "launch_status"):
             return
         game, kept = linux_update.game_version(self.launch_folder)
-        target = linux_update.update_target(self.latest, self.tools, self.switching())
+        target = self.tools
         show = False
-        if not self.switching() and linux_update.older_version(target, game):
-            self.launch_status.set("Your game is %s, newer than this builder's update target %s. Play keeps this version." % (game, target))
+        if linux_update.older_version(target, game):
+            self.launch_status.set("Your game is %s, newer than this builder (%s). Play keeps this version." % (game, target))
         elif target and game and game != target and kept:
             self.launch_status.set("Update available: %s" % target)
             show = True
         elif target and game and game != target:
             self.launch_status.set("%s is out. Build this folder again with Hookshot Builder to get it." % target)
-        elif game and self.latest is None:
-            self.launch_status.set("Up to date with this builder. The Hookshot Launcher keeps it up to date")
         elif game:
-            self.launch_status.set("Up to date")
+            self.launch_status.set("Up to date with this builder. The Hookshot Launcher keeps it up to date")
         else:
             self.launch_status.set("Hookshot")
         if hasattr(self, "launch_update"):
@@ -1095,7 +1072,7 @@ class Builder(tk.Tk):
         ttk.Label(f, text="THE LEGEND OF ZELDA", style="Section.TLabel").pack()
         ttk.Label(f, text="Ocarina of Time", style="Display.TLabel").pack(pady=(px(4), 0))
         ttk.Label(f, text=folder, style="Sub.TLabel", wraplength=px(600), justify="center").pack(pady=(px(8), 0))
-        self.launch_status = tk.StringVar(value="Checking for updates...")
+        self.launch_status = tk.StringVar(value="")
         ttk.Label(f, textvariable=self.launch_status, style="Note.TLabel", wraplength=px(600), justify="center").pack(pady=(px(16), 0))
         buttons = ttk.Frame(f)
         buttons.pack(pady=(px(28), 0))
@@ -1106,91 +1083,29 @@ class Builder(tk.Tk):
         ttk.Button(f, text="Open the game folder", style="Link.TButton", cursor="hand2",
                    command=lambda: subprocess.Popen(["xdg-open", folder])).pack(pady=(px(22), 0))
         self.share_row(f, folder).pack(pady=(px(4), 0))
-        self.lookup_latest()
-
-    def track_id(self):
-        return next((k for k, v in TRACK_NAMES.items() if v == self.track.get()), "release")
-
-    def switching(self):
-        """(a Track other than these tools' own: its newest is installed, even an older version)"""
-        return self.track_id() != linux_update.track_of(self.tools)
-
-    def on_track_changed(self, _event=None):
-        self.cfg["track"] = self.track_id()
-        save_config(self.cfg)
-        self.latest = None
-        self.apply_mode()
-        self.lookup_latest()
+        self.apply_launch()
 
     def older_ok(self, target, have):
-        """Ask before any known downgrade, including a rebuild after changing DLSS on the same track."""
+        """Ask before any known downgrade, including a rebuild after changing DLSS."""
         if not linux_update.older_version(target, have):
             return True
         return messagebox.askyesno("Hookshot", "%s is older than %s, the version you have now. Install %s?" % (target, have, target))
 
     def begin_update(self, folder=None):
+        """The game in folder built again with this builder's version (make_game.py --update): the form's and the launcher's
+        Update, and --update <folder>. A game newer than this builder is built back only when the player says so."""
         folder = self.update_folder if folder is None else folder
-        target = self.update_tag or linux_update.update_target(self.latest, self.tools, self.switching())
-        have = linux_update.game_version(folder)[0] if folder else None
-        approved = bool(have and self.fetched and self.tools == self.update_tag == target and
-                        getattr(self, "allow_downgrade_from", None) == have)
-        if folder and not approved and not self.older_ok(target, have):
-            return   # (before changing pages or starting any download/build, including the launcher button)
-        self.allow_downgrade_from = None   # (the handoff's consent is for this attempt and these two versions)
-        downgrade_from = have if linux_update.older_version(target, have) else None
-        if folder is not None:
-            self.update_folder = folder
-        self.show_progress("Updating your game" if self.update_folder else "Updating Hookshot Builder")
-        folder = self.update_folder
-        # (a game older than this builder is built again with it: nothing to download, and GitHub need not answer. So is one
-        # from a builder that is not an older release, e.g. from the Actions tab: issue 902)
-        fetched = self.fetched or bool(folder and self.tools and target == self.tools)
-        stop = self.stop_update
-        stop.clear()
-
-        def run():
-            try:
-                if fetched and target and self.tools != target:
-                    raise RuntimeError("This Builder is %s, not the requested %s. Start that version's Builder to update." %
-                                       (self.tools or "unversioned", target))
-                if not fetched:
-                    root = linux_update.running_root()
-                    if root is None:
-                        raise RuntimeError("These tools are a source checkout, so they cannot install a version. Use the Hookshot Launcher to update.")
-                    # (another track's build, or a Track switch: that version's own list)
-                    named = target if target and (self.switching() or linux_update.track_of(target) != "release") else None
-                    manifest = linux_update.startup_manifest(root, get=lambda url: linux_update.fetch_bytes(url, 30, stop),
-                                                             tag=named)
-                    # The API and its download list can disagree right after a release. Check even when the list
-                    # names the running tools: otherwise a newer target silently rebuilds with those older tools.
-                    if target and manifest.tag != target:
-                        raise RuntimeError("The parts list is %s, not %s. Use the Hookshot Launcher to update." % (manifest.tag, target))
-                    if manifest.tag != linux_update.tools_tag(root):
-                        source =linux_update.read_manifest(root)
-                        apprun = linux_update.install(manifest, root, source, note=lambda message: self.lines.put(("note", message)),
-                                                      stop=stop)
-                        for name in ("APPDIR", "APPIMAGE", "ARGV0", "OWD", "LD_LIBRARY_PATH"):
-                            os.environ.pop(name, None)
-                        args = [apprun]
-                        if folder:
-                            args += ["--update", folder, "--tag", manifest.tag, "--fetched"]
-                            if downgrade_from:
-                                args += ["--allow-downgrade-from", downgrade_from]
-                        os.execv(apprun, args)
-                if stop.is_set():
-                    raise linux_update.Cancelled()
-                self.lines.put(("do-build", folder or ""))
-            except Exception as error:
-                self.lines.put(("update-error", str(error)))
-
-        threading.Thread(target=run, daemon=True).start()
-
-    def start_make_update(self, folder):
         if not folder:
             self.show_form()
-            self.status.set("This builder is the latest version.")
-            self.lookup_latest()
             return
+        have = linux_update.game_version(folder)[0]
+        if not self.older_ok(self.tools, have):
+            return   # (before changing pages or starting the build, including the launcher button)
+        self.update_folder = folder
+        self.show_progress("Updating your game")
+        self.start_make_update(folder)
+
+    def start_make_update(self, folder):
         dlss = bool(self.dlss.get()) if getattr(self, "dlss_toggled", False) else folder_has_dlss(folder)
         cmd = [sys.executable, "-I", os.path.join(ROOT, "nx2", "make_game.py"), "--update", folder] + \
             ([] if self.prepare.get() else ["--no-prepare-shaders"]) + dlss_args(dlss)   # (as the last build chose)
@@ -1210,17 +1125,8 @@ class Builder(tk.Tk):
             if game_ready(folder):
                 self.play_and_close(folder)
             return
-        if mode == "update-builder":
-            if not self.older_ok(linux_update.update_target(self.latest, self.tools, self.switching()), self.tools):
-                return
         if mode == "update-game":
-            self.fetched = False
             self.begin_update(os.path.expanduser(self.out.get().strip()))
-            return
-        if mode == "update-builder":
-            self.fetched = False
-            self.update_folder = ""
-            self.begin_update("")
             return
         out = os.path.expanduser(self.out.get().strip())
         if self.kind.get() == "nup":
@@ -1331,26 +1237,6 @@ class Builder(tk.Tk):
                 kind, v = self.lines.get_nowait()
                 if kind == "check":
                     self.check_text.set(v)
-                elif kind == "latest":
-                    self.latest = v or None
-                    self.apply_mode()
-                elif kind == "note":
-                    if hasattr(self, "stage_text") and not self.stop_update.is_set():
-                        self.stage_text.set(v)
-                elif kind == "do-build":
-                    if self.stop_update.is_set():   # (Cancel after the thread's last look at it: no make_game.py)
-                        self.lines.put(("update-error", str(linux_update.Cancelled())))
-                    else:
-                        self.start_make_update(v)
-                elif kind == "update-error":
-                    if hasattr(self, "stage_text"):
-                        self.stage_text.set(v + " Your game folder is unchanged.")
-                    if hasattr(self, "buttons"):
-                        for widget in self.buttons.winfo_children():
-                            widget.destroy()
-                        ttk.Button(self.buttons, text="Back", command=self.show_form, cursor="hand2").pack(side="right", padx=self.px(4))
-                    if hasattr(self, "stage_label"):
-                        self.stage_label.configure(style="Bad.Stage.TLabel")
                 elif kind == "line":
                     self.on_line(v)
                 elif kind == "exit":
@@ -1454,9 +1340,6 @@ class Builder(tk.Tk):
         if self.proc and self.proc.poll() is None:
             os.killpg(self.proc.pid, signal.SIGTERM)
             self.error = "Build cancelled. You can start again from the same folder."
-        elif self.proc is None:   # (an update still downloading: there is no make_game.py yet, its thread ends the download)
-            self.stop_update.set()
-            self.stage_text.set("Stopping the update")
 
     def play_and_close(self, folder):
         play(folder)
@@ -1479,8 +1362,7 @@ def main():
     launch = _arg("--launch")
     update = _arg("--update")
     if update is not None:
-        Builder(update=update, fetched="--fetched" in sys.argv[1:], tag=_arg("--tag"),
-                allow_downgrade_from=_arg("--allow-downgrade-from")).mainloop()
+        Builder(update=update).mainloop()
     elif launch:
         Builder(launch=launch).mainloop()
     else:

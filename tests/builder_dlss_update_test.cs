@@ -54,7 +54,7 @@ static class Program
             Storage.NgxSdk = Path.Combine(root, "sdk without files");
             var game = Path.Combine(root, "game with spaces é");
             Directory.CreateDirectory(game);
-            // Simulates the saved, license-accepted checkbox before a self-update creates a new window.
+            // Simulates the saved, license-accepted checkbox before an --update start creates a new window.
             File.WriteAllText(Window.SettingsPath, "{\"Dlss\":true}");
             Update(game, true);
             Update(game, true, shaders: false);

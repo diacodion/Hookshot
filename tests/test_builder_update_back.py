@@ -12,7 +12,6 @@ python -I -B tests/test_builder_update_back.py
 """
 from pathlib import Path
 import textwrap
-import threading
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,7 +23,7 @@ def method(name):
     """A method of window.py's window, as a function"""
     start = WINDOW.index("    def %s(self" % name)
     end = WINDOW.index("\n    def ", start + 1)
-    scope = {"os": __import__("os"), "updater": Updater}
+    scope = {"os": __import__("os")}
     exec(textwrap.dedent(WINDOW[start:end]), scope)
     return scope[name]
 
@@ -37,12 +36,6 @@ def block(text, marker):
         depth += (text[end] == "{") - (text[end] == "}")
         end += 1
     return text[start:end]
-
-
-class Updater:
-    @staticmethod
-    def latest_tag():
-        return "v9.9.9"
 
 
 class Path_:
@@ -64,7 +57,6 @@ class Window:
         self.out_path = Path_(folder)
         self.updating, self.files_ready, self.kept_folder, self.saved = updating, files_ready, "", saved
         self.calls = []
-        self.latest_tag = None
 
     def note(name):
         return lambda self: self.calls.append(name)
@@ -84,10 +76,6 @@ class Window:
 
     def post(self, f, *a):
         f(*a)
-
-    def got_latest(self, tag):
-        self.latest_tag = tag
-        self.refresh_mode()
 
     back = method("back")
     found_go = method("found_go")
@@ -115,13 +103,10 @@ class PythonBuilder(unittest.TestCase):
         self.assertEqual(w.calls.count("find_files"), 1)
         w.calls.clear()
         w.found_go()
-        for t in threading.enumerate():   # (found_go asks for the newest release on a thread of its own)
-            if t is not threading.current_thread():
-                t.join(5)
         self.assertEqual(w.out_path.text(), "D:/Other/Hookshot", "the saved folder replaced the update's")
         self.assertTrue(w.files_ready)
         self.assertLess(w.calls.index("apply_settings"), w.calls.index("fill_dumps"))
-        self.assertEqual((w.latest_tag, w.calls[-1]), ("v9.9.9", "refresh_mode"))
+        self.assertEqual(w.calls[-1], "refresh_mode")
 
     def test_the_first_start_keeps_the_saved_folder(self):
         w = Window("", updating=False, files_ready=False)

@@ -8,8 +8,8 @@
 #   Hookshot.AppImage --play <folder>  start the game in that folder
 #   Hookshot.AppImage <folder>         the same
 #   Hookshot.AppImage --cli <args>     nx2/make_game.py itself, e.g. --cli --nup game.nup --out ~/Games/Hookshot
-#   Hookshot.AppImage --launch <dir>  the game folder's launcher: Play, and Update when a newer release is out
-#   Hookshot.AppImage --update <dir>  download the new release (only the parts that changed) and build that folder again
+#   Hookshot.AppImage --launch <dir>  the game folder's launcher: Play, and Update when this builder is newer than the game
+#   Hookshot.AppImage --update <dir>  that folder built again with this builder's version (make_game.py --update)
 HERE="$(dirname "$(readlink -f "$0")")"
 LIB="$HERE/usr/lib/hookshot"
 export HOOKSHOT_TOOLS="$HERE/usr/share/hookshot"

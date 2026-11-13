@@ -543,7 +543,6 @@ class Window(QWidget):
         self.poster = Poster()
         self.lang = strings.default_language()
         self.glass = False
-        self.download = None
         self.runner = None
         self.rows = {}
         self.checks = {}
@@ -563,7 +562,7 @@ class Window(QWidget):
         self.compile_eta, self.this_compile, self.previous_total = -1.0, 0, -1
         self.last_failure = ""
         self.mode = "build"
-        self.latest_tag = self.update_target = None
+        self.update_target = None
         self.launch_folder = ""
         self.problem_is_tools = False
         self.elapsed0 = self.compile0 = None
@@ -813,12 +812,12 @@ class Window(QWidget):
         self.launch_version = sub("")
         self.launch_version.setContentsMargins(0, 8, 0, 0)
         self.launch_version.setWordWrap(False)
-        self.launch_status = label("Checking for updates…", 13, color="InkSoft")
+        self.launch_status = label("", 13, color="InkSoft")
         self.launch_update = Button("Update", "primary")
         self.launch_update.setFixedHeight(50)
         self.launch_update.fixed_h, self.launch_update.padx = 50, 26
         self.launch_update.hide()
-        self.launch_update.clicked.connect(lambda: updater.update_folder(self, self.launch_folder, self.update_target, False))
+        self.launch_update.clicked.connect(lambda: updater.update_folder(self, self.launch_folder))
         self.launch_play = Button(self.T("Play"), "go", icon="play")
         self.launch_play.clicked.connect(self.launch_play_click)
         fold = Button("Open the game folder", "link", color=C["InkFaint"])
@@ -865,7 +864,7 @@ class Window(QWidget):
         a = self.args
         if a.update:
             self.splash.text = "Getting the update…"
-            QTimer.singleShot(900, lambda: (self.show_main(), updater.update_folder(self, a.update, a.tag, a.fetched)))
+            QTimer.singleShot(900, lambda: (self.show_main(), updater.update_folder(self, a.update)))
             return
         if a.launch:
             self.splash.text = "Starting Hookshot…"
@@ -925,15 +924,6 @@ class Window(QWidget):
             self.preview(os.environ["HOOKSHOT_UI_PREVIEW"])
             return
         self.check_all()
-        import threading
-
-        def run():
-            tag = updater.latest_tag()
-            self.post(self.got_latest, tag)
-        threading.Thread(target=run, daemon=True).start()
-
-    def got_latest(self, tag):
-        self.latest_tag = tag
         self.refresh_mode()
 
     def show_main(self):
@@ -978,7 +968,7 @@ class Window(QWidget):
         self.step_pill.show()
         self.version_chip.hide()
 
-    # ================= what the button does: build, update the game, play it, or get the newer builder =================
+    # ================= what the button does: build, update the game (build it again with these tools), or play it =================
 
     def refresh_mode(self):
         if self.updating or self.runner:
@@ -987,31 +977,22 @@ class Window(QWidget):
         game = core.game_version(out) if len(out) > 2 else None
         tools = core.Tools.find()
         builder = tools.version if tools else None
-        self.update_target = self.latest_tag or builder
+        self.update_target = builder
         if game and self.update_target and game != self.update_target and not self.source_picked:
             self.mode = "update_game"
         elif game and not self.source_picked:
             self.mode = "up_to_date"
-        elif self.latest_tag and builder and builder != self.latest_tag:
-            self.mode = "update_builder"
         else:
             self.mode = "build"
         if self.mode == "update_game":
             self.files_title.setText("Update available")
-            self.files_sub.setText("Hookshot %s is available. Your game is %s: Update builds it again from the game files kept in its "
-                                   "folder, compiling only what changed." % (self.update_target, game))
+            self.files_sub.setText("This builder is Hookshot %s. Your game is %s: Update builds it again from the game files kept in "
+                                   "its folder, compiling only what changed." % (self.update_target, game))
             self.build_button.setText("Update")
         elif self.mode == "up_to_date":
             self.files_title.setText("Your game is up to date")
-            self.files_sub.setText("Your game is %s, as this builder. Newer versions come with the Hookshot Launcher." % game
-                                   if not self.latest_tag else
-                                   "%s is the latest version. Pick game files below only to build it again from scratch." % game)
+            self.files_sub.setText("Your game is %s, as this builder. Newer versions come with the Hookshot Launcher." % game)
             self.build_button.setText("Play")
-        elif self.mode == "update_builder":
-            self.files_title.setText("Build your game")
-            self.files_sub.setText("Hookshot Builder %s is available (this one is %s): update it first, then build." % (self.latest_tag,
-                                                                                                                     builder))
-            self.build_button.setText("Update builder")
         else:
             self.files_title.setText("Build your game")
             self.files_sub.setText("Pick your game files and where the game goes. Hookshot does the rest, once.")
@@ -1029,17 +1010,11 @@ class Window(QWidget):
         self.launch_version.setText(("Hookshot %s" % game if game else "Hookshot") + " · " + folder)
         self.launch_play.setEnabled(os.path.isfile(core.game_exe(folder)))
         self.show_page(self.launch_page)
-        import threading
+        self.launcher_status(folder, game)
 
-        def run():
-            tag = updater.latest_tag()
-            self.post(self.launcher_latest, folder, game, tag)
-        threading.Thread(target=run, daemon=True).start()
-
-    def launcher_latest(self, folder, game, tag):
-        self.latest_tag = tag
+    def launcher_status(self, folder, game):
         tools = core.Tools.find()
-        self.update_target = tag or (tools.version if tools else None)
+        self.update_target = tools.version if tools else None
         if not self.update_target:
             self.launch_status.setText("The Hookshot Launcher keeps your game up to date")
         elif game and game != self.update_target and core.game_version(folder):
@@ -1050,7 +1025,7 @@ class Window(QWidget):
         elif game and game != self.update_target:
             self.launch_status.setText("%s is out: build this folder again with the Hookshot Builder to get it" % self.update_target)
         else:
-            self.launch_status.setText("Up to date with this builder (GitHub did not answer)" if not tag else "Up to date")
+            self.launch_status.setText("Up to date with this builder. The Hookshot Launcher keeps it up to date")
 
     def launch_play_click(self):
         core.start_game(self.launch_folder)
@@ -1324,18 +1299,11 @@ class Window(QWidget):
     def start_build(self):
         if self.mode == "update_game":
             self.save_settings()
-            updater.update_folder(self, self.out_path.text(), self.update_target, False)
+            updater.update_folder(self, self.out_path.text())
             return
         if self.mode == "up_to_date":
             self.finished = self.out_path.text()
             self.play()
-            return
-        if self.mode == "update_builder":
-            self.save_settings()
-            self.build_button.setEnabled(False)
-            self.build_button.setText("Getting the new builder…")
-            self.begin_update(self.out_path.text(), self.latest_tag)
-            updater.run_latest_setup(self)
             return
         self.save_settings()
         tools = core.Tools.find()
@@ -1552,8 +1520,6 @@ class Window(QWidget):
             self.log_box.verticalScrollBar().setValue(self.log_box.verticalScrollBar().maximum())
 
     def cancel_build(self):
-        if self.download:
-            self.download.cancel()
         if self.runner:
             self.runner.cancel()
 
@@ -1735,18 +1701,7 @@ class Window(QWidget):
         self.cancel_button.show()
         self.show_page(self.build_page)
 
-    def download_progress(self, f):
-        if "download" in self.rows:
-            self.rows["download"].small_text("%d%%" % int(f * 100))
-        self.set_progress(self.weight["download"][1] * f)
-
-    def note(self, line):
-        self.add_log(line)
-        if "download" in self.rows:
-            self.rows["download"].small_text(line)
-
     def download_failed(self, why):
-        self.download = None
         if "download" in self.rows:
             self.rows["download"].stopped()
         self.show_problem(why, tools=False)
@@ -1754,7 +1709,6 @@ class Window(QWidget):
 
     def update_build(self, tools, folder):
         """The new tools are here: the folder built again with them (only what changed is compiled)"""
-        self.download = None
         if "download" in self.rows:
             self.rows["download"].done()
             self.rows["download"].small_text("Build tools checked")

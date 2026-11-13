@@ -589,7 +589,7 @@ static int builder_ready(const wchar_t *exe) {
     return 1;
 }
 
-#define LAUNCHER_RELEASES L"https://git.notrexed.dev/Hookshot/HookshotLauncher/releases"
+#define LAUNCHER_DOWNLOAD L"https://hookshot.magicbean.dev/download"
 
 /* The list to install: HOOKSHOT_SETUP_LIST=<url>, NULL when none was given (then the list beside this setup, if any) */
 static const char *manifest_url(void) {
@@ -628,7 +628,7 @@ static DWORD WINAPI work(LPVOID unused) {
         if (slash && (size_t)(slash + 1 - list) + 20 < MAX_PATH) wcscpy(slash + 1, L"tools.lock");
         HANDLE h = slash ? CreateFileW(list, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL) : INVALID_HANDLE_VALUE;
         if (h == INVALID_HANDLE_VALUE)
-            fail(L"No tools.lock beside this setup: unpack the whole HookshotBuilder zip, or get the Hookshot Launcher from " LAUNCHER_RELEASES);
+            fail(L"No tools.lock beside this setup: unpack the whole HookshotBuilder zip, or get the Hookshot Launcher from " LAUNCHER_DOWNLOAD);
         char buf[4096];
         DWORD got;
         while (ReadFile(h, buf, sizeof buf, &got, NULL) && got && man.n < (1 << 20)) mem_sink(&man, buf, got);
@@ -665,7 +665,7 @@ static DWORD WINAPI work(LPVOID unused) {
     }
     if (!ok)
         fail(g_http_status == 404
-                 ? L"The parts list was not found. Get the Hookshot Launcher: " LAUNCHER_RELEASES
+                 ? L"The parts list was not found. Get the Hookshot Launcher: " LAUNCHER_DOWNLOAD
              : g_http_status ? L"The download server is failing right now (an error 500 or above, tried 8 times over 3 minutes). "
                                L"Try again in a few minutes, or later today."
                              : L"Could not reach the server to get the Hookshot Builder. Check your internet connection and try again.");
@@ -893,7 +893,7 @@ static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
 }
 
 /* (launch mode) "Hookshot Launcher.exe" in a game folder (nx2/make_game.py puts this file there under that name): the installed
-   builder opened as the game's launcher (--launch <that folder>: Play, and Update when a newer release is out), at once, with no
+   builder opened as the game's launcher (--launch <that folder>: Play, and Update when this builder is newer than the game), at once, with no
    window, download or network of its own. With no builder installed yet, the setup runs as usual and then opens the launcher. */
 static int launch_installed(const wchar_t *args) {
     wchar_t base[MAX_PATH], cur[MAX_PATH], exe[MAX_PATH], dir[MAX_PATH], cmd[4096];

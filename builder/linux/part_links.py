@@ -1,4 +1,4 @@
-"""Safe handling of the rooted links in Linux sysroot update parts."""
+"""Safe handling of the rooted links in a Linux sysroot part (scripts/linux/make_parts.py)."""
 import os
 
 
