@@ -541,13 +541,27 @@ def download(url, limit=1 << 20):
     if os.environ.get("RELEASE_TOKEN"):
         headers["Authorization"] = "token " + os.environ["RELEASE_TOKEN"]
     try:
-        with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=120) as r:
+        with _OPENER.open(urllib.request.Request(url, headers=headers), timeout=120) as r:
             data = r.read(limit + 1)
     except (urllib.error.URLError, OSError) as e:
         fail("%s: %s" % (url, e))
     if len(data) > limit:
         fail("%s: larger than %d bytes" % (url, limit))
     return data
+
+
+class _TokenStaysHome(urllib.request.HTTPRedirectHandler):
+    """The token goes to the forge only. Forgejo answers a release file with a redirect to a signed link of its file store
+    (Cloudflare R2), which refuses a request that also carries a token (HTTP 400); urllib would pass the header on."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new is not None and urllib.parse.urlsplit(newurl).netloc != urllib.parse.urlsplit(req.full_url).netloc:
+            new.remove_header("Authorization")
+        return new
+
+
+_OPENER = urllib.request.build_opener(_TokenStaysHome)
 
 
 def released_as(commit, product, root=ROOT, but=None):

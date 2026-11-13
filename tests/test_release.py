@@ -617,6 +617,50 @@ class ReleasedAs(unittest.TestCase):
                 run("--product", "hookshot", "released-as", self.b[:8])
 
 
+class TokenStaysHome(unittest.TestCase):
+    """Forgejo sends a release file to a signed link of its file store (Cloudflare R2), which refuses a request that also
+    carries a token: download() gives the token to the forge, and not to where it redirects"""
+
+    def test_a_redirect_to_the_file_store_goes_without_the_token(self):
+        seen = {}
+
+        class Store(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                seen["store"] = self.headers.get("Authorization")
+                body = b"bad request" if self.headers.get("Authorization") else b"the sums"
+                self.send_response(400 if self.headers.get("Authorization") else 200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+
+        store = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Store)
+
+        class Forge(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                seen["forge"] = self.headers.get("Authorization")
+                self.send_response(303)
+                self.send_header("Location", "http://127.0.0.1:%d/bucket/SHA256SUMS?X-Amz-Signature=x" % store.server_port)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            def log_message(self, *a):
+                pass
+
+        forge = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Forge)
+        for s in (store, forge):
+            threading.Thread(target=s.serve_forever, daemon=True).start()
+            self.addCleanup(s.server_close)
+            self.addCleanup(s.shutdown)
+        url = "http://127.0.0.1:%d/o/r/releases/download/v1/SHA256SUMS" % forge.server_port
+        with mock.patch.dict(os.environ, RELEASE_TOKEN="secret"):
+            os.environ.pop("FORGEJO_UPLOAD_API", None)
+            self.assertEqual(release.download(url), b"the sums")
+        self.assertEqual(seen, {"forge": "token secret", "store": None})
+
+
 if __name__ == "__main__":
     os.environ.setdefault("PYTHONDONTWRITEBYTECODE", "1")
     unittest.main()
