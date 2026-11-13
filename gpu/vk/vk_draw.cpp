@@ -896,10 +896,11 @@ void play_cache_save() {
 /// behind each other, and a draw that waits for its pipeline (pipe_wait_ms) waited behind compiles it had nothing to do with:
 /// submits of 2-12 s after a save loaded (samples of the stalls: the replay and three workers in that lock, one compiling).
 /// Without it MoltenVK keeps each shader module's libraries under the module's own lock. Kokiri Forest from a cold Metal
-/// cache, M4 Max, 2026-11-12, two runs each: frames of over 250 ms before it settled 26-29 s against 75-81 s, in play after
-/// 35-43 s against 67-96 s; but every pipeline compiled 314-382 -> 452-530 s (four library compiles at once are slower in all
-/// than one at a time). Only the asks without a cache: no better than before. Nothing else is lost: pcache is neither read
-/// nor saved on MoltenVK (pcache_init). RX_VK_MVK_PIPELINE_CACHE=1: the cache, as before
+/// cache, M4 Max, 2026-11-12: frames of over 250 ms before it settled 29.5 s against 129 s, in play after 50 s against 78 s,
+/// every pipeline compiled after 148 s against 197 s (with the global memory helpers in one exit; before that two workers
+/// were held by compiles that never finished, and the full warm-up came out slower without the cache). Only the asks without
+/// a cache: no better than before. Nothing else is lost: pcache is neither read nor saved on MoltenVK (pcache_init).
+/// RX_VK_MVK_PIPELINE_CACHE=1: the cache, as before
 bool driver_cache_off() {
     static const bool off = dev.driver_id == VK_DRIVER_ID_MOLTENVK && !env_on("RX_VK_MVK_PIPELINE_CACHE");
     return off;

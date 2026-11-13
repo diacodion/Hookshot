@@ -45,7 +45,7 @@ Measured on the M4 Max (2026-11-12): a build with nothing to compile 6.7 s, a on
 4.5 s (the lift is kept). A run in Kokiri Forest reaches play in ~18 s and is settled in ~33 s, ~63 s in all for 30 s
 measured (the fixed-time input script took ~100 s to play); the Market, by teleport, settles in ~52 s. Two runs of the
 same build agree within ~0.3 fps, so an A/B of a few runs tells 1% apart. After a change to the shader translation (or
-with Metal's cache cold) the first run compiles ~800 pipelines: 5-9 minutes before Kokiri Forest is settled.
+with Metal's cache cold) the first run compiles ~800 pipelines: ~2.5-3.3 minutes before Kokiri Forest is settled.
 
 ## What differs from Linux
 
@@ -82,8 +82,8 @@ compute stages only. What had to change for it, each found in play:
 - **No `VkPipelineCache` at all** (`driver_cache_off`, `RX_VK_MVK_PIPELINE_CACHE=1` for one). MoltenVK compiles a
   pipeline's Metal libraries while holding its pipeline cache's one lock, so every compile queued behind the one under
   way and a draw waiting for its pipeline waited behind compiles it had nothing to do with: submits of 2-12 s after a save
-  loaded. Kokiri Forest from a cold Metal cache, two runs each: frames of over 250 ms before it settled 26-29 s (was
-  75-81 s), in play after 35-43 s (was 67-96 s); every pipeline compiled after 452-530 s (was 314-382 s).
+  loaded. Kokiri Forest from a cold Metal cache: frames of over 250 ms before it settled 29.5 s (was 129 s), in play after
+  50 s (was 78 s), every pipeline compiled after 148 s (was 197 s).
 - **The big programs' global memory helpers in one exit** (`Profile::global_memory_single_exit`, `RX_VK_GM_SINGLE_EXIT`).
   Eden's helpers for a guest pointer search the bound buffers, the tables and the page table with a return in each
   test and are `DontInline`, which MoltenVK's SPIRV-Cross drops in MSL: Metal inlined them at every access and its
@@ -91,7 +91,9 @@ compute stages only. What had to change for it, each found in play:
   the session, the dispatch left out every frame), 95 s for a third. They are the forest's distant trees: until this,
   Kokiri Forest had open sky where they stand. A program with at least 64 global accesses in 24000 IR instructions now
   gets helpers with one return (a result and a matched flag); they compile in 2-7 s. Every program in one exit cost
-  ~1.3 ms a frame (each access runs all its tests), hence the limits (`EDEN_NX2_GM_SINGLE_EXIT_MIN_GLOBAL`, `_MIN_INSTS`).
+  ~1.3 ms a frame (each access makes all its tests, though the branches after a match are not taken), hence the limits
+  (`EDEN_NX2_GM_SINGLE_EXIT_MIN_GLOBAL`, `_MIN_INSTS`; set from Kokiri Forest's 98 compute programs). With both fixes a cold
+  start in Kokiri Forest is settled in ~2.5-3.3 minutes (it was 5-9).
 
 ## The picture: FSR 3.1 in the game's upscaler's place
 
