@@ -1249,7 +1249,7 @@ uint64_t translator_stamp() {
     }
     // (macos) the global memory helpers in one exit (Profile::global_memory_single_exit): only then, so other GPUs keep theirs
     if (profile().global_memory_single_exit) {
-        const uint32_t single_exit = 0x31786573u;   // ("sex1")
+        const uint32_t single_exit = 0x31786567u;   // ("gex1": global memory, one exit)
         add(&single_exit, sizeof single_exit);
     }
     // (the records keep Shader::Info as it lies in memory: a cache written by another C++ library (the MSVC build's, then the

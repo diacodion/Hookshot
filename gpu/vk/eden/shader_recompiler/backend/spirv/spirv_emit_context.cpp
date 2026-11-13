@@ -1147,7 +1147,7 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
         return OpAccessChain(it->second.second, OpConvertUToPtr(it->second.first, address), Const(0U));
     };
     // (macos, Profile::global_memory_single_exit) the helper being defined in one exit: its result (a load's) and whether an
-    // access matched, made by define_body. Every test after a match is skipped (not_done), a match stores and goes on to its
+    // access matched, made by define_body. A test after a match is still made but not taken (not_done), a match stores and goes on to its
     // merge (end_then) instead of returning, and the helper returns the result at its end. Metal inlines the helpers at every
     // access (MoltenVK's SPIRV-Cross drops DontInline), and with a return in each test its compiler did not finish 3e6fe279 and
     // 44511d69 in 15 minutes (OoT, M4 Max); in one exit each compiles in under 2 s
