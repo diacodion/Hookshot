@@ -2,7 +2,8 @@
 SHA256SUMS and its signature; the channels as the launcher reads them from the release list; the version a tag must reach
 (the bump from the commits since the last stable), in a git repository made here; the nightly's name; and publish and
 prune against a fake Forgejo on 127.0.0.1 (a draft first, every file uploaded and checked, published last; only nightlies
-pruned). Needs git and the openssl command line.
+pruned); and the release a tag's commit already has (released-as: found by its tag's commit, taken only signed and whole).
+Needs git and the openssl command line.
 
     python -I tests/test_release.py
 """
@@ -248,8 +249,18 @@ class FakeForgejo(http.server.BaseHTTPRequestHandler):
         return self.rfile.read(int(self.headers.get("Content-Length") or 0))
 
     max_items = 50   # (the server's max_response_items: /api/v1/settings/api)
+    files, fetched = {}, []   # (the release files under /attachments/<name>, and the hosts they were asked of)
 
     def do_GET(self):
+        if self.path.startswith("/attachments/"):
+            self.fetched.append(self.headers.get("Host"))
+            data = self.files.get(self.path.rsplit("/", 1)[1])
+            if data is None:
+                return self.answer(404, {"message": "not found"})
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            return self.wfile.write(data)
         # (as Forgejo 17's GET /repos/{owner}/{repo}/releases: drafts only with a writer token; draft= and pre-release= keep
         # only the releases whose field equals the value; limit (default 30, at most max_response_items) and page; newest first)
         q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
@@ -400,6 +411,134 @@ class Publish(unittest.TestCase):
             run("--product", "hookshot", "publish", "v3.0.0", "--target", "abc", "--notes", notes, f)
         self.assertIn("already published", str(e.exception))
         self.assertEqual(FakeForgejo.uploads, [])
+
+
+class ReleasedAs(unittest.TestCase):
+    """released-as: a tag's commit that CI released already (its nightly; for a stable, its release candidate). Found by the
+    commit its tag is, and taken only when its SHA256SUMS is signed by a trusted key and names exactly its files; a
+    release of the commit that is not stops the run"""
+
+    def setUp(self):
+        FakeForgejo.releases, FakeForgejo.files, FakeForgejo.fetched = [], {}, []
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FakeForgejo)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
+        self.dir = Path(tempfile.mkdtemp(prefix="release-as-"))
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        self.base = "http://127.0.0.1:%d" % self.server.server_port
+        patcher = mock.patch.dict(os.environ, {"FORGEJO_API": self.base + "/api/v1", "RELEASE_TOKEN": "t",
+                                               "GITHUB_REPOSITORY": "MagicBeanDev/Test"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        os.environ.pop("FORGEJO_UPLOAD_API", None)
+        run("keygen", self.dir / "keys")
+        run("keygen", self.dir / "other")
+        self.repo = self.dir / "repo"
+        (self.repo / "scripts").mkdir(parents=True)
+        spki = release.spki_der(str(self.dir / "keys" / "release.pub.pem"))
+        (self.repo / "scripts" / "release_keys.json").write_text(json.dumps({"keys": [base64.b64encode(spki).decode()]}))
+        self.git("init", "-q", "-b", "main")
+        self.git("commit", "-q", "--allow-empty", "-m", "feat: a")
+        self.a = self.git("rev-parse", "HEAD")
+        self.git("commit", "-q", "--allow-empty", "-m", "fix: b")
+        self.b = self.git("rev-parse", "HEAD")
+
+    def git(self, *args):
+        return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "tag.gpgsign=false",
+                               *args], cwd=self.repo, check=True, capture_output=True, text=True).stdout.strip()
+
+    def release(self, tag, commit, files=("Hookshot-%s-x86_64.AppImage", "HookshotBuilder-%s-windows-x64.zip", "tools.lock"),
+                key="keys", draft=False, sums_of=None, sig=None):
+        """A release of commit as CI publishes it: its files, SHA256SUMS over them (or over sums_of), signed with key"""
+        self.git("tag", tag, commit)
+        names = [f % tag if "%s" in f else f for f in files]
+        sums = "".join("%s  %s\n" % (hashlib.sha256(n.encode()).hexdigest(), n) for n in sorted(sums_of or names))
+        sums_file = self.dir / ("sums-" + tag)
+        sums_file.write_text(sums)
+        rid = len(FakeForgejo.releases) + 1
+        assets = []
+        for name, data in [(n, n.encode()) for n in names] + [("SHA256SUMS", sums.encode())] + \
+                          [("SHA256SUMS.sig", sig if sig is not None else
+                            release.sign(str(sums_file), str(self.dir / key / "release.pem")).encode())]:
+            FakeForgejo.files["%d-%s" % (rid, name)] = data
+            assets.append({"id": len(assets) + 1, "name": name, "size": len(data),
+                           "browser_download_url": "%s/attachments/%d-%s" % (self.base, rid, name)})
+        FakeForgejo.releases.append({"id": rid, "tag_name": tag, "draft": draft, "prerelease": True, "assets": assets})
+
+    def released_as(self, commit, but=None):
+        return release.released_as(commit, "hookshot", root=str(self.repo), but=but)
+
+    def nightly(self, n, commit):
+        return "nightly-%d-%s" % (n, commit[:8])
+
+    def test_the_signed_nightly_of_the_commit(self):
+        self.assertIsNone(self.released_as(self.b))   # (none at all: the full build)
+        self.release(self.nightly(1, self.a), self.a)
+        self.release(self.nightly(2, self.b), self.b, draft=True)   # (a failed run's draft: no release)
+        self.assertIsNone(self.released_as(self.b))
+        self.release(self.nightly(3, self.b), self.b)
+        self.assertEqual(self.released_as(self.b), self.nightly(3, self.b))
+        self.assertEqual(self.released_as(self.a), self.nightly(1, self.a))
+        # (a nightly whose name has the commit's 8 hex but whose tag is another commit is not it)
+        self.git("tag", "-d", self.nightly(1, self.a))
+        self.git("tag", self.nightly(1, self.a), self.b)
+        self.assertIsNone(self.released_as(self.a))
+
+    def test_a_stable_finds_its_release_candidate(self):
+        self.release("v3.0.0-rc.1", self.b)
+        self.assertEqual(self.released_as(self.b, but="v3.0.0"), "v3.0.0-rc.1")
+        self.assertIsNone(self.released_as(self.b, but="v3.0.0-rc.1"))   # (never the tag itself)
+        self.release("v2.9.0", self.b)   # (no version of this product: never taken)
+        self.assertEqual(self.released_as(self.b, but="v3.0.0"), "v3.0.0-rc.1")
+
+    def test_a_release_not_signed_or_not_whole_stops_the_run(self):
+        cases = {
+            "untrusted": dict(key="other"),
+            "corrupt": dict(sig=b"MEUCIQ=="),
+            "not base64": dict(sig=b"\x00not base64"),
+            "a file more": dict(sums_of=["tools.lock"]),
+            "a file less": dict(sums_of=["tools.lock", "HookshotBuilder.exe", "Hookshot-x-x86_64.AppImage",
+                                         "HookshotBuilder-x-windows-x64.zip"]),
+        }
+        for n, (what, kwargs) in enumerate(cases.items(), 1):
+            with self.subTest(what):
+                FakeForgejo.releases = []
+                tag = self.nightly(n, self.b)
+                self.release(tag, self.b, **kwargs)
+                with self.assertRaises(SystemExit) as e:
+                    self.released_as(self.b)
+                self.assertIn(tag, str(e.exception))
+        FakeForgejo.releases = []
+        self.release(self.nightly(9, self.b), self.b)
+        FakeForgejo.releases[0]["assets"] = [a for a in FakeForgejo.releases[0]["assets"] if a["name"] != "SHA256SUMS.sig"]
+        with self.assertRaises(SystemExit):
+            self.released_as(self.b)
+        # (a file that does not answer stops it too)
+        FakeForgejo.releases, FakeForgejo.files = [], {}
+        self.release(self.nightly(10, self.b), self.b)
+        FakeForgejo.files.clear()
+        with self.assertRaises(SystemExit):
+            self.released_as(self.b)
+
+    def test_the_files_come_from_the_address_without_cloudflare(self):
+        # (FORGEJO_UPLOAD_API: the same server by its own address; the release list's links name the public one)
+        self.release(self.nightly(1, self.b), self.b)
+        for a in FakeForgejo.releases[0]["assets"]:
+            a["browser_download_url"] = a["browser_download_url"].replace(self.base, "https://git.example.invalid")
+        with mock.patch.dict(os.environ, FORGEJO_UPLOAD_API="http://localhost:%d/api/v1" % self.server.server_port):
+            self.assertEqual(self.released_as(self.b), self.nightly(1, self.b))
+        self.assertEqual(FakeForgejo.fetched, ["localhost:%d" % self.server.server_port] * 2)
+
+    def test_the_command(self):
+        self.release(self.nightly(1, self.b), self.b)
+        with mock.patch.object(release, "ROOT", str(self.repo)), mock.patch.object(release, "git",
+                lambda *a, root=None, check=True, _g=release.git: _g(*a, root=str(self.repo), check=check)), \
+                mock.patch.object(release, "trusted_keys", lambda root=None, _t=release.trusted_keys: _t(str(self.repo))):
+            self.assertEqual(run("--product", "hookshot", "released-as", self.b, "--not", "v3.0.0-rc.1"), (0, self.nightly(1, self.b) + "\n"))
+            self.assertEqual(run("--product", "hookshot", "released-as", self.a), (0, "\n"))
+            with self.assertRaises(SystemExit):
+                run("--product", "hookshot", "released-as", self.b[:8])
 
 
 if __name__ == "__main__":

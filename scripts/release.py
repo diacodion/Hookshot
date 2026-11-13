@@ -38,6 +38,10 @@ this is; $FORGEJO_API, $FORGEJO_UPLOAD_API):
         no launcher sees it. A draft left by a failed run of the same tag is reused
     python -I scripts/release.py prune [--keep 5]
         the nightly releases and their tags past the newest <keep>; nothing else is ever deleted
+    python -I scripts/release.py released-as <commit> [--not <tag>]
+        the published release CI made of that commit (a nightly, or a release candidate under its stable), its SHA256SUMS
+        signed by a key the launcher trusts and naming its every file; nothing when there is none. A release of the commit
+        that fails those checks stops it
     python -I scripts/release.py channels
         what each channel offers now, as the launcher reads it
 """
@@ -478,6 +482,64 @@ def prune(keep, product):
         print("pruned %s" % r["tag_name"])
 
 
+def download(url, limit=1 << 20):
+    """A release file's bytes (SHA256SUMS, its signature: small), from the address without Cloudflare when FORGEJO_UPLOAD_API
+    names one (the same server: only the scheme and host change), else from url"""
+    up = os.environ.get("FORGEJO_UPLOAD_API")
+    if up:
+        u, base = urllib.parse.urlsplit(url), urllib.parse.urlsplit(up)
+        url = urllib.parse.urlunsplit((base.scheme, base.netloc, u.path, u.query, ""))
+    headers = {"User-Agent": "hookshot-release"}
+    if os.environ.get("RELEASE_TOKEN"):
+        headers["Authorization"] = "token " + os.environ["RELEASE_TOKEN"]
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=120) as r:
+            data = r.read(limit + 1)
+    except (urllib.error.URLError, OSError) as e:
+        fail("%s: %s" % (url, e))
+    if len(data) > limit:
+        fail("%s: larger than %d bytes" % (url, limit))
+    return data
+
+
+def released_as(commit, product, root=ROOT, but=None):
+    """The tag of the published release CI made of commit (a nightly, or for a stable its release candidate), or None.
+    Forgejo's list says a release's tag, git (the tags fetched) which commit it is. CI publishes a release only when every
+    job of its run passed, and signs its SHA256SUMS: a release of commit is taken only with SHA256SUMS signed by a key the
+    launcher trusts and naming exactly its files. One that is not stops this (fail): a bad release of the commit is never
+    passed over"""
+    first = PRODUCTS[product]["first_major"]
+    keys = trusted_keys(root)
+    for rel in releases(repo_of(product)):
+        tag = rel["tag_name"]
+        if rel.get("draft") or tag == but or channel_of(tag, first) is None:
+            continue
+        m = NIGHTLY.match(tag)
+        if m and not commit.startswith(m.group(2)):
+            continue
+        if git("rev-list", "-n", "1", "refs/tags/" + tag, root=root, check=False) != commit:
+            continue
+        assets = {a["name"]: a for a in rel.get("assets") or []}
+        if SUMS not in assets or SIG not in assets:
+            fail("%s, a release of %s: no %s and %s" % (tag, commit[:8], SUMS, SIG))
+        sums = download(assets[SUMS]["browser_download_url"])
+        try:
+            der = base64.b64decode(download(assets[SIG]["browser_download_url"]).strip(), validate=True)
+        except ValueError:
+            fail("%s, a release of %s: %s is not base64" % (tag, commit[:8], SIG))
+        if not keys:
+            fail("no key to check %s with (Core/ReleaseTrust.cs, scripts/release_keys.json)" % tag)
+        if not verify_sig(sums, der, keys):
+            fail("%s, a release of %s: its %s is not signed by a trusted key" % (tag, commit[:8], SUMS))
+        named = set(read_sums(sums.decode("utf-8", "replace")))
+        files = set(assets) - {SUMS, SIG}
+        if named != files:
+            fail("%s, a release of %s: %s names %s, the release has %s"
+                 % (tag, commit[:8], SUMS, ", ".join(sorted(named)) or "nothing", ", ".join(sorted(files)) or "nothing"))
+        return tag
+    return None
+
+
 # ---- commands ----
 
 def main(argv=None):
@@ -518,6 +580,9 @@ def main(argv=None):
     s = sub.add_parser("prune")
     s.add_argument("--keep", type=int, default=5)
     sub.add_parser("channels")
+    s = sub.add_parser("released-as")
+    s.add_argument("commit")
+    s.add_argument("--not", dest="but")
     s = sub.add_parser("git-cliff")
     s.add_argument("folder")
     a = p.parse_args(argv)
@@ -608,6 +673,10 @@ def main(argv=None):
         prune(a.keep, product)
     elif a.cmd == "git-cliff":
         print(fetch_git_cliff(a.folder))
+    elif a.cmd == "released-as":
+        if not re.match(r"^[0-9a-f]{40}$", a.commit):
+            fail("%s: a full commit hash is needed" % a.commit)
+        print(released_as(a.commit, product, but=a.but) or "")
     elif a.cmd == "channels":
         rels = releases(repo_of(product))
         for c in CHANNELS:

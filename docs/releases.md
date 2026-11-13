@@ -207,7 +207,10 @@ Both repositories have the same workflows in `.forgejo/workflows/`, on Forgejo A
 | `third-party.yml` | the third_party rule (`scripts/check_third_party.py`) | (none) |
 
 Hookshot also keeps `build-linux.yml` and `build-windows.yml` (also run on pull requests that change code) and
-`vulkan-dlss.yml` (the upscalers' build checks). Every job runs on Linux: Hookshot's Windows files are cross-built there,
+`vulkan-dlss.yml` (the upscalers' build checks). A tag on a commit CI has released already (its nightly, or a stable's
+release candidate) is still built again, since every file carries its version (a release never ships a file that names
+another), but `release.py released-as` finds that release, checks its signed `SHA256SUMS` (one that does not check stops
+the run), and the build checks that ship no file and passed in its run are not run again. Every job runs on Linux: Hookshot's Windows files are cross-built there,
 and what only Windows can check is a tester's (RELEASING.md, *Needs a Windows tester*). The runners are in Hookshot's [docs/forgejo-runners.md](https://git.notrexed.dev/Hookshot/Hookshot/src/branch/main/docs/forgejo-runners.md).
 
 ## The version a tag must have

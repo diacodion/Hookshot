@@ -1,6 +1,7 @@
 """Game-free checks that Hookshot's Windows files are made on the Linux runner (docs/forgejo-runners.md: there is no Windows
 one): no workflow asks for a Windows runner, which would queue forever and hold a release; the Linux llvm-mingw that compiles
-them is tools.lock's release; and the Windows builder's job publishes for win-x64 and checks what it made.
+them is tools.lock's release; the Windows builder's job publishes for win-x64 and checks what it made, and tools.lock's
+dav1d (no dav1d is built in CI); and a tag whose commit CI released already skips only the checks that ship no file.
 
 Run with: python -I tests/test_windows_on_linux.py
 """
@@ -52,6 +53,37 @@ class WindowsOnLinuxTests(unittest.TestCase):
                 self.assertNotIn("NUMBER_OF_PROCESSORS", text)   # (Windows' own variable)
                 for line in re.findall(r".*builder_package\.py llvm-mingw.*", text):
                     self.assertIn("--host linux", line)
+
+    def test_dav1d_is_tools_lock_s(self):
+        # (the Windows builder gets dav1d from tools.lock's cpm package: CI checks that package's under Wine, and builds none
+        # of its own, which nothing shipped; scripts/windows/dav1d.sh stays, for a maintainer making the package)
+        wf = (WORKFLOWS / "build-windows.yml").read_text(encoding="utf-8")
+        self.assertNotIn("run: scripts/windows/dav1d.sh", wf)
+        self.assertNotIn("meson", wf)
+        package = wf[wf.index("\n  package:"):wf.index("\n  vulkan:")]
+        self.assertIn("scripts/tools.py install \"$RUNNER_TEMP/cpm-tool\" --system windows-x64 --only cpm", package)
+        self.assertRegex(package, r"tests/test_dav1d_av1\.py --cross \"\$LLVM_MINGW/bin/x86_64-w64-mingw32-clang\" \\\n\s+--run ")
+        self.assertIn("--dav1d \"$DAV1D\"", package)
+        self.assertLess(package.index("--wine"), package.index("test_dav1d_av1.py"))   # (after the Wine prefix is made)
+        self.assertTrue((ROOT / "scripts" / "windows" / "dav1d.sh").is_file())
+
+    def test_a_released_commit_skips_only_the_checks(self):
+        # (release.yml's checked: a tag's commit CI released already skips the build checks that ship no file; the files,
+        # which carry the version, are always built)
+        release = (WORKFLOWS / "release.yml").read_text(encoding="utf-8")
+        self.assertIn('scripts/release.py released-as "$ref" --not "$tag"', release)
+        self.assertEqual(release.count("checked: ${{ needs.version.outputs.checked }}"), 2)
+        windows = (WORKFLOWS / "build-windows.yml").read_text(encoding="utf-8")
+        package = windows[windows.index("\n  package:"):windows.index("\n  vulkan:")]
+        vulkan = windows[windows.index("\n  vulkan:"):]
+        self.assertNotIn("RELEASE_CHECKED", package)
+        steps = re.split(r"\n      - ", vulkan)[1:]
+        self.assertTrue(steps)
+        for step in steps:
+            self.assertRegex(step, r"if: env\.RELEASE_CHECKED == ''", step.splitlines()[0])
+        linux = (WORKFLOWS / "build-linux.yml").read_text(encoding="utf-8")
+        gated = re.findall(r"- name: (.*)\n\s+if: env\.RELEASE_CHECKED == ''", linux)
+        self.assertEqual(gated, ["hookshot_vk.so with AMD FSR 4 (build check)"])
 
     def test_release_stays_self_contained(self):
         # (dotnet publish -c Release: self-contained win-x64, a folder, as the Windows build made it)
