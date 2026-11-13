@@ -1162,7 +1162,7 @@ void prepare_with_screen() {
         const bool prepared = !update && prepare_run(prep_progress, false);
         if (!prepared) prep_skip[0].store(true);
         // (a first start, or one after a start that did not finish them: the pipelines the notes predict, into the driver's cache)
-        if ((prepared || (!update && predict_pending())) && !prepare_stopped()) {
+        if ((prepared || (!update && predict_pending())) && compile_all() && !prepare_stopped()) {
             prep_done.store(0), prep_total.store(0);
             prep_stage.store(1);
             predict_run(prep_progress);
@@ -1298,7 +1298,8 @@ bool started_up() {
         }
         part = 0;
         const bool prepared = prepare_run(progress, false, true);
-        const bool predict = prepared || predict_pending();   // (or the last run did not finish the prediction)
+        // (or the last run did not finish the prediction; Compile shaders on Most: never, compile_all)
+        const bool predict = (prepared || predict_pending()) && compile_all();
         if (!prepared) {
             if (!bar.counted[0]) bar.skip(0);   // (an already prepared seed can still import pipeline states)
             if (!predict) bar.skip(1);
@@ -1370,7 +1371,7 @@ bool started_up() {
             WriteFile(console, line, (DWORD)n, &wrote, nullptr);
         };
         const bool update = prepare_is_update();   // (an update: what the notes name now, the rest in play)
-        if (!update && (prepare_run(progress, false) || predict_pending())) predict_run(progress);
+        if (!update && (prepare_run(progress, false) || predict_pending()) && compile_all()) predict_run(progress);
         if (update) state_list_run();
         precompile_run(progress);
         if (update) prepare_background();
