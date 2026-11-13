@@ -6,7 +6,8 @@ data is involved. Python's standard library only.
         key). --host (default: this system): windows is tools.lock's, the one players get; linux is the same release's Linux
         build (LINUX_LLVM_MINGW below), which the release's Windows files are made with on the Linux runner
     python -I scripts/builder_package.py package <out folder> --publish <dotnet publish folder> --setup <setup exe>
-        the builder's folder, HookshotBuilder\\ in the zip: the published builder, the setup (its Repair runs it), LICENSE,
+        the builder's folder, HookshotBuilder\\ in the zip: the published builder, the setup (a game folder's hookshot.exe:
+        make_game.py copies it there), LICENSE,
         the tracked gpu, host, nx2, scripts and third_party under tools\\, and the pipeline state list's sources
         (assets/pipeline_states/, which must be there and read). None of tools.lock's tools: the setup or the launcher adds
         those on the player's PC
@@ -83,7 +84,7 @@ def package(a):
     if os.path.exists(out):
         shutil.rmtree(out)
     shutil.copytree(a.publish, out)
-    copy(a.setup, os.path.join(out, "HookshotBuilder-Setup.exe"))   # (the builder's Repair runs it)
+    copy(a.setup, os.path.join(out, "HookshotBuilder-Setup.exe"))   # (a game folder's hookshot.exe: make_game.py copies it there)
     copy(os.path.join(ROOT, "LICENSE"), os.path.join(out, "LICENSE"))
     tools = os.path.join(out, "tools")
     for f in tracked("gpu", "host", "nx2", "scripts", "third_party"):

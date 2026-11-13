@@ -1,8 +1,8 @@
 """The Linux builder's build tools: tools.lock's linux-x64 lines (the compiler, the sysroot, FFmpeg, SDL2, the Vulkan headers),
-which are not in the AppImage (docs/releases.md, "tools.lock"). AppRun asks this file where they are before it starts the
-window or nx2/make_game.py, and puts what it prints in the environment.
+which are not in the AppImage (docs/releases.md, "tools.lock"). AppRun asks this file where they are before it starts
+nx2/make_game.py (--cli), and puts what it prints in the environment.
 
-    linux_tools.py env [--install] [--gui]
+    linux_tools.py env [--install]
 
 Each tool is looked for, in order:
   1. in the builder itself, at its tools.lock dest (<AppDir>/usr/lib/hookshot/emsdk, ...): the Hookshot Launcher unpacks
@@ -14,8 +14,8 @@ Each tool is looked for, in order:
      puts what is missing: each archive downloaded from tools.lock's URLs, checked by its size and SHA-256
      (scripts/tools.py), and unpacked at its dest, its stamp in .tools/<name>. A tool another version there already has
      (the same SHA-256) is linked from it, not downloaded again; once a version's tools are there, nothing is downloaded.
---gui shows the download in a small window (the builder's first start); without it, the lines go to stderr (--cli, and
-RecompLauncher's --cli --prepare). What is printed is `export NAME='value'` for each tool found.
+The download's progress goes to stderr (--cli, and RecompLauncher's --cli --prepare). What is printed is `export NAME='value'`
+for each tool found.
 """
 import argparse
 import fcntl
@@ -25,7 +25,6 @@ import re
 import shlex
 import shutil
 import sys
-import threading
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOOLS_ROOT = os.environ.get("HOOKSHOT_TOOLS") or os.path.dirname(os.path.dirname(HERE))   # (usr/share/hookshot, or a checkout)
@@ -49,7 +48,7 @@ tools = _tools_py()
 
 
 def data_root(environ=os.environ):
-    """As linux_update.data_root: $HOOKSHOT_BUILDER_HOME or $XDG_DATA_HOME/hookshot/builder"""
+    """The builder's own data: $HOOKSHOT_BUILDER_HOME or $XDG_DATA_HOME/hookshot/builder"""
     base = environ.get("HOOKSHOT_BUILDER_HOME") or environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
     return os.path.join(base, "hookshot", "builder")
 
@@ -211,73 +210,16 @@ def text_say():
     return say
 
 
-def run_with_window(work):
-    """work(say) in a thread under a small progress window; its result. No display: the text lines instead"""
-    try:
-        import tkinter as tk
-        from tkinter import messagebox, ttk
-        root = tk.Tk()
-    except Exception:   # (no display, no Tk)
-        return work(text_say()), None
-    root.title("Hookshot Builder")
-    root.resizable(False, False)
-    label = ttk.Label(root, text="Getting the build tools ready", width=60)
-    label.pack(padx=16, pady=(16, 8))
-    bar = ttk.Progressbar(root, length=420, maximum=1000)
-    bar.pack(padx=16, pady=(0, 16))
-    state = {"text": None, "fraction": None, "result": None, "done": False}
-
-    def say(text, fraction):
-        if text:
-            state["text"] = text
-        if fraction is not None:
-            state["fraction"] = fraction
-
-    def worker():
-        state["result"] = work(say)
-        state["done"] = True
-    threading.Thread(target=worker, daemon=True).start()
-
-    def poll():
-        if state["text"]:
-            label.configure(text=state["text"])
-        if state["fraction"] is not None:
-            bar.configure(value=int(state["fraction"] * 1000))
-        if state["done"]:
-            root.destroy()
-            return
-        root.after(100, poll)
-    poll()
-    root.mainloop()
-    return state["result"], messagebox
-
-
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("what", choices=("env",))
     p.add_argument("--install", action="store_true", help="download what is missing")
-    p.add_argument("--gui", action="store_true", help="the download in a window")
     a = p.parse_args(argv)
-    tag, wanted = version(), lock()
-    needs = a.install and any(find(t, tag) is None for t in wanted)
-    if needs and a.gui:
-        (found, error), messagebox = run_with_window(lambda say: ensure(True, say))
-    else:
-        found, error = ensure(a.install, text_say())
-        messagebox = None
+    found, error = ensure(a.install, text_say())
     for name, value in sorted(environment({t: r for t, r in found.items() if r}).items()):
         print("export %s=%s" % (name, shlex.quote(value)))
     if error:
         print(error, file=sys.stderr)
-        if messagebox:
-            try:
-                import tkinter as tk
-                root = tk.Tk()
-                root.withdraw()
-                messagebox.showerror("Hookshot Builder", error)
-                root.destroy()
-            except Exception:
-                pass
         return 1
     return 0
 

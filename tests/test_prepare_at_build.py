@@ -1,10 +1,9 @@
 """make_game.py's last step, hookshot --prepare-shaders, run against stub games: its stage and progress lines go on to the builder,
-its own @@done and @@error don't (the builders read those as the build's end or failure), a failure or a silent hang leaves the work
-to the first start (never a failed build), and the game runs in its own environment, as the builders' Play starts it.
+its own @@done and @@error don't (a launcher reads those as the build's end or failure), a failure or a silent hang leaves the work
+to the first start (never a failed build), and the game runs in its own environment, as Play starts it.
 
 python -I -B tests/test_prepare_at_build.py
 """
-import ast
 import contextlib
 import importlib.util
 import io
@@ -24,7 +23,6 @@ SOURCE = ROOT / "nx2" / "make_game.py"
 spec = importlib.util.spec_from_file_location("make_game_prepare", SOURCE)
 make_game = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(make_game)
-BUILDER = ROOT / "builder" / "linux" / "hookshot_builder.py"
 
 
 def stub(code):
@@ -193,42 +191,6 @@ class CompileShadersTests(unittest.TestCase):
         main = SOURCE.read_text(encoding="utf-8").split("\ndef main(", 1)[1]
         self.assertIn('"--prepare-shaders", "--compile-shaders", level]', main)
         self.assertLess(main.index("write_compile_level(out, a.compile_shaders)"), main.index("prepare_skipped(a)"))
-
-
-def builder_method(name):
-    """One method of the Linux builder's window, compiled alone (no Tk)"""
-    tree = ast.parse(BUILDER.read_text(encoding="utf-8"))
-    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "Builder")
-    node = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == name)
-    stages = next(n for n in tree.body if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") == "STAGES")
-    namespace = {"make_game": make_game, "time": time}
-    exec(compile(ast.Module(body=[stages, node], type_ignores=[]), str(BUILDER), "exec"), namespace)
-    return namespace[name]
-
-
-class LinuxBuilderTests(unittest.TestCase):
-    def window(self):
-        text = []
-        return SimpleNamespace(stage_text=SimpleNamespace(set=text.append), bar=SimpleNamespace(configure=lambda **k: None),
-                               compile_started=None, eta=None, shaders_later=False), text
-
-    def test_a_later_stage_clears_the_compiles_clock_and_countdown(self):
-        on_line = builder_method("on_line")
-        w, text = self.window()
-        on_line(w, "@@stage compile Compiling")
-        on_line(w, "@@eta 300")
-        self.assertIsNotNone(w.compile_started)
-        self.assertEqual(w.eta, 300)
-        on_line(w, "@@stage shaders Preparing shaders")
-        self.assertIsNone(w.compile_started)
-        self.assertIsNone(w.eta)
-        self.assertEqual(text[-1], "Preparing shaders")
-
-    def test_the_not_prepared_line_is_noted(self):
-        on_line = builder_method("on_line")
-        w, _ = self.window()
-        on_line(w, "the shaders were not prepared now (no usable Vulkan here): the game prepares them at its first start")
-        self.assertTrue(w.shaders_later)
 
 
 if __name__ == "__main__":

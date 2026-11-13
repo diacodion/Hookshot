@@ -1,5 +1,5 @@
-"""The Linux builder's versions and its game folder launcher: which button a game folder gets, the version these tools are,
-the folder launcher starting the builder that made the game (or the game), and the sysroot packed as tools.lock's archive.
+"""The Linux game folder's launcher: a packaged build puts it in the folder and the game in bin/, the folder launcher starts
+the program that made the game (or the game), and the sysroot packed as tools.lock's archive.
 
 python -I -B tests/test_linux_update.py
 """
@@ -17,71 +17,14 @@ from types import SimpleNamespace
 from pathlib import Path
 
 # (Linux only)
-RUN_ALL_SKIP = {"windows": "the Linux builder's versions and folder launcher, POSIX files and shell scripts"}
+RUN_ALL_SKIP = {"windows": "the Linux folder launcher, POSIX files and shell scripts"}
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "builder" / "linux"))
 sys.path.insert(0, str(ROOT / "nx2"))
-import linux_update  # noqa: E402
 
 
-def appdir(path):
-    """A tiny AppDir: one file in each tool's folder, plus the builder's AppRun."""
-    tools = path / "usr" / "share" / "hookshot"
-    (tools / "builder" / "linux").mkdir(parents=True)
-    shutil.copyfile(ROOT / "builder" / "linux" / "AppRun", tools / "builder" / "linux" / "AppRun")
-    (tools / "VERSION").write_text("v1\n", encoding="utf-8")
-    (tools / "nx2").mkdir()
-    (tools / "nx2" / "marker.py").write_text("print('one')\n", encoding="utf-8")
-    for dest in ("usr/python", "usr/lib/hookshot/emsdk", "usr/lib/hookshot/ffmpeg", "usr/lib/hookshot/sysroot"):
-        folder = path / dest
-        folder.mkdir(parents=True)
-        (folder / "kept").write_text(dest + "\n", encoding="utf-8")
-    lib = path / "usr" / "lib" / "hookshot"
-    (lib / "hookshot_vk.so").write_bytes(b"vk")
-    (lib / "libSDL2-2.0.so.0").write_bytes(b"sdl")
-    (path / "AppRun").write_text("#!/bin/sh\n", encoding="utf-8")
-    (path / "AppRun").chmod(0o755)
-
-
-class VersionTests(unittest.TestCase):
-    def test_the_button_matches_the_windows_builder(self):
-        # (an older game that keeps its files is built again with this builder; its own or a newer one is played)
-        self.assertEqual(linux_update.choose_mode("v1", "v2", False, True), "update-game")
-        self.assertEqual(linux_update.choose_mode("v2", "v2", False, True), "up-to-date")
-        self.assertEqual(linux_update.choose_mode("v1", "v2", False, False), "up-to-date")
-        self.assertEqual(linux_update.choose_mode(None, "v2", False, False), "build")
-        self.assertEqual(linux_update.choose_mode("v2", "v2", True, True), "build")
-
-    def test_a_build_from_the_actions_tab_builds_and_updates_older_games(self):
-        # (issue 902) an AppImage from the Actions tab is git describe's version, after the latest release
-        ci = "v2.0.5-3-g1a2b3c4"
-        for tools in (ci, "1a2b3c4", "dev", "v2.0.6", "v2.1.0-rc.1"):
-            self.assertEqual(linux_update.choose_mode(None, tools, False, False), "build", tools)
-        self.assertEqual(linux_update.choose_mode(ci, ci, False, True), "up-to-date")
-        self.assertEqual(linux_update.choose_mode("v2.0.4", ci, False, True), "update-game")
-        self.assertEqual(linux_update.choose_mode("v2.0.5", ci, False, True), "update-game")
-        # (a source checkout has no version: it never offers Update)
-        self.assertEqual(linux_update.choose_mode("v2.0.5", "", False, True), "up-to-date")
-
-    def test_an_unpacked_builder_finds_its_own_root(self):
-        with tempfile.TemporaryDirectory(prefix="hookshot-root-") as tmp:
-            root = Path(tmp) / "versions" / "v1"
-            appdir(root)
-            saved = {k: os.environ.get(k) for k in ("APPDIR", "HOOKSHOT_TOOLS")}
-            os.environ.pop("APPDIR", None)
-            os.environ["HOOKSHOT_TOOLS"] = str(root / "usr" / "share" / "hookshot")
-            try:
-                found = linux_update.running_root()
-            finally:
-                for k, v in saved.items():
-                    if v is None:
-                        os.environ.pop(k, None)
-                    else:
-                        os.environ[k] = v
-            self.assertEqual(found, str(root))
-            self.assertEqual(linux_update.tools_tag(found), "v1")
-
+class FolderTests(unittest.TestCase):
     @unittest.skipUnless(sys.platform.startswith("linux"), "the Linux folder layout")
     def test_a_packaged_build_puts_the_launcher_in_the_folder_and_the_game_in_bin(self):
         import ast

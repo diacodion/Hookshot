@@ -10,7 +10,7 @@
 # Vulkan back end, HOOKSHOT_VK_PREBUILT; the build tools as builder/linux/linux_tools.py finds them, here tools.lock's in
 # build-linux/tools ($TOOLS), given as the builder's toolchains folder for this version, so nothing is downloaded) in an
 # otherwise empty one, so nothing of the checkout or of CI's caches stands in for what the image lacks:
-#   - AppRun --cli --help: nx2/make_game.py, as the builder window starts it;
+#   - AppRun --cli --help: nx2/make_game.py, as --cli starts it (RecompLauncher's prepare);
 #   - nx2/build.py --standalone --dry-run, as make_game.py runs it: its whole start-up up to the compile, which is where
 #     the game's lifted code is first needed. Every other file the compile would read must be in the image. Once more with
 #     AMD FSR 4 (HOOKSHOT_FSR=1), which compiles the Vulkan back end from the image's sources and AMD's FSR API headers.

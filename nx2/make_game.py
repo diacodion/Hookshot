@@ -191,16 +191,6 @@ def killed_reason():
             % (" (%d GB here)" % total if total else ""))
 
 
-def reported(line):
-    """The sentence a builder shows. @@check is '@@check <ok|bad> <text>'; @@error is '@@error <text>'. None otherwise."""
-    if line.startswith("@@error "):
-        return line[len("@@error "):]
-    if line.startswith("@@check "):
-        parts = line.split(" ", 2)
-        return parts[2] if len(parts) == 3 else ""
-    return None
-
-
 class LogStream:
     """Keep console output live while also saving it to the build log."""
     def __init__(self, console, log):
@@ -1978,50 +1968,6 @@ def place_ngx_runtime(out):
     return dst
 
 
-def portable_game_home(out):
-    """Validate the portable context before a build changes output; association is relative to this game."""
-    if os.name != "nt" or os.environ.get("HOOKSHOT_BUILDER_PORTABLE") != "1":
-        return None
-    home = os.environ.get("HOOKSHOT_SETUP_BASE", "")
-    if not ntpath.isabs(home) or not ntpath.splitdrive(home)[0] or home.startswith(("\\\\?\\", "\\\\.\\")):
-        raise ValueError("The portable Builder home must be a fully qualified drive or UNC folder.")
-    home = os.path.abspath(home)
-    with open(os.path.join(home, ".hookshot-portable"), "rb") as f:
-        marker = f.read(36)
-    magic = b"Hookshot Builder portable home v1"
-    if len(marker) > len(magic) + 2 or marker.rstrip(b"\r\n") != magic:
-        raise ValueError("The portable Builder home marker is invalid.")
-    if os.path.dirname(home) == home:
-        raise ValueError("The portable Builder home must be a dedicated folder.")
-    launcher = os.path.join(os.path.dirname(os.path.abspath(ROOT)), "HookshotBuilder-Setup.exe")
-    if not os.path.isfile(launcher):
-        raise ValueError("A portable game needs the packaged Builder setup launcher.")
-    try:
-        relative = os.path.relpath(home, os.path.abspath(out))
-    except ValueError as e:
-        raise ValueError("Keep a portable game and its Builder on the same volume.") from e
-    if len(home) >= 260 or len(relative.encode("utf-8")) >= 780 or any(c in relative for c in "\r\n\0:"):
-        raise ValueError("The portable Builder association cannot be represented by the Windows setup.")
-    return relative
-
-
-def write_game_home(out, relative):
-    """Only called after successful output finalization; never resolves relative to the process cwd."""
-    destination = os.path.join(out, ".hookshot_builder_home")
-    if relative is None:
-        with contextlib.suppress(FileNotFoundError):
-            os.remove(destination)
-        return
-    fd, partial = tempfile.mkstemp(prefix=".hookshot-home-", dir=out)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
-            f.write(relative)
-        os.replace(partial, destination)
-    finally:
-        if os.path.exists(partial):
-            os.remove(partial)
-
-
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--nup")
@@ -2164,7 +2110,6 @@ def end_stale_games(folders):
 def main(a=None):
     if a is None:
         a = parse_args()
-    portable_home = portable_game_home(a.update or a.out) if not a.check and (a.update or a.out) else None
     if a.jobs is not None and a.jobs < 0:
         fail("--jobs must be 1 or more, or 0 for automatic.")
     a.jobs = chosen_jobs(a.jobs)
@@ -2451,9 +2396,8 @@ def main(a=None):
     built = os.path.join(work, "sa", "build")
     # (the new files are copied in beside the old ones as <name>.new and swapped in only once all are complete: a build stopped while
     # copying, or a full disk, left a half-written 460 MB hookshot.exe and no game to play. The old game stays playable until the swap)
-    # (Windows) hookshot.exe in the folder is the game's launcher: the builder's small setup, which opens the installed builder as a
-    # launcher for this folder (Play, and Update left of it when its builder is newer than the game: builder/setup/setup.c launch mode), or starts
-    # the game when no builder is installed. The game and its DLLs are in bin\; its files (image.bin, romfs, saves, settings, caches)
+    # (Windows) hookshot.exe in the folder is the game's launcher: the builder's small setup (builder/setup/setup.c), which starts
+    # bin\hookshot.exe. The game and its DLLs are in bin\; its files (image.bin, romfs, saves, settings, caches)
     # stay in the folder (host/hos_paths.h). Without the setup (a development build) the game stays hookshot.exe in the folder
     staged = []
     # (Linux) the same launcher, as a script, when this is a packaged builder (the AppImage sets HOOKSHOT_TOOLS). A source
@@ -2543,12 +2487,9 @@ def main(a=None):
             if tag:
                 break
     if tag:
-        write_game_home(out, portable_home)
         with open(os.path.join(out, "hookshot_version.txt"), "w", encoding="utf-8", newline="\n") as f:
             f.write("version=%s\n" % tag)
-            if portable_home is not None:
-                f.write("builder_local=1\n")
-            elif os.environ.get("HOOKSHOT_BUILDER_EXE"):
+            if os.environ.get("HOOKSHOT_BUILDER_EXE"):
                 f.write("builder=%s\n" % os.environ["HOOKSHOT_BUILDER_EXE"])
     # (the game's code as read: written again by every build, so not left behind in the work folder. The translated code (sa\gen)
     # and the compiled objects stay: the next build skips the lift when nothing it reads changed (#428) and compiles only what

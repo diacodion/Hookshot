@@ -29,9 +29,13 @@ Or: "Hookshot supports build e0f3ccfa". Hookshot builds from one version of the 
 
 A false alarm on unsigned programs: Hookshot isn't code-signed yet.
 
-1. **Get the files back.** Restore them from Windows Security's **Protection history**, or add
-   `%LOCALAPPDATA%\HookshotBuilder` to its exclusions.
-2. **Press Repair** in the launcher.
+1. **Get the files back.** Restore them from Windows Security's **Protection history**, and add the launcher's folders
+   to its exclusions: `%LOCALAPPDATA%\LongshotLauncher` (its data: each version's builder and build tools, in
+   `toolchains`, and the build files) and `%LOCALAPPDATA%\Programs\LongshotLauncher` (the launcher itself). The portable
+   launcher keeps its data in `LongshotLauncher-data` beside `LongshotLauncher.exe` instead.
+2. **Build again.** If a file is still missing, delete that version's folder in
+   `%LOCALAPPDATA%\LongshotLauncher\toolchains` (it is named after the version, such as `v3.0.0`): the next build
+   downloads it again and checks it.
 
 The [antivirus guide](https://hookshot.magicbean.dev/help/antivirus/) shows each step, and how to check first that the
 download is genuine.

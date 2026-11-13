@@ -5,12 +5,12 @@ involved. Python's standard library, and llvm-mingw's llvm-objdump and llvm-read
     python -I scripts/check_windows_files.py --objdump <llvm-objdump> --readobj <llvm-readobj> <zip>
         the files (HookshotBuilder.exe, the setup, at the top; HookshotBuilder\\ the published builder, its setup copy, the
         tools), the setup's PE header, imports and resources (windres: its icon, manifest and version), the builder's apphost
-        (GUI, its version and manifest copied from the assembly) and its .NET (self-contained .NET 8 and WPF, win-x64)
+        (GUI subsystem, so no console window, its version and manifest copied from the assembly) and its .NET (self-contained
+        .NET 8, win-x64, and no WPF: the builder has no window)
     python -I scripts/check_windows_files.py --wine <wine> <zip>
-        each started under Wine (in Xvfb: WPF makes a hidden window first), nothing downloaded: the setup's --play of an
-        empty folder ("error No built game to start"), the builder's --cli with no Python ("error The build tools could not
-        start"). A sign that they load and their imports, .NET and WPF resolve, not a test of what they do (RELEASING.md,
-        "Needs a Windows tester")
+        each started under Wine, nothing downloaded: the setup's --play of an empty folder ("error No built game to start"),
+        the builder's --cli with no Python ("error The build tools could not start"). A sign that they load and their
+        imports and .NET resolve, not a test of what they do (RELEASING.md, "Needs a Windows tester")
 
 Prints what is wrong, and exits 1, when anything is.
 """
@@ -23,14 +23,12 @@ import sys
 import tempfile
 import zipfile
 
-# (the zip's own files, and the builder folder's that a Windows publish has: the app, its apphost, .NET's host and runtime, WPF's
-# managed and native parts, and what builder_package.py adds)
+# (the zip's own files, and the builder folder's that a Windows publish has: the app, its apphost, .NET's host and runtime, and
+# what builder_package.py adds. No WPF: the builder has no window)
 TOP = ("HookshotBuilder.exe", "VERSION", "recomplauncher.json", "tools.lock")
 BUILDER = ("HookshotBuilder.exe", "HookshotBuilder.dll", "HookshotBuilder.deps.json", "HookshotBuilder.runtimeconfig.json",
-           "HookshotBuilder-Setup.exe", "LICENSE", "Fonts/Inter-LICENSE.txt",
+           "HookshotBuilder-Setup.exe", "LICENSE",
            "hostfxr.dll", "hostpolicy.dll", "coreclr.dll", "clrjit.dll", "System.Private.CoreLib.dll",
-           "PresentationFramework.dll", "PresentationCore.dll", "WindowsBase.dll", "wpfgfx_cor3.dll",
-           "PresentationNative_cor3.dll", "vcruntime140_cor3.dll",
            "tools/nx2/make_game.py", "tools/scripts/tools.py", "tools/version.txt")
 # (the libraries the setup may import: Windows' own, and the UCRT's api-ms-win-crt-*; never llvm-mingw's libc++ or winpthread)
 SETUP_IMPORTS = re.compile(r"^(kernel32|user32|gdi32|advapi32|shell32|ole32|comctl32|winhttp|bcrypt|shlwapi|oleaut32)\.dll$"
@@ -117,21 +115,18 @@ def files(a):
         dll = run(a.objdump, "-p", os.path.join(b, "HookshotBuilder.dll"))
         if "file format pei-x86-64" not in dll and "file format pei-i386" not in dll and "file format coff" not in dll:
             bad("HookshotBuilder.dll is not a PE file")
-        with open(os.path.join(b, "HookshotBuilder.dll"), "rb") as f:
-            managed = f.read()
-        # (the .csproj's Resource items, in HookshotBuilder.g.resources: their names lower case, in UTF-16)
-        for res in ("images/hookshot.png", "fonts/inter"):
-            if res.encode("utf-16-le") not in managed:
-                bad("HookshotBuilder.dll has no %s in its WPF resources" % res)
-
+        for n in names:   # (a window's toolkit is not shipped: the builder is command-line only)
+            if re.match(r"HookshotBuilder/(Presentation|wpfgfx|System\.Windows\.Forms)", n):
+                bad("the zip has %s: the builder has no window and needs no WPF or Windows Forms" % n)
         with open(os.path.join(b, "HookshotBuilder.runtimeconfig.json"), encoding="utf-8") as f:
             rc = json.load(f)["runtimeOptions"]
         included = {x["name"]: x["version"] for x in rc.get("includedFrameworks", [])}
         if rc.get("tfm") != "net8.0":
             bad("the builder's runtimeconfig is for %s, not net8.0" % rc.get("tfm"))
-        for fw in ("Microsoft.NETCore.App", "Microsoft.WindowsDesktop.App"):
-            if not included.get(fw, "").startswith("8."):
-                bad("the builder does not carry %s 8 (self-contained): %s" % (fw, included or rc.get("frameworks")))
+        if not included.get("Microsoft.NETCore.App", "").startswith("8."):
+            bad("the builder does not carry Microsoft.NETCore.App 8 (self-contained): %s" % (included or rc.get("frameworks")))
+        if "Microsoft.WindowsDesktop.App" in included:
+            bad("the builder carries Microsoft.WindowsDesktop.App (WPF): it has no window")
         with open(os.path.join(b, "HookshotBuilder.deps.json"), encoding="utf-8") as f:
             target = json.load(f)["runtimeTarget"]["name"]
         if target != ".NETCoreApp,Version=v8.0/win-x64":
@@ -150,7 +145,7 @@ def wine(a):
         checks = (("the setup", [os.path.join(tmp, "HookshotBuilder.exe"), "--play", "Z:" + empty.replace("/", "\\")],
                    "error No built game to start"),
                   # (the builder's --cli: its tools found beside it, no Python in the Wine prefix, so the Runner stops with an
-                  # "error" line; what matters is that .NET and WPF's App started)
+                  # "error" line; what matters is that .NET and the builder started)
                   ("the builder", [os.path.join(tmp, "HookshotBuilder", "HookshotBuilder.exe"), "--cli", "--version"],
                    "error The build tools"))
         for name, cmd, want in checks:

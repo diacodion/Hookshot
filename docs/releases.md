@@ -141,13 +141,13 @@ tool llvm-mingw 20261104 windows-x64 5521…40f 191037046 HookshotBuilder/tools/
   v2.1.0's with dav1d added (`scripts/windows/dav1d.sh`), and `third-party` the prebuilt files of Hookshot v2.1.0's
   `third_party` part (`assemble third-party`). Linux: `scripts/linux/deps.sh tools`'s. There is no play profile yet: the
   lock has no `profile` line, and `check --require` does not ask for one.
-- **Linux.** The AppImage carries only the builder: its Python (the window, the tools' download and `make_game.py` run on it,
+- **Linux.** The AppImage carries only the builder: its Python (the tools' download and `make_game.py` run on it,
   and its packages follow `requirements.txt`, which changes with the version), Hookshot's sources and the prebuilt Vulkan
   back end. Each `linux-x64` tool's `dest` is where the AppImage had it (`usr/lib/hookshot/emsdk`, `usr/share/hookshot/cpm`,
   ...). The launcher unpacks them beside the unpacked AppImage, as on Windows. An AppImage started by itself
   (`builder/linux/AppRun`) finds them there, or in the launcher's copy of the same version, or in
-  `$XDG_DATA_HOME/hookshot/builder/toolchains/<v>/`; what is missing it downloads there at its first start, with a progress
-  window (`--cli`: lines on stderr), linking a tool another version there has. Once there, no connection is needed.
+  `$XDG_DATA_HOME/hookshot/builder/toolchains/<v>/`; what is missing its first `--cli` downloads there, its progress on
+  stderr, linking a tool another version there has. Once there, no connection is needed.
   `scripts/linux/deps.sh tools` makes the Linux archives from its pinned downloads (`scripts/tools.py pack`: modes and
   relative links kept).
 
@@ -304,5 +304,5 @@ updates everything), or **RecompLauncher**, with the same builder files.
 - **Tags and computed numbers, not release PRs.** A maintainer tags; CI checks the number against what was merged and
   writes the notes. Nothing is committed back to `main`, so there is no release branch or bot commit to review.
 - **The builders do not update themselves.** One updater, the launcher's, with one set of rules, instead of three (the
-  game, the WPF builder, the Linux builder). The builders keep `--update <folder>`, which rebuilds a game with their
-  own tools.
+  game, the Windows builder, the Linux builder). The builders have no window any more; their `--cli --update <folder>`
+  rebuilds a game with their own tools.

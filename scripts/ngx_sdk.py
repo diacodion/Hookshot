@@ -19,7 +19,7 @@ Usage:  python -I scripts/ngx_sdk.py [--accept-nvidia-license] [--platform linux
   --runtime-dir: the runtimes copied into that folder instead (Linux: $XDG_DATA_HOME/hookshot/ngx; Windows:
           %LOCALAPPDATA%\\Hookshot\\ngx. RX_VK_DLSS_DIR names another when the game runs)
   --build-only: only what the build reads, not the runtimes (CI's link check)
-  --accept-nvidia-license: NVIDIA's license accepted without the question (scripts, the Hookshot Builder's DLSS tick, CI)
+  --accept-nvidia-license: NVIDIA's license accepted without the question (scripts, the Hookshot Launcher's DLSS switch, CI)
 Then build with HOOKSHOT_NGX_SDK=<sdk folder>.
 """
 import argparse

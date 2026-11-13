@@ -3,7 +3,7 @@ the AppImage carries none of tools.lock's linux-x64 tools. They are found where 
 the builder, or in its own copy of the version), else in the builder's toolchains folder, where the first start downloads
 them, checked by their SHA-256, with progress, and where a later start finds them with no connection. A tool another
 version has is linked, not downloaded again. AppRun's --cli (RecompLauncher's --cli --prepare) gets them first and stops
-without them; --play needs none.
+without them; --play and --launch need none, and anything else is a message: the AppImage has no window.
 
     python -I -B tests/test_linux_tools.py
 """
@@ -227,15 +227,34 @@ class AppRun(unittest.TestCase):
         self.assertNotIn("build tools", r.stderr)
         self.assertFalse((self.dir / "data").exists())
 
+    def test_launch_plays_that_folder_with_no_build_tool(self):
+        # (a game folder's hookshot starts the AppImage that built it with --cli with --launch <folder>: builder/linux/hookshot-folder)
+        folder = self.dir / "no-game"
+        folder.mkdir()
+        r = self.run_app("--launch", str(folder))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("no built game to start", r.stderr)
+        self.assertNotIn("build tools", r.stderr)
+        self.assertFalse((self.dir / "data").exists())
+
+    def test_no_window_only_the_launcher_message(self):
+        # (no display here: the message on stderr, no dialog. Nothing downloaded, make_game.py not run)
+        for args in ((), ("--update", str(self.dir)), ("--repair",), ("--launch",)):
+            r = self.run_app(*args)
+            self.assertEqual(r.returncode, 1, args)
+            self.assertIn("Hookshot Launcher", r.stderr, args)
+            self.assertIn("https://hookshot.magicbean.dev/download", r.stderr, args)
+            self.assertEqual(r.stdout, "", args)
+        self.assertFalse((self.dir / "data").exists())
+
     def test_the_order_in_apprun(self):
         text = (ROOT / "builder/linux/AppRun").read_text(encoding="utf-8")
         cli = text[text.index('if [ "${1:-}" = "--cli" ]'):text.index('if [ "${1:-}" = "--play" ]')]
         self.assertLess(cli.index("build_tools || exit 1"), cli.index("make_game.py"))
-        window = text[text.rindex("\nbuild_tools --gui"):]
-        self.assertIn("hookshot_builder.py", window)   # (the window opens even when a tool could not be had)
-        play = text[text.index('if [ "${1:-}" = "--play" ]'):text.rindex("\nbuild_tools --gui")]
+        play = text[text.index('if [ "${1:-}" = "--play" ]'):]
         self.assertNotIn("build_tools", play)
-
+        self.assertNotIn("--gui", text)
+        self.assertNotIn("hookshot_builder.py", text)
 
 if __name__ == "__main__":
     unittest.main()

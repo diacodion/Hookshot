@@ -4,7 +4,7 @@
 # the Vulkan headers) are not in it either: they are tools.lock's linux-x64 lines, which the Hookshot Launcher installs
 # beside it, or the AppImage itself at its first start (builder/linux/linux_tools.py; docs/releases.md, "tools.lock").
 #
-#   scripts/linux/deps.sh        (first: Python with Tk, the AppImage packer, into build-linux/deps)
+#   scripts/linux/deps.sh        (first: Python, the AppImage packer, into build-linux/deps)
 #   scripts/linux/appimage.sh    -> build-linux/Hookshot-<version>-x86_64.AppImage: the Linux builder a release ships, which
 #                                   the Hookshot Launcher installs (docs/releases.md)
 # The same image builds the game and, with --play, starts the one it saved.
@@ -89,11 +89,9 @@ fi
 [ -n "$(find "$T/assets/pipeline_states" -name "*.bin.xz" 2>/dev/null)" ] || { echo "assets/pipeline_states/ holds no pipeline state list: a release ships them (docs/development.md, \"The pipeline state list\")"; exit 1; }
 find "$T" -name __pycache__ -prune -exec rm -rf {} +
 
-# ---- what it starts with: its Python (the window, the tools' download, nx2/make_game.py) and the Vulkan back end ----
+# ---- what it starts with: its Python (the tools' download, nx2/make_game.py) and the Vulkan back end ----
 cp -a "$DEPS/python" "$APPDIR/usr/python"
-cp "$DEPS/tk/libtcl9tk9.0.so" "$DEPS/tk/libXft.so.2" "$DEPS/tk/libXrender.so.1" "$APPDIR/usr/python/lib/"
 cp "$VK" "$L/hookshot_vk.so"
-cp -a "$DEPS/licenses" "$T/licenses"   # (Tk, libXft, libXrender: what this AppImage carries besides Hookshot and Python)
 # ---- the licences of the third-party parts compiled into hookshot_vk.so (tests/test_appimage_licenses.py) ----
 mkdir -p "$T/licenses/imgui" "$T/licenses/zstd" "$T/licenses/libertinus" "$T/licenses/fidelityfx"
 cp third_party/imgui/LICENSE.txt third_party/imgui/PROVENANCE.md "$T/licenses/imgui/"

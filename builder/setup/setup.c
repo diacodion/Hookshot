@@ -1,6 +1,8 @@
 /* HookshotBuilder.exe in HookshotBuilder-<version>-windows-x64.zip (docs/releases.md): installs the Hookshot Builder the zip
    carries, with the build tools tools.lock names, and starts it. It looks for no release itself: the Hookshot Launcher
    (MagicBeanDev/LongshotLauncher) installs and updates the builder from Hookshot's releases, and RecompLauncher runs this.
+   The builder has no window: only --cli installs and starts it, --play starts a built game, and this file as a game folder's
+   hookshot.exe starts that game. Started any other way (by hand), it says to get the Hookshot Launcher and does nothing else.
    The zip holds this setup, HookshotBuilder\ (the builder and Hookshot's sources), tools.lock and VERSION: the builder is
    copied into %LOCALAPPDATA%\HookshotBuilder\versions\<version>, and each tool of tools.lock (`tool <name> <version> <system>
    <sha256> <size> <dest> <prefix> <url> [<url>]`) is downloaded from the first URL that answers, checked by its SHA-256,
@@ -39,7 +41,7 @@ static wchar_t g_app[MAX_PATH];   /* (HookshotBuilder\ beside this setup, the bu
 static HbHome g_home;
 static int g_home_ok;
 /* (RecompLauncher) --cli <make_game.py's options>: no window, the builder's lines on this process's stdout and stderr, its exit code
-   as ours; --play <game folder>: the game itself, waited for. Neither is used by the builder's own start, which is unchanged. */
+   as ours; --play <game folder>: the game itself, waited for. */
 static int g_headless;
 static DWORD g_exit;
 
@@ -290,9 +292,6 @@ static int init_home(int portable) {
     if (!n || n >= MAX_PATH || GetEnvironmentVariableW(L"HOOKSHOT_SETUP_BASE", requested, MAX_PATH) >= MAX_PATH) return 0;
     if (SHGetFolderPathW(NULL, CSIDL_LOCAL_APPDATA, NULL, 0, profile) == S_OK)
         hb_home_join(standard, MAX_PATH, profile, L"HookshotBuilder");   /* an explicit/portable home needs no AppData */
-    const wchar_t *name = wcsrchr(self, L'\\');
-    name = name ? name + 1 : self;
-    const int game = !_wcsicmp(name, L"hookshot.exe");
     if (portable) {
         if (*requested) {
             if (!hb_home_full(g_home.root, requested)) return 0;
@@ -300,7 +299,7 @@ static int init_home(int portable) {
             wchar_t parent[MAX_PATH];
             if (!hb_home_full(parent, self) || !hb_home_parent(parent)) return 0;
             HbHome existing;
-            if (!hb_home_discover(&existing, NULL, self, parent, game)) return 0;
+            if (!hb_home_discover(&existing, NULL, self, parent)) return 0;
             if (existing.portable) wcscpy(g_home.root, existing.root);
             else if (!hb_home_join(g_home.root, MAX_PATH, parent, L"HookshotBuilder")) return 0;
         }
@@ -308,7 +307,7 @@ static int init_home(int portable) {
         mkdirs(g_home.root);
         if (!hb_home_mark(g_home.root)) return 0;
         g_home.portable = 1;
-    } else if (!hb_home_discover(&g_home, requested, self, standard, game)) return 0;
+    } else if (!hb_home_discover(&g_home, requested, self, standard)) return 0;
     wchar_t inherited[3] = L"";
     if (GetEnvironmentVariableW(L"HOOKSHOT_BUILDER_PORTABLE", inherited, 3) == 1 &&
         inherited[0] == L'1' && !g_home.portable) return 0;
@@ -544,9 +543,7 @@ static int retryable(DWORD status) {
 static int builder_ready(const wchar_t *exe) {
     static const wchar_t *const required[] = {
         L"HookshotBuilder.dll", L"HookshotBuilder.deps.json", L"HookshotBuilder.runtimeconfig.json",
-        L"hostfxr.dll", L"hostpolicy.dll", L"coreclr.dll", L"System.Private.CoreLib.dll",
-        L"WindowsBase.dll", L"PresentationCore.dll", L"PresentationFramework.dll",
-        L"PresentationNative_cor3.dll", L"wpfgfx_cor3.dll"
+        L"hostfxr.dll", L"hostpolicy.dll", L"coreclr.dll", L"System.Private.CoreLib.dll"
     };
     wchar_t path[MAX_PATH];
     const size_t n = wcslen(exe);
@@ -571,15 +568,6 @@ static int builder_ready(const wchar_t *exe) {
 
 static DWORD WINAPI work(LPVOID unused) {
     (void)unused;
-    /* (--repair, from the builder's Repair button: every part checked again and the version unpacked anew, after the builder that
-       started this has closed. It is not passed on) */
-    int repair = 0;
-    wchar_t *flag = wcsstr(g_cmdline, L"--repair");
-    if (flag) {
-        repair = 1;
-        wmemmove(flag, flag + 8, wcslen(flag + 8) + 1);
-        Sleep(2000);
-    }
     wchar_t base[MAX_PATH], downloads[MAX_PATH];
     if (!g_home_ok || (g_home.portable && hb_home_marked(g_home.root) != 1)) fail(L"The Builder home is unavailable or its portable marker is invalid.");
     wcscpy(base, g_home.root);
@@ -653,7 +641,7 @@ static DWORD WINAPI work(LPVOID unused) {
     home_path(exe, L"%ls\\%ls", install, wrun);
     for (wchar_t *q = exe; *q; q++) if (*q == L'/') *q = L'\\';
 
-    if (repair || GetFileAttributesW(marker) == INVALID_FILE_ATTRIBUTES || !builder_ready(exe)) {
+    if (GetFileAttributesW(marker) == INVALID_FILE_ATTRIBUTES || !builder_ready(exe)) {
         /* (unpacked into <tag>.part and renamed once complete: a setup stopped half way never leaves a version that looks installed) */
         home_path(install, L"%ls\\%ls.part", versions, wtag);
         rmtree(install);
@@ -826,30 +814,6 @@ static LRESULT CALLBACK wndproc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     return DefWindowProcW(h, msg, wp, lp);
 }
 
-/* (launch mode) "Hookshot Launcher.exe" in a game folder (nx2/make_game.py puts this file there under that name): the installed
-   builder opened as the game's launcher (--launch <that folder>: Play, and Update when this builder is newer than the game), at once, with no
-   window, download or network of its own. With no builder installed yet, the setup runs as usual and then opens the launcher. */
-static int launch_installed(const wchar_t *args) {
-    wchar_t base[MAX_PATH], cur[MAX_PATH], exe[MAX_PATH], dir[MAX_PATH], cmd[4096];
-    if (!g_home_ok) return 0;
-    wcscpy(base, g_home.root);
-    char tag[128] = "";
-    home_path(cur, L"%ls\\versions\\current.txt", base);
-    read_small(cur, tag, sizeof tag);
-    if (!tag[0] || tag[0] == '.' || !list_name_ok(tag, 0)) return 0;
-    wchar_t wtag[128];
-    MultiByteToWideChar(CP_UTF8, 0, tag, -1, wtag, 128);
-    home_path(dir, L"%ls\\versions\\%ls\\HookshotBuilder", base, wtag);
-    home_path(exe, L"%ls\\HookshotBuilder.exe", dir);
-    if (!builder_ready(exe)) return 0;
-    swprintf(cmd, 4096, L"\"%ls\" %ls", exe, args);
-    STARTUPINFOW si = {sizeof si};
-    PROCESS_INFORMATION pi;
-    if (!CreateProcessW(NULL, cmd, NULL, NULL, FALSE, 0, NULL, dir, &si, &pi)) return 0;
-    CloseHandle(pi.hThread), CloseHandle(pi.hProcess);
-    return 1;
-}
-
 /* (RecompLauncher's Play) --play <game folder>: bin\hookshot.exe there, started like the game folder's launcher starts it but without
    its update question, and waited for, so the launcher knows when the session ends. */
 static int play_folder(const wchar_t *args) {
@@ -887,18 +851,14 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmdline, int show) {
         if (!wcsncmp(c, L"--play", 6) && (c[6] == L' ' || !c[6])) return play_folder(c + 6);
         if (!wcsncmp(c, L"--cli", 5) && (c[5] == L' ' || !c[5])) g_headless = 1, show = SW_HIDE;
     }
-    g_home_ok = init_home(portable);
-    {
+    {   /* (the game folder's launcher, hookshot.exe there (nx2/make_game.py copies this file): the game, bin\hookshot.exe, at once) */
         wchar_t self[MAX_PATH];
         GetModuleFileNameW(NULL, self, MAX_PATH);
         const wchar_t *name = wcsrchr(self, L'\\');
         name = name ? name + 1 : self;
-        if (!_wcsicmp(name, L"hookshot.exe") && !wcsstr(g_cmdline, L"--")) {   /* (the game folder's launcher) */
+        if (!_wcsicmp(name, L"hookshot.exe") && !wcsstr(g_cmdline, L"--")) {
             wchar_t *slash = wcsrchr(self, L'\\');
             if (slash) *slash = 0;
-            swprintf(g_cmdline, 2047, L"--launch \"%ls\"", self);
-            if (launch_installed(g_cmdline)) return 0;
-            /* (no builder installed on this PC: the game itself, at once; nothing is downloaded to show a Play button) */
             wchar_t game[MAX_PATH], cmd[MAX_PATH + 4];
             home_path(game, L"%ls\\bin\\hookshot.exe", self);
             swprintf(cmd, MAX_PATH + 4, L"\"%ls\"", game);
@@ -908,16 +868,20 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmdline, int show) {
                 CloseHandle(pi.hThread), CloseHandle(pi.hProcess);
                 return 0;
             }
-            MessageBoxW(NULL, L"The game (bin\\hookshot.exe) is missing from this folder. Build it again with the Hookshot Builder.", L"Hookshot",
+            MessageBoxW(NULL, L"The game (bin\\hookshot.exe) is missing from this folder. Build it again with the Hookshot Launcher.", L"Hookshot",
                         MB_ICONERROR);
             return 1;
         }
-        if (wcsstr(g_cmdline, L"--launch") && launch_installed(g_cmdline)) return 0;
     }
+    if (!g_headless) {   /* (started by hand: the builder has no window to install and open) */
+        MessageBoxW(NULL, L"The Hookshot Builder has no window of its own: the Hookshot Launcher builds the game and starts it. "
+                          L"Get the launcher from " LAUNCHER_DOWNLOAD, L"Hookshot Builder", MB_OK | MB_ICONINFORMATION);
+        return 1;
+    }
+    g_home_ok = init_home(portable);
     if (!g_home_ok) {
         const wchar_t *why = L"The Builder home is unavailable or its portable marker is invalid. For a new portable install, put this setup in a writable folder and start it with --portable.";
-        if (g_headless) say_error(why);
-        else MessageBoxW(NULL, why, L"Hookshot Builder setup", MB_OK | MB_ICONERROR);
+        say_error(why);
         return 1;
     }
     INITCOMMONCONTROLSEX icc = {sizeof icc, ICC_PROGRESS_CLASS};

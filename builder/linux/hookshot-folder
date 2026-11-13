@@ -1,9 +1,9 @@
 #!/bin/sh
-# The game folder's launcher, what hookshot.exe is on Windows: Play, and Update when that builder is newer than the game.
-# The game itself is bin/hookshot. This file is copied to hookshot in the folder (nx2/make_game.py).
+# The game folder's launcher, what hookshot.exe is on Windows. The game itself is bin/hookshot. This file is copied to
+# hookshot in the folder (nx2/make_game.py).
 #
-# It starts the builder= line in hookshot_version.txt (the builder that made this game). When that one is gone, it starts
-# the game.
+# It starts the builder= line in hookshot_version.txt (what made this game: the Hookshot Launcher, or the builder AppImage
+# for a build with --cli, which plays it) with --launch <this folder>. When that one is gone, it starts the game.
 set -eu
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
@@ -27,5 +27,5 @@ if [ -x "$HERE/bin/hookshot" ]; then
     cd "$HERE"
     exec ./bin/hookshot
 fi
-echo "Hookshot: the game (bin/hookshot) is missing from this folder. Build it again with Hookshot Builder." >&2
+echo "Hookshot: the game (bin/hookshot) is missing from this folder. Build it again with the Hookshot Launcher." >&2
 exit 1

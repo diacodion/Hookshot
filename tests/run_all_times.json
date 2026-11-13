@@ -132,8 +132,6 @@
   "gpu/vk/tests/regmap_marker_test.cpp": 2.9,
   "nx2/test_import_windows.py": 2.8,
   "nx2/test_mesh_first_types.py": 43.8,
-  "tests/test_builder_details_hitbox.py": 6.6,
-  "tests/test_builder_dlss_update.py": 6.1,
   "tests/test_capture_copy_helpers.py": 6.5,
   "tests/test_capture_dimensions.py": 12.7,
   "tests/test_cpp_preflight.py": 2.4,

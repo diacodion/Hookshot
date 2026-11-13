@@ -158,15 +158,17 @@ On Windows, NVIDIA's static `nvsdk_ngx_s.lib` is linked into `hookshot_vk.dll` (
 `host/mingw_msvc_shims.c` for the runtime it expects), and `make_game.py` copies `nvngx_dlss.dll` and
 `nvngx_dlssg.dll` into the game's `ngx` folder; never put NGX's core, `_nvngx.dll`, beside the game. On Linux it is
 `--platform linux` (or `scripts/linux/ngx-sdk.sh`). Never share a game folder built with the SDK. A change to the
-pinned SDK release updates `scripts/ngx_sdk.py`, `tests/test_ngx_sdk.py` and the release named in the Builder's license
-text (`builder/HookshotBuilder/MainWindow.xaml.cs`).
+pinned SDK release updates `scripts/ngx_sdk.py`, `tests/test_ngx_sdk.py` and the release named in the Hookshot
+Launcher's license text (MagicBeanDev/LongshotLauncher, `App/ViewModels/SettingsStepViewModel.cs`).
 
 ### Hookshot Builder
 
-The Builder is a .NET 8 WPF app: open `builder/HookshotBuilder.sln` in Visual Studio 2022 with the .NET desktop
-workload, or `dotnet build builder/HookshotBuilder.sln`. You only need Visual Studio for the Builder; the game builds
-with llvm-mingw. For a Builder that keeps its state on an external SSD, see
-[portable Builder setup](docs/windows-portable-builder.md).
+The Builder has no window: players use the [Hookshot Launcher](https://hookshot.magicbean.dev/download), which builds
+and starts the game. What is left is command-line only: on Windows a small .NET 8 program
+(`builder/HookshotBuilder`, `dotnet build builder/HookshotBuilder.sln`) whose `--cli` runs `nx2/make_game.py` with
+the release's own Python, for RecompLauncher through the setup (`builder/setup/setup.c`); on Linux the AppImage's
+`AppRun --cli` (`builder/linux`). Started any other way, both say to get the launcher. For a Builder that keeps its
+state on an external SSD, see [portable Builder setup](docs/windows-portable-builder.md).
 
 ## Building
 

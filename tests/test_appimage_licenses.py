@@ -39,11 +39,14 @@ class AppImageLicences(unittest.TestCase):
             for shipped, source in WANT.items():
                 self.assertEqual((Path(folder) / shipped).read_bytes(), (ROOT / source).read_bytes(), shipped)
 
-    def test_block_after_the_deps_licences(self):
-        # (cp -a of the deps' licences into an existing folder would nest it: this block must come after)
+    def test_no_tk_licences(self):
+        # (the AppImage carries no Tcl/Tk, libXft or libXrender any more: deps.sh has no licences folder of its own to copy)
         script = (ROOT / "scripts/linux/appimage.sh").read_text(encoding="utf-8")
-        self.assertLess(script.index('cp -a "$DEPS/licenses" "$T/licenses"'),
-                        script.index("# ---- the licences of the third-party parts compiled into hookshot_vk.so"))
+        deps = (ROOT / "scripts/linux/deps.sh").read_text(encoding="utf-8")
+        self.assertNotIn('"$DEPS/licenses"', script)
+        self.assertNotIn('"$DEPS/tk', script)
+        for gone in ("TCLTK_VER", "Tk-license", "libXft", "mark tk"):
+            self.assertNotIn(gone, deps)
 
     def test_vk_third_party_covered(self):
         # (every third_party folder the Vulkan back end compiles in, from nx2/build.py, has its licence shipped)

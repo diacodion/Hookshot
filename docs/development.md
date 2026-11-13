@@ -38,11 +38,12 @@ The sysroot (`scripts/linux/deps.sh tools`) copies the system libraries it takes
 development alias such as `libmvec.so` becomes the library's bytes, so the packed tool does not depend on the player's
 filesystem. Only its own relative `lib -> usr/lib` stays a link.
 
-On Linux, a game folder's `hookshot` (`builder/linux/hookshot-folder`) starts the builder named by `builder=` in
-`hookshot_version.txt`, the one that built the folder, with `--launch <folder>`; when that one is gone, it starts
-`bin/hookshot`. The Linux builder never looks for or installs another version (the Hookshot Launcher does): its Update
-builds a game older than itself again with its own version, and a newer game gets Play. Building a newer game back
-with older tools, for instance after changing NVIDIA DLSS, asks first (`tests/test_linux_downgrade.py`).
+On Linux, a game folder's `hookshot` (`builder/linux/hookshot-folder`) starts the program named by `builder=` in
+`hookshot_version.txt`, the one that built the folder (the Hookshot Launcher, or a builder AppImage), with
+`--launch <folder>`; when that one is gone, it starts `bin/hookshot` (`tests/test_linux_downgrade.py`). The builders have
+no window: the AppImage's `--launch <folder>` (a folder it built with `--cli`) plays that folder's game, and `--cli` runs
+`make_game.py`. On Windows the folder's `hookshot.exe` (`builder/setup/setup.c`) starts `bin\hookshot.exe` itself. They never look
+for or install another version (the Hookshot Launcher does).
 
 Run everything with `python -I` from this folder.
 
@@ -238,7 +239,7 @@ Pipeline-cache file ownership, temporary storage and failure behavior are descri
 ### Building
 
 A build reads and writes tens of gigabytes. When the game folder or the build files folder is on a hard drive,
-`make_game.py` warns that an SSD is much faster and builds anyway (the builders ask before they start).
+`make_game.py` warns that an SSD is much faster and builds anyway.
 
 | Switch | What it does |
 |---|---|
@@ -257,12 +258,11 @@ A build reads and writes tens of gigabytes. When the game folder or the build fi
 | `HOOKSHOT_VK_PREBUILT=<hookshot_vk.so>` | (Linux) The Vulkan back end as built already, the AppImage's; set aside by a build with DLSS (`HOOKSHOT_NGX_SDK`) or AMD FSR 4 (`HOOKSHOT_FSR=1`, `make_game.py --fsr`), which compiles its own |
 | `OOT_WORK`, `OOT_DUMP`, `OOT_EXEFS`, `OOT_ROMFS` | The work folder and the dump's folders, over `work/dump.txt` |
 
-The Windows Builder's own choices set two of these for its build. **Build workers**: Automatic keeps `HOOKSHOT_JOBS`
-(or the free-memory policy without it); a number overrides it for that build only, and is not saved, so a new window,
-or one started to update a game, is back on Automatic. More workers need more memory and are not always faster.
-**Build memory** is saved with the build's other settings and used by updates too: Automatic keeps the free-memory
-policy; a number of GB sets `HOOKSHOT_MEM_LIMIT_GB`, so the compilers may reserve that much together whatever is free
-now (the ones that always run, up to 4 on Windows, still run under a smaller number).
+The Hookshot Launcher's build settings set two of these for its build. **Build workers**: Automatic keeps
+`HOOKSHOT_JOBS` (or the free-memory policy without it); a number overrides it for that build. More workers need more
+memory and are not always faster. **Build memory**: Automatic keeps the free-memory policy; a number of GB sets
+`HOOKSHOT_MEM_LIMIT_GB`, so the compilers may reserve that much together whatever is free now (the ones that always run,
+up to 4 on Windows, still run under a smaller number). The builders' `--cli` passes both on as it finds them.
 
 Source-checkout builds keep the button prompts when their source, fonts, game assets, button tables, image overrides,
 Python, package/library versions and generation options still match, and every generated file still has its recorded
@@ -378,7 +378,7 @@ cd squashfs-root/usr/share/hookshot
 - **Shader preparation:** from `@@stage shaders` to `@@done`. Its `prepared <n> shader programs ... in <s> s` line
   gives the programs' share.
 
-On Windows the Builder runs the same `make_game.py`. Note the date, the nightly and the PC with the numbers.
+On Windows the launcher runs the same `make_game.py`. Note the date, the nightly and the PC with the numbers.
 
 ## The pipeline state list
 
@@ -438,8 +438,7 @@ A list depends on the settings it was recorded with: its records hold the target
 at 1440p with DLSS shares few pipelines with one recorded at 360p.
 
 Players send theirs to issue #14 with **Save my pipeline list** (the menu's Debug tab, under Developer: `gpu/vk/pipeline_share.h` and
-`vk_menu.cpp` `share_pipeline_list`; the builders: `nx2/pipeline_share.py`, which the Linux builder imports and the Windows
-one runs with `--json`). It checks the list as `pipeline_states.py --check` does and writes
+`vk_menu.cpp` `share_pipeline_list`; from the command line: `nx2/pipeline_share.py`, `--json` for a program that runs it). It checks the list as `pipeline_states.py --check` does and writes
 `hookshot-pipelines-<date>.zip` to the Downloads folder with exactly two files, the list and `hookshot_pipeline_report.txt`
 (the issue's template filled in from the run or from the game folder's log and `hookshot_options.ini`), then copies the
 template, shows the folder and opens the issue; never with `HOS_HEADLESS`. The list is zipped as the game wrote it, compute
@@ -497,11 +496,11 @@ through (inputs timed in frames, screenshots, waits for the game's state, the In
 | Path | What |
 |---|---|
 | `docs/design.md` | why mkw-recomp's pipeline, the architecture, MKW's lessons as rules, stages, testing |
-| `nx2/` | the lift pipeline and its tests (mkw-recomp's, made game-neutral; `kit.py` has the paths), and `make_game.py`, which the builders run |
+| `nx2/` | the lift pipeline and its tests (mkw-recomp's, made game-neutral; `kit.py` has the paths), and `make_game.py`, which the launcher and the builders run |
 | `host/` | the standalone Horizon runtime (TOTKPort's `hos/` as adapted by mkw-recomp), with the native NVN2 layer `nvn_native.c`; `host/posix` has the Win32 calls on Linux |
 | `gpu/vk/` | the Vulkan back end (`hookshot_vk.dll`, `hookshot_vk.so`), with Eden's shader recompiler and sirit |
 | `gpu/render/`, `gpu/third_party/` | the WebGPU renderer the Windows exe falls back to when it was built with wgpu-native, its op stream (`rx_nvn.h`), suyu's decoders |
-| `builder/` | Hookshot Builder: the Windows app (.NET 8 WPF), its setup, and the Linux builder and launcher scripts |
+| `builder/` | Hookshot Builder, command-line only (players use the Hookshot Launcher): the Windows `--cli` program (.NET 8), its setup (also a game folder's `hookshot.exe`), and the Linux AppImage's `AppRun`, tools and game folder scripts |
 | `scripts/` | test runs, the profile and log readers, the save copier (`oot_saves.py`), release tooling, `scripts/linux` (dependencies, AppImage) |
 | `tests/` | the game-free checks, all run by `tests/run_all.py` |
 | `third_party/` | a64-kit (with Hookshot's changes, marked `(hookshot)`, and Hookshot's, `(hookshot)`: its PROVENANCE.md), libopus, zbic (Atmosphere's zstd with ZBIC, for unpacking only), SDL2's licence, Dear ImGui and its Vulkan backend, zstd's decoder, the Libertinus fonts |

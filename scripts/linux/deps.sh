@@ -3,17 +3,15 @@
 # each part once, kept while its version stays the same. Run on the oldest system the AppImage is for (CI: Ubuntu 22.04,
 # glibc 2.35).
 #
-#   scripts/linux/deps.sh         what the AppImage carries and is packed with (python/, tk/, appimagetool, the runtime)
+#   scripts/linux/deps.sh         what the AppImage carries and is packed with (python/, appimagetool, the runtime)
 #   scripts/linux/deps.sh tools   also the build tools, each packed as a tools.lock archive into build-linux/deps/tools/
 #                                 (a maintainer's step when a tool changes: RELEASING.md, "Bump a tool"; add.sh there
 #                                 holds the tools.py add lines). The builder downloads them by tools.lock, not the AppImage
 #
 # The AppImage:
 #   python/           CPython (python-build-standalone) with lz4, numpy, capstone, unicorn and zstandard: the tools
-#                     (and nx2/prompt_requirements.txt's, which draw the button prompts), the builder's window, and the
-#                     first start's download of the build tools (builder/linux/linux_tools.py)
-#   tk/               libtcl9tk9.0.so built with Xft, with libXft and libXrender: put over python/'s, which draws only
-#                     X core fonts (under XWayland one 13 px bitmap font, whatever the size asked for or the screen)
+#                     (and nx2/prompt_requirements.txt's, which draw the button prompts) and --cli's download of the
+#                     build tools (builder/linux/linux_tools.py). Without Tcl/Tk and tkinter: the builder has no window
 #   appimagetool      the AppImage packer
 #   runtime-x86_64    the AppImage runtime it puts in front of the image (pinned: appimagetool's own download of the
 #                     'continuous' one, at packing time, fails whenever GitHub answers 504)
@@ -40,9 +38,6 @@ JOBS=$(nproc)
 LLVM_VER=23.1.5
 PY_TAG=20261026
 PY_VER=3.12.16
-TCLTK_VER=9.0.4   # (python-build-standalone's Tcl and Tk: its tk9.0 scripts stay, beside this libtcl9tk9.0.so)
-TCL_SHA256=d0aed49230bc02a65c1e0229e65f34590a4b037ec40d546f32573b467f7551ea
-TK_SHA256=d7a146d2917eb8b5cc95276dbf0e3d03c7464d2b19c1675357857c989301dbb4
 SDL_VER=2.32.10
 FFMPEG_VER=9.0.2
 DAV1D_VER=1.5.4
@@ -132,7 +127,7 @@ if [ "$WHAT" = tools ] && ! done_for llvm "$LLVM_VER"; then
 fi
 
 # ---- Python and the tools' modules ----
-PY_MARK="$PY_VER-$PY_TAG-$(sha256sum requirements.txt nx2/prompt_requirements.txt | sha256sum | cut -c1-12)"   # (a new pin installs again)
+PY_MARK="$PY_VER-$PY_TAG-notk-$(sha256sum requirements.txt nx2/prompt_requirements.txt | sha256sum | cut -c1-12)"   # (a new pin installs again)
 if ! done_for python "$PY_MARK"; then
     fetch "https://github.com/astral-sh/python-build-standalone/releases/download/$PY_TAG/cpython-$PY_VER+$PY_TAG-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz" python.tar.gz "$PY_SHA256"
     rm -rf "$DEPS/python"
@@ -140,30 +135,12 @@ if ! done_for python "$PY_MARK"; then
     "$DEPS/python/bin/python3" -m pip install --no-cache-dir --only-binary :all: --disable-pip-version-check -q \
         -r requirements.txt
     rm -rf "$DEPS/python/lib/python3.12/test" "$DEPS/python/lib/python3.12/idlelib" "$DEPS/python/lib/python3.12/ensurepip"
+    # (Tcl/Tk and tkinter: nothing in the AppImage has a window)
+    rm -rf "$DEPS/python/lib/python3.12/tkinter" "$DEPS/python/lib/python3.12/turtle.py" "$DEPS/python/lib/python3.12/turtledemo" \
+        "$DEPS/python/lib/python3.12/lib-dynload/"_tkinter*.so "$DEPS/python/lib/"libtcl* "$DEPS/python/lib/"libtk* \
+        "$DEPS/python/lib/"tcl[0-9]* "$DEPS/python/lib/"tk[0-9]* "$DEPS/python/lib/"itcl* "$DEPS/python/lib/"thread[0-9]*
     find "$DEPS/python" -name __pycache__ -prune -exec rm -rf {} +
     mark python "$PY_MARK"
-fi
-
-# ---- Tk with Xft (the builder window's fonts; Tcl is built only for Tk's configure and stub library) ----
-if ! done_for tk "$TCLTK_VER"; then
-    fetch "https://downloads.sourceforge.net/project/tcl/Tcl/$TCLTK_VER/tcl$TCLTK_VER-src.tar.gz" "tcl$TCLTK_VER.tar.gz"
-    fetch "https://downloads.sourceforge.net/project/tcl/Tcl/$TCLTK_VER/tk$TCLTK_VER-src.tar.gz" "tk$TCLTK_VER.tar.gz"
-    printf '%s  %s\n' "$TCL_SHA256" "$DL/tcl$TCLTK_VER.tar.gz" "$TK_SHA256" "$DL/tk$TCLTK_VER.tar.gz" | sha256sum -c -
-    rm -rf "$DEPS/src-tcl" "$DEPS/src-tk" "$DEPS/tk"
-    mkdir -p "$DEPS/src-tcl" "$DEPS/src-tk" "$DEPS/tk"
-    tar -xzf "$DL/tcl$TCLTK_VER.tar.gz" -C "$DEPS/src-tcl" --strip-components=1
-    tar -xzf "$DL/tk$TCLTK_VER.tar.gz" -C "$DEPS/src-tk" --strip-components=1
-    (cd "$DEPS/src-tcl/unix" && ./configure --enable-shared --with-system-libtommath=no && make -j"$JOBS" binaries)
-    # (no rpath: libXft and libXrender are found beside it through _tkinter's $ORIGIN/../..)
-    (cd "$DEPS/src-tk/unix" && ./configure --enable-shared --with-tcl="$DEPS/src-tcl/unix" --enable-xft --disable-libcups \
-        --disable-xss --disable-zipfs --disable-rpath && make -j"$JOBS" binaries)
-    cp "$DEPS/src-tk/unix/libtcl9tk9.0.so" "$DEPS/tk/"
-    strip --strip-unneeded "$DEPS/tk/libtcl9tk9.0.so"
-    readelf -d "$DEPS/tk/libtcl9tk9.0.so" | grep -q 'libXft\.so\.2' || { echo "Tk was built without Xft"; exit 1; }
-    cp -L /usr/lib/x86_64-linux-gnu/libXft.so.2 /usr/lib/x86_64-linux-gnu/libXrender.so.1 "$DEPS/tk/"
-    cp "$DEPS/src-tk/license.terms" "$DEPS/tk/Tk-license.terms"
-    rm -rf "$DEPS/src-tcl" "$DEPS/src-tk"
-    mark tk "$TCLTK_VER"
 fi
 
 # ---- dav1d and FFmpeg (static, position independent: linked into the game's executable) ----
@@ -216,17 +193,6 @@ if [ "$WHAT" = tools ] && ! done_for cpm "$VK_HEADERS-$SPIRV_HEADERS-$VMA"; then
     get_headers KhronosGroup/SPIRV-Headers "$SPIRV_HEADERS" spirv-headers "$SPIRV_HEADERS_TREE"
     get_headers GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator "$VMA" vulkanmemoryallocator "$VMA_TREE"
     mark cpm "$VK_HEADERS-$SPIRV_HEADERS-$VMA"
-fi
-
-# ---- the licenses of what the AppImage carries besides Hookshot (Python's and its modules' are in python/; each build
-# tool's are in its own archive, below) ----
-if ! done_for licenses "tk-$TCLTK_VER"; then
-    L=$DEPS/licenses
-    rm -rf "$L" && mkdir -p "$L"
-    cp "$DEPS/tk/Tk-license.terms" "$L/Tk-license.terms"
-    cp /usr/share/doc/libxft2/copyright "$L/libXft-copyright"
-    cp /usr/share/doc/libxrender1/copyright "$L/libXrender-copyright"
-    mark licenses "tk-$TCLTK_VER"
 fi
 
 # ---- appimagetool ----

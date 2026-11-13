@@ -1,46 +1,32 @@
 # Portable Hookshot Builder on Windows
 
-Put the release's `HookshotBuilder.exe` setup in a writable folder on your SSD, then run:
+The Builder has no window: players use the [Hookshot Launcher](https://hookshot.magicbean.dev/download), whose
+[portable zip](https://hookshot.magicbean.dev/download/launcher/windows-portable) keeps its data beside it. This page
+is for the Builder's command line (`--cli`, as RecompLauncher runs it) kept on an external SSD.
+
+Put the release's `HookshotBuilder.exe` setup in a writable folder on your SSD, then run it with `--portable` before
+`--cli` and make_game.py's options, for example:
 
 ```powershell
-.\HookshotBuilder.exe --portable
+.\HookshotBuilder.exe --portable --cli --nup "E:\your-game.nup"
 ```
 
 The setup creates a marked `HookshotBuilder` data folder beside itself. Keep this folder: it contains the installed
-Builder, its build tools, settings, SDK downloads you opt into, and the default build files. The normal setup
-continues to use `%LOCALAPPDATA%\HookshotBuilder`; portable mode does not import that installation or its settings.
-To reuse existing game files, select them explicitly in the new Builder.
+Builder, its build tools, SDK downloads you opt into, and the default build files. The normal setup continues to use
+`%LOCALAPPDATA%\HookshotBuilder`; portable mode does not import that installation.
 
-The default game folder is `Hookshot` beside the data folder. Keep the game and Builder on the same volume. You can
-move their containing folder or change that volume's drive letter: the game records a relative association to its
-Builder, and paths selected on the same volume are saved relative to the Builder home. Paths on another volume stay
-absolute and may need selecting again after moving. Desktop and Start menu shortcuts start unchecked in portable
-mode; selecting them explicitly creates shortcuts on that PC.
+With `--prepare`, the default game folder is `Hookshot` beside the data folder. You can move their containing folder or
+change that volume's drive letter: the setup finds its marked data folder beside it again on later `--cli` runs without
+the flag, and the installed Builder finds its marked home when it is started directly. No user/system environment
+variables or registry configuration are installed. Windows, .NET and third-party tools can still create their own
+temporary files and operating-system caches; this is not a zero-write or sandbox mode.
 
-![Portable destination and build-files folders, shown in an isolated layout check](images/windows-portable-folders.png)
-
-The original setup can be opened again without the flag while its marked data folder is beside it. The installed
-Builder also discovers its marked home when opened directly. Updates, repair and the older ZIP update fallback use
-that same home. No user/system environment variables or registry configuration are installed. Windows, .NET and
-third-party tools can still create their own temporary files and operating-system caches; this is not a zero-write
-or sandbox mode.
-
-Do not remove `.hookshot-portable` from the data folder or `.hookshot_builder_home` from a game built in portable
-mode. An invalid or missing association stops portable update discovery rather than silently using another Builder.
-The game can still be played without the Builder, using its game launcher. An interrupted installation keeps staged
-files separate from the published version. During portable updates, unchanged parts are copied instead of moved out
-of the installed Builder, so enough free space for both versions is needed. A repair publishes its complete staged
-directory before discarding the replaced one. If Windows blocks restoration after a failed rename, the preserved
-old directory remains beside it as `<version>.rollback-*`; close programs using these folders before recovering it.
-
-Portable mode requires the packaged setup launcher; a source checkout without that launcher cannot produce a
-relocatable portable game's update association. Existing standard game folders keep their previous update behavior;
-building one again with the portable Builder establishes the new association.
-Rebuilding or updating a portable game with the standard Builder removes that association after successful output
-finalization, so both the game launcher and update offer use the standard Builder again.
-
-For an incomplete installed version, use **Repair** through the packaged setup launcher, keeping the portable home
-in place. The older ZIP fallback reuses a matching installed version; it does not audit or repair all of its files.
+Do not remove `.hookshot-portable` from the data folder. An invalid marker stops the setup rather than silently using
+another Builder. The game is played with its own launcher (`hookshot.exe` in the game folder), which needs no Builder.
+An interrupted installation keeps staged files separate from the published version. During portable updates, unchanged
+parts are copied instead of moved out of the installed Builder, so enough free space for both versions is needed. If
+Windows blocks restoration after a failed rename, the preserved old directory remains beside it as
+`<version>.rollback-*`; close programs using these folders before recovering it.
 
 For scripted child processes the setup supplies an absolute `HOOKSHOT_SETUP_BASE` and
 `HOOKSHOT_BUILDER_PORTABLE=1` to that process tree only. A portable root must have the valid marker, be a dedicated
