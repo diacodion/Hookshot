@@ -360,8 +360,184 @@ void gpu_time_end(Recording& r) {
     ts_pending[r.slot] = true;
 }
 
+// (hookshot) Real occlusion counts (on unless RX_VK_OCC_QUERIES=0; from Hookshot's draft by jordanella). Ocarina of Time
+// reads its z-prepass samples-passed reports back on the CPU a frame or two later and leaves out of its draw lists the
+// objects whose count was 0 (docs/development.md); with every report reading 4096 nothing was ever left out. Each draw from
+// a samples-passed reset to its report gets an occlusion query, numbered in the replay state (NvnState::occ_next), so a
+// parallel replay's dry pass and its workers agree on them. The report is still written at replay as before ("visible");
+// once its queries have all ended on the GPU, the replay thread writes their sum over it, unless the game has reported into
+// that slot again since (its timestamp word moved on). A report whose draws did not all run, or that took more than
+// kOccRun, stays "visible": a late or unknown count costs culling, never a missing object.
+constexpr uint64_t kOccPool = 1 << 16;   // (the queries' ring)
+constexpr uint64_t kOccRun = 256;        // (the most draws one report counts)
+constexpr uint64_t kOccBuffer = 8192;    // (the most queries one command buffer takes)
+VkQueryPool occ_pool = VK_NULL_HANDLE;
+struct OccReport {
+    uint64_t addr, ts;       // (the report's slot and the timestamp written with it; addr 0: a run with no report, freed)
+    uint64_t first, n;       // (its queries)
+    uint64_t value, part;    // (the submission they go out in, and the recording count then: the lag, for the log)
+    bool color = false;      // (a draw of the run writes colour)
+};
+std::deque<OccReport> occ_pending;   // (in order: the front's first query is the ring's tail; the replay thread's)
+uint64_t occ_value = 0;              // (the submission being recorded: begin_recording)
+struct {
+    uint64_t real, zero, unknown, stale, lag, calls, polls, ns, sum, small, creal, czero;
+} occ_st;
+
+bool occ_queries_on() {
+    static const bool on = [] {
+        const char* e = getenv("RX_VK_OCC_QUERIES");
+        if (e && atoi(e) == 0) return false;
+        if (!e && getenv("RX_VK_OCC_FIXED")) return false;   // (a fixed value asked for: that value, as before)
+        if (!dev.host_query_reset) {
+            logf("vk: RX_VK_OCC_QUERIES: this device cannot reset queries from the CPU (hostQueryReset): off");
+            return false;
+        }
+        VkQueryPoolCreateInfo qi{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+        qi.queryType = VK_QUERY_TYPE_OCCLUSION;
+        qi.queryCount = (uint32_t)kOccPool;
+        if (vkCreateQueryPool(dev.device, &qi, nullptr, &occ_pool) != VK_SUCCESS) {
+            logf("vk: RX_VK_OCC_QUERIES: the query pool could not be made: off");
+            occ_pool = VK_NULL_HANDLE;
+            return false;
+        }
+        vkResetQueryPool(dev.device, occ_pool, 0, (uint32_t)kOccPool);
+        logf("vk: occlusion queries on (RX_VK_OCC_QUERIES): the game's samples-passed reports get the GPU's counts%s",
+             dev.occlusion_precise ? "" : " (not precise: a count says only none or some)");
+        return true;
+    }();
+    return on;
+}
+/// The ring's queries [first, first + n) back to unused (each one done on the GPU, or never begun)
+void occ_reset(uint64_t first, uint64_t n) {
+    while (n) {
+        const uint64_t at = first % kOccPool, k = std::min(n, kOccPool - at);
+        vkResetQueryPool(dev.device, occ_pool, (uint32_t)at, (uint32_t)k);
+        first += k, n -= k;
+    }
+}
+/// Room in the ring for another command buffer's queries
+bool occ_room(const NvnState& s) {
+    const uint64_t tail = !occ_pending.empty() ? occ_pending.front().first : s.occ_on ? s.occ_first : s.occ_next;
+    return occ_queries_on() && s.occ_next - tail + kOccBuffer <= kOccPool;
+}
+/// The reports whose queries are done, written into the game's slots (the replay thread, as a recording begins). The
+/// queries of every waiting report are asked for at once, as one run of the ring (two calls where it wraps), without a wait;
+/// the reports from the oldest on whose queries have all ended (or whose submission the GPU has finished: a query never begun
+/// is unknown then) are written, and their queries reset with one call. (Hookshot's draft asked and reset each report's
+/// queries on their own, ~1,500 of each a frame in the Market; waiting for a whole submission instead wrote the counts 3-13
+/// recordings late, about two frames, often after the game had read the slot.)
+void occ_collect() {
+    if (!occ_pool || occ_pending.empty()) return;
+    const auto t0 = std::chrono::steady_clock::now();
+    const uint64_t done = completed();
+    // (the waiting reports' queries follow on from each other: each run starts where the last one ended; a gap would end
+    // the batch there and the rest wait for the next call)
+    const uint64_t first = occ_pending.front().first;
+    uint64_t end = first;
+    size_t span = 0;
+    for (const OccReport& o : occ_pending) {
+        if (o.first != end) break;
+        end += o.n, span++;
+    }
+    static std::vector<uint64_t> got;   // (count, availability) for each query of [first, end)
+    got.assign(2 * (end - first), 0);
+    for (uint64_t i = 0; i < end - first;) {
+        const uint64_t at = (first + i) % kOccPool, k = std::min(end - first - i, kOccPool - at);
+        vkGetQueryPoolResults(dev.device, occ_pool, (uint32_t)at, (uint32_t)k, k * 16, got.data() + 2 * i, 16,
+                              VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);   // (VK_NOT_READY: some not done)
+        i += k;
+    }
+    size_t ready = 0;
+    for (size_t r = 0; r < span; r++) {
+        const OccReport& o = occ_pending[r];
+        bool all = true;
+        for (uint64_t i = o.first - first; i < o.first - first + o.n && all; i++) all = got[2 * i + 1] != 0;
+        if (!all && !(o.value && done >= o.value)) break;   // (still on the GPU: it and those after it wait)
+        ready++;
+    }
+    occ_st.polls++;
+    if (!ready) {
+        const OccReport& o = occ_pending.front();
+        static int logged;
+        if (rec_part_next - o.part > 200 && logged++ < 4)
+            logf("vk: occlusion queries: a report has waited %llu recordings (value %llu, done %llu, %zu waiting)",
+                 (unsigned long long)(rec_part_next - o.part), (unsigned long long)o.value, (unsigned long long)done,
+                 occ_pending.size());
+        occ_st.ns += (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count();
+        return;
+    }
+    end = occ_pending[ready - 1].first + occ_pending[ready - 1].n;
+    for (size_t r = 0; r < ready; r++) {
+        const OccReport& o = occ_pending.front();
+        bool all = true;
+        uint64_t sum = 0;
+        for (uint64_t i = o.first - first; i < o.first - first + o.n; i++) {
+            if (!got[2 * i + 1]) all = false;   // (its draw left out before the query began: unknown)
+            else sum += got[2 * i];
+        }
+        if (o.addr && all) {
+            uint64_t ts = 0;
+            host->gpu_read(o.addr + 8, &ts, 8);
+            static const bool dry = env_on("RX_VK_OCC_DRY");   // (a test: the queries made and read, the reports left at 4096)
+            if (ts == o.ts) {
+                if (!dry) guest_cpu_write(o.addr, &sum, 8);
+                (sum ? occ_st.real : occ_st.zero)++;
+                occ_st.sum += sum, occ_st.small += sum && sum < 64;
+                if (o.color) (sum ? occ_st.creal : occ_st.czero)++;
+                occ_st.lag += rec_part_next - o.part;
+            } else {
+                occ_st.stale++;   // (reported again before this one was done: the newer one stands)
+            }
+        } else if (o.addr) {
+            occ_st.unknown++;
+        }
+        occ_pending.pop_front();
+    }
+    occ_reset(first, end - first);
+    occ_st.calls++;
+    occ_st.ns += (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count();
+    static const bool log_on = env_on("RX_VK_OCC_LOG");
+    const uint64_t n = occ_st.real + occ_st.zero + occ_st.unknown + occ_st.stale;
+    if (log_on && n >= 5000) {
+        const uint64_t w = occ_st.real + occ_st.zero;
+        logf("vk: occlusion queries: %llu reports written (%llu of them 0, %.1f%%), %llu left visible (a draw did not run), "
+             "%llu reported again first; written %.1f recordings after the report; %zu waiting; %llu reads (%llu wrote), %.1f us each; "
+             "the others: %.0f samples on average, %llu under 64; runs with colour draws %llu (%llu of them 0)",
+             (unsigned long long)w, (unsigned long long)occ_st.zero, w ? 100.0 * occ_st.zero / w : 0.0,
+             (unsigned long long)occ_st.unknown, (unsigned long long)occ_st.stale, w ? (double)occ_st.lag / w : 0.0,
+             occ_pending.size(), (unsigned long long)occ_st.polls, (unsigned long long)occ_st.calls,
+             occ_st.polls ? occ_st.ns / 1e3 / occ_st.polls : 0.0, occ_st.real ? (double)occ_st.sum / occ_st.real : 0.0,
+             (unsigned long long)occ_st.small, (unsigned long long)(occ_st.creal + occ_st.czero), (unsigned long long)occ_st.czero);
+        occ_st = {};
+    }
+}
+
+/// RX_VK_OCC_QUERIES=2: the runs with colour draws counted too (occ_take)
+bool occ_all() {
+    static const bool on = getenv("RX_VK_OCC_QUERIES") && atoi(getenv("RX_VK_OCC_QUERIES")) == 2;
+    return on;
+}
+/// A draw's query while a run counts: numbered in every mode (the stream's numbering), attached only where it is recorded
+void occ_take(NvnState& s, DrawArgs& da, bool dry) {
+    if (!s.occ_on || !s.render_enabled || s.raster_discard) return;
+    // (only runs of depth-only draws are counted: the game's bounding boxes. A run with a draw that writes colour stays
+    // "visible": a query's end waits for its draw to finish, and around the scene's real draws that took ~0.9 ms of GPU time a
+    // frame in the Market (RTX 3090) for a few more objects left out. RX_VK_OCC_QUERIES=2: every run counted)
+    const bool color = s.chmask.mask != 0;
+    s.occ_color |= color;
+    if (s.occ_next - s.occ_first >= kOccRun || s.occ_next >= s.occ_limit || (color && !occ_all())) {
+        s.occ_overflow = true;
+        return;
+    }
+    const uint64_t q = s.occ_next++;
+    if (!dry) da.occ_pool = occ_pool, da.occ_query = (uint32_t)(q % kOccPool);
+}
+
 /// The next recording slot, begun, for the submission that will signal value
 Recording& begin_recording(uint64_t value) {
+    occ_collect();
+    occ_value = value;
     Recording& r = recordings[recording_index];
     recording_index = (recording_index + 1) % kRecordings;
     if (r.value) {
@@ -888,8 +1064,14 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
             break;
         }
         case NOP_REPORT_COUNTER: {
-            if (worker) break;   // (written by the dry pass, in stream order)
             const auto c = payload<nvn_p_counter>(a, avail);
+            // (hookshot) the run of occlusion queries this report counts (RX_VK_OCC_QUERIES), closed in every mode: a worker
+            // numbers its queries as the dry pass did
+            const bool occ_run = (uint32_t)c.type == NVN_COUNTER_TYPE_SAMPLES_PASSED && s.occ_on;
+            const uint64_t occ_first = s.occ_first, occ_n = occ_run ? s.occ_next - s.occ_first : 0;
+            const bool occ_counted = occ_run && !s.occ_overflow, occ_color = s.occ_color;
+            if (occ_run) s.occ_on = false, s.occ_overflow = false;
+            if (worker) break;   // (written by the dry pass, in stream order)
             const bool flag_written = (c.type & NVN_COUNTER_WRITTEN) != 0;   // (a clear flag: nvn_native.c wrote it as it was recorded)
             const bool samples = (uint32_t)c.type == NVN_COUNTER_TYPE_SAMPLES_PASSED;
             // (timestamps on the guest tick clock in counter ticks (19.2 MHz, nvnDeviceGetTimestampInNanoseconds
@@ -925,11 +1107,23 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
             if (flag_written) guest_cpu_write(c.addr + 8, rec + 1, 8);
             else guest_cpu_write(c.addr, rec, sizeof rec);
             memory_cpu_owned(host->gpu_guest(c.addr), sizeof rec);   // (vk_memory.cpp: kept out of the mirrors' write-backs)
+            // (hookshot) the GPU's count over it once its queries are done (occ_collect); a run that overflowed is only freed
+            if (occ_n)
+                occ_pending.push_back({occ_counted && !flag_written ? c.addr : 0, rec[1], occ_first, occ_n, occ_value, rec_part_next, occ_color});
             break;
         }
         case NOP_RESET_COUNTER: {
             const auto c = payload<nvn_p_counter>(a, avail);
-            if (c.type == NVN_COUNTER_TYPE_SAMPLES_PASSED) s.samples_passed = 0;
+            if (c.type == NVN_COUNTER_TYPE_SAMPLES_PASSED) {
+                s.samples_passed = 0;
+                // (hookshot) a run of occlusion queries begins (RX_VK_OCC_QUERIES); one still open had no report: its queries are freed
+                if (s.occ_on && s.occ_next > s.occ_first && !worker)
+                    occ_pending.push_back({0, 0, s.occ_first, s.occ_next - s.occ_first, occ_value, rec_part_next});
+                s.occ_on = s.occ_next < s.occ_limit;
+                s.occ_first = s.occ_next;
+                s.occ_overflow = false;
+                s.occ_color = false;
+            }
             break;
         }
         case NOP_COPY_B2B: {
@@ -1296,8 +1490,9 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
             break;
         case NOP_DRAW: {
             const auto d = payload<nvn_p_draw>(a, avail);
+            DrawArgs da;
+            occ_take(s, da, dry);   // (hookshot: RX_VK_OCC_QUERIES, numbered in the dry pass too)
             if (s.render_enabled && !s.raster_discard && !dry) {
-                DrawArgs da;
                 da.prim = d.prim, da.first = d.first, da.count = d.count;
                 da.base_instance = d.base_instance, da.instances = d.instances;
                 draw(cmd, s, da);
@@ -1307,8 +1502,9 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
         }
         case NOP_DRAW_IDX: {
             const auto d = payload<nvn_p_draw_idx>(a, avail);
+            DrawArgs da;
+            occ_take(s, da, dry);   // (hookshot: RX_VK_OCC_QUERIES, numbered in the dry pass too)
             if (s.render_enabled && !s.raster_discard && !dry) {
-                DrawArgs da;
                 da.prim = d.prim, da.indexed = true, da.itype = d.itype, da.count = d.count;
                 da.base_vertex = d.base_vertex, da.base_instance = d.base_instance, da.instances = d.instances;
                 da.ibuf = d.ibuf;
@@ -1319,8 +1515,9 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
         }
         case NOP_DRAW_INDIRECT: {
             const auto d = payload<nvn_p_draw_indirect>(a, avail);
+            DrawArgs da;
+            occ_take(s, da, dry);   // (hookshot: RX_VK_OCC_QUERIES, numbered in the dry pass too)
             if (s.render_enabled && !s.raster_discard && !dry) {
-                DrawArgs da;
                 da.prim = d.prim, da.indexed = d.indexed != 0, da.itype = d.itype;
                 da.indirect = d.indirect, da.count_addr = d.count_addr, da.max = d.max, da.stride = d.stride;
                 da.ibuf = d.ibuf;
@@ -1335,8 +1532,9 @@ void replay(VkCommandBuffer& cmd, NvnState& s, const uint8_t* p, const uint8_t* 
             if (logged_mesh++ < 8)
                 logf("vk: mesh draw kind %d: %d %d %d, indirect %#llx count %#llx max %d stride %d", d.kind, d.x, d.y,
                      d.z, (unsigned long long)d.indirect, (unsigned long long)d.count_addr, d.max, d.stride);
+            DrawArgs da;
+            occ_take(s, da, dry);   // (hookshot: RX_VK_OCC_QUERIES, numbered in the dry pass too)
             if (s.render_enabled && !s.raster_discard && !dry) {
-                DrawArgs da;
                 da.mesh = true;
                 // (DrawMeshTasks(first, count): the count of task workgroups, as Eden draws NVN2's mesh draws; a
                 // first task other than 0 has no Vulkan counterpart)
@@ -1515,6 +1713,9 @@ const uint8_t* replay_handle(VkCommandBuffer& cmd, const uint8_t* h, bool may_st
     const int threads = par_threads();
     NvnState& state = *cur_state;
     suspend_at = nullptr;
+    // (hookshot) the occlusion queries this command buffer may take (RX_VK_OCC_QUERIES): set before its dry pass's start
+    // state is copied, so the workers number theirs within the same limit
+    state.occ_limit = occ_room(state) ? state.occ_next + kOccBuffer : 0;
     if (threads < 2 || !rec_cur || dump_on() || gprof_on() || probe_serial()) {
         suspend_ok = may_stop;
         replay(cmd, state, h);

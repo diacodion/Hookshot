@@ -46,6 +46,13 @@ struct NvnState {
     uint32_t cs_push_n = 0;
     uint32_t grid[3]{};          // the dispatch being made (compute programs read it from c0)
     uint64_t samples_passed = 0;
+    // (hookshot) real occlusion counts (vk_replay.cpp, RX_VK_OCC_QUERIES): the draws from a samples-passed reset to its report
+    // each get a query, numbered from occ_next in stream order, so a parallel replay's dry pass and its workers agree on them
+    uint64_t occ_next = 0, occ_first = 0;
+    uint64_t occ_limit = 0;      // (queries are taken below it: set before a command buffer's replay, when the ring has room)
+    bool occ_on = false;         // (a reset was seen and no report yet)
+    bool occ_overflow = false;
+    bool occ_color = false;      // (a draw of the run writes colour: the game counts a real draw, not a depth-only box)   // (the run since the reset went past what one report counts: its report stays "visible")
 };
 
 // texture / sampler pool registrations (by handle id), as nvn_register_* keep them in the WebGPU renderer

@@ -7107,6 +7107,19 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         FINE_SCOPE(FT_HAZARD);
         begin_pass(cmd, at);
     }
+    // (hookshot) the draw's occlusion query (vk_replay.cpp, RX_VK_OCC_QUERIES): begun in its pass and ended as draw() returns,
+    // before each_guard can end the pass. A draw that returns before this point leaves its query unused: its report stays
+    // "visible"
+    struct OccGuard {
+        VkCommandBuffer cmd = VK_NULL_HANDLE;
+        VkQueryPool pool = VK_NULL_HANDLE;
+        uint32_t q = 0;
+        ~OccGuard() { if (pool) vkCmdEndQuery(cmd, pool, q); }
+    } occ_guard;
+    if (d.occ_pool) {
+        vkCmdBeginQuery(cmd, d.occ_pool, d.occ_query, dev.occlusion_precise ? VK_QUERY_CONTROL_PRECISE_BIT : 0);
+        occ_guard.cmd = cmd, occ_guard.pool = d.occ_pool, occ_guard.q = d.occ_query;
+    }
     probe_draw(s, p, pass().draws);   // (hookshot: RX_VK_PROBE)
     gprof_run(cmd, p.key);   // (RX_VK_PASS_TIMING=2)
     pass().prog = p.key;
