@@ -71,7 +71,21 @@ int hos_gpu_guest_ranges(uint64_t (*out)[2], int max);
 /* The soft write watch's marks (rt/a64.h A64_MARK, hos_mark_written) over the GPU-visible ranges, read and cleared:
    the Vulkan back end's own collection (gpu/render's rx_collect_written works only with the WebGPU renderer started).
    One consumer: with Vulkan the WebGPU renderer never runs. */
+/* (256 marks, none set? Read as 32 words in one pass the compiler makes four AVX2 loads of: most of the ranges hold no
+   mark at a submit, and at 32 marks a step the walk itself, not the memory, was what a scan cost) */
+static inline int marks_clear_256(const uint8_t *m) {
+    uint64_t w[32], any = 0;
+    memcpy(w, m, sizeof w);
+    for (int i = 0; i < 32; i++) any |= w[i];
+    return !any;
+}
 static int64_t collect_in(const uint64_t (*ranges)[2], int nranges, uint32_t **pages) {
+    /* (HOS_COLLECT_WIDE=0: 32 marks a step at most, as before; the pages found are the same either way) */
+    static int wide = -1;
+    if (wide < 0) {
+        const char *e = getenv("HOS_COLLECT_WIDE");
+        wide = !(e && e[0] == '0');
+    }
     size_t n = 0, cap = 4096;
     uint32_t *out = malloc(cap * sizeof *out);
     for (int r = 0; r < nranges; r++) {
@@ -79,6 +93,10 @@ static int64_t collect_in(const uint64_t (*ranges)[2], int nranges, uint32_t **p
         uint64_t p1 = (hi + 4095) >> 12;
         if (p1 > A64_DIRTY_PAGES) p1 = A64_DIRTY_PAGES;
         for (uint64_t p = lo >> 12; p < p1;) {
+            if (wide && !(p & 255) && p + 256 <= p1 && marks_clear_256(&a64_dirty[p])) {   /* (256 pages at a time while none is marked) */
+                p += 256;
+                continue;
+            }
             if (!(p & 31) && p + 32 <= p1) {   /* (32 pages at a time while none is marked) */
                 uint64_t w[4];
                 memcpy(w, &a64_dirty[p], 32);
