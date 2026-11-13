@@ -202,8 +202,9 @@ output. Name part of a path to run only matching checks (`tests/run_all.py ub_`)
 compiler, `spirv-val`, the SPIR-V or Vulkan headers, `zstandard`) is skipped and says so; `--strict` fails it instead.
 Checks that can't run everywhere say so in their own file (`RUN_ALL_SKIP`); `--no-skip` runs them anyway.
 
-Forgejo doesn't run these automatically yet (there is no CI runner), so run them before you open a pull request and
-say so in it.
+Forgejo doesn't run these on pull requests or on `main` for now: CI runs only the light checks (the title, the
+description, workflow lint, the third-party notes), and a maintainer can start the full checks by hand (*Actions* >
+*CI* > *Run workflow*). So run them before you open a pull request and put their results in it.
 
 ### Checks that need your dump or a run
 
