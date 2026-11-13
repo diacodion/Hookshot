@@ -16,11 +16,15 @@ FIXTURE = r'''
 #include <cassert>
 #include <cstdint>
 #include <cstdlib>
+#include "../compat/hookshot_env.h"   // (env_on: make_profile's RX_VK_MESH_SUBGROUPS)
 #include "shader_recompiler/profile.h"
 #include "shader_recompiler/stage.h"
 
 enum VkShaderStageFlagBits : uint32_t {
     VK_SHADER_STAGE_VERTEX_BIT = 1,
+    VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT = 2,
+    VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT = 4,
+    VK_SHADER_STAGE_GEOMETRY_BIT = 8,
     VK_SHADER_STAGE_FRAGMENT_BIT = 16,
     VK_SHADER_STAGE_COMPUTE_BIT = 32,
     VK_SHADER_STAGE_TASK_BIT_EXT = 64,
@@ -30,8 +34,11 @@ enum VkShaderStageFlagBits : uint32_t {
 };
 using VkShaderStageFlags = uint32_t;
 constexpr uint32_t VK_DRIVER_ID_AMD_PROPRIETARY = 1;
+constexpr uint32_t VK_DRIVER_ID_MOLTENVK = 14;   // (macos: make_profile's global_memory_single_exit)
 struct {
     uint32_t sg32_stages = 0, subgroup_size = 32, subgroup_max = 32, driver_id = 0;
+    uint32_t subgroup_stages = 0;   // (macos: 0, every stage, as the drivers this test is about)
+    bool mesh_shader = true, task_mesh_fallback = false;
     struct { bool shaderFloat16 = true; } vk12;   // (k10: f16 lowered where the GPU has none; here it has)
     bool float_atomic_add = false;
     struct { struct { uint64_t minStorageBufferOffsetAlignment = 16; } limits; } props;
@@ -66,6 +73,8 @@ int main(int argc, char** argv) {
     dev.subgroup_max = number(2);
     dev.sg32_stages = number(3);
     dev.driver_id = number(4);
+    // (macos: the stages a driver has subgroups in; MoltenVK with mesh shaders says fragment, compute and tessellation control, 0x32)
+    if (const char* stages = getenv("FIXTURE_SUBGROUP_STAGES")) dev.subgroup_stages = uint32_t(std::strtoul(stages, nullptr, 0));
     // (storage buffers bound and translated at 16 bytes at least: AMD's 4 made the 8- and 16-byte vector views inexact)
     for (const uint64_t device : {uint64_t{4}, uint64_t{16}, uint64_t{64}}) {
         dev.props.limits.minStorageBufferOffsetAlignment = device;
@@ -79,6 +88,12 @@ int main(int argc, char** argv) {
     check(profile_pinned(), number(8));
     check(profile_graphics(VK_SHADER_STAGE_TASK_BIT_EXT), number(9));
     check(profile_graphics(VK_SHADER_STAGE_MESH_BIT_EXT), number(10));
+    if (dev.subgroup_stages) {   // (native task and mesh programs take the one-lane paths; run as compute shaders, compute's subgroups)
+        assert(!profile().SupportsSubgroupStage(Stage::VertexB));
+        assert(!profile().SupportsSubgroupStage(Stage::Task) && !profile().SupportsSubgroupStage(Stage::Mesh));
+        assert(profile_pinned().SupportsSubgroupStage(Stage::Task) && profile_pinned().SupportsSubgroupStage(Stage::Mesh));
+        assert(profile_pinned().SupportsSubgroupStage(Stage::Compute) && profile().SupportsSubgroupStage(Stage::Fragment));
+    }
     const bool workaround = number(11) != 0;
     check_stamp(number(5), number(3), workaround, getenv("RX_VK_WARP64") != nullptr);
     const auto& fragment = profile_graphics(VK_SHADER_STAGE_FRAGMENT_BIT);
@@ -110,11 +125,13 @@ def main():
 void check_stamp(uint32_t size, uint32_t pinned, bool workaround, bool forced) {
     bool added = false;
     const auto add = [&](const uint32_t* values, size_t bytes) {
-        assert(bytes == 6 * sizeof(uint32_t));
+        assert(bytes == 8 * sizeof(uint32_t));
         assert(values[0] == uint32_t(size > 32) && values[1] == size);
         assert(values[2] == uint32_t(workaround) && values[3] == pinned && values[4] == uint32_t(forced));
         // (the storage binding alignment the translation is built with: a cache of a 16-aligned GPU is no use on a 64-aligned one)
         assert(values[5] == uint32_t(storage_binding_align()));
+        assert(values[6] == profile().supported_subgroup_stages);   // (macos: the stages with subgroup operations)
+        assert(values[7] == profile_pinned().supported_subgroup_stages);   // (and the mesh fallback's)
         added = true;
     };
 ''' + stamp + r'''
@@ -147,8 +164,9 @@ void check_stamp(uint32_t size, uint32_t pinned, bool workaround, bool forced) {
             ((64, 64, 240, 1), (64, 64, 64, 32, 64, 64, 1), {"RX_VK_WARP64": "1"}),
             ((64, 64, 32, 1), (64, 64, 64, 32, 64, 64, 0), {"RX_VK_FRAG_SHUFFLE_FALLBACK": "0"}),
             ((64, 64, 32, 0), (64, 64, 64, 32, 64, 64, 1), {"RX_VK_FRAG_SHUFFLE_FALLBACK": "1"}),
+            ((32, 32, 0, 0), (32, 32, 32, 32, 32, 32, 0), {"FIXTURE_SUBGROUP_STAGES": "0x32"}),   # (macos: MoltenVK, mesh shaders)
         ]
-        env = {k: v for k, v in os.environ.items() if k not in ("RX_VK_WARP64", "RX_VK_FRAG_SHUFFLE_FALLBACK")}
+        env = {k: v for k, v in os.environ.items() if k not in ("RX_VK_WARP64", "RX_VK_FRAG_SHUFFLE_FALLBACK", "FIXTURE_SUBGROUP_STAGES")}
         for device, expected, overrides in cases:
             subprocess.run([str(exe), *map(str, device + expected)], env=env | overrides, check=True, timeout=10)
     assert "EmitSPIRV(profile_pinned(), rt, t->program, bindings)" in shader

@@ -41,7 +41,7 @@ std::atomic<bool> programs_in_play{false};
 namespace {
 /// (the life log) this thread's page faults that waited for the disk so far: what a slow create call was, when it is not ours
 long thread_major_faults() {
-#ifndef _WIN32
+#if !defined(_WIN32) && defined(RUSAGE_THREAD)   // (macos has no per-thread rusage: 0 there, as on Windows)
     struct rusage u;
     if (getrusage(RUSAGE_THREAD, &u) == 0) return u.ru_majflt;
 #endif

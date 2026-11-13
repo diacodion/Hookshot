@@ -118,7 +118,35 @@ static volatile int renderer;   /* the renderer presents into the window */
 static HANDLE renderer_up;   /* (set once rx_start has returned, ready or not: hos_renderer_wait) */
 static int fullscreen;
 
+#ifdef __APPLE__
+/* (macos) SDL makes the surface's Metal view, an NSView, and AppKit's views belong to the main thread: the renderer's
+   thread asks, the main thread's loop (hos_display_loop, every few milliseconds) makes it, the renderer waits */
+#include <pthread.h>
+static SRWLOCK surface_lock = SRWLOCK_INIT;   /* (one asker at a time) */
+static HANDLE surface_made;
+static void *surface_w, *surface_instance, *surface_out;
+static volatile int surface_asked, surface_result;
+static void surface_serve(void) {
+    if (!__atomic_load_n(&surface_asked, __ATOMIC_ACQUIRE)) return;
+    surface_result = hos_sdl_vulkan_surface(surface_w, surface_instance, surface_out);
+    __atomic_store_n(&surface_asked, 0, __ATOMIC_RELEASE);
+    SetEvent(surface_made);
+}
+static int create_surface(void *w, void *instance, void *surface) {
+    if (pthread_main_np()) return hos_sdl_vulkan_surface(w, instance, surface);
+    AcquireSRWLockExclusive(&surface_lock);
+    if (!surface_made) surface_made = CreateEventA(NULL, FALSE, FALSE, NULL);
+    surface_w = w, surface_instance = instance, surface_out = surface;
+    __atomic_store_n(&surface_asked, 1, __ATOMIC_RELEASE);
+    WaitForSingleObject(surface_made, INFINITE);
+    const int ok = surface_result;
+    ReleaseSRWLockExclusive(&surface_lock);
+    return ok;
+}
+#else
+static void surface_serve(void) {}
 static int create_surface(void *w, void *instance, void *surface) { return hos_sdl_vulkan_surface(w, instance, surface); }
+#endif
 static void drawable_size(void *w, int *width, int *height) {
     (void)w;
     hos_pointer_size(&pointer, width, height);
@@ -235,8 +263,36 @@ int hos_display_init(void) {
        Under gamescope (XDG_CURRENT_DESKTOP names it: Steam Deck game mode) SDL keeps its own order.) */
     const char* desktop = getenv("XDG_CURRENT_DESKTOP");
     const int gamescope = desktop && strstr(desktop, "gamescope");
+#ifndef __APPLE__   /* (macos: SDL's only driver there is Cocoa) */
     if (!getenv("SDL_VIDEODRIVER") && !getenv("SDL_VIDEO_DRIVER") && !gamescope)
         hos_sdl_hint(hos_sdl_load() == 3 ? "SDL_VIDEO_DRIVER" : "SDL_VIDEODRIVER", "wayland,x11");
+#else
+    (void)gamescope;
+    /* (macos) SDL loads the Vulkan library itself for a Vulkan window, by a bare name dyld does not find in Homebrew's
+       prefix ("Failed to load Vulkan Portability library"): told where the loader is, the first of HOOKSHOT_LIB_PATH's
+       folders, Homebrew's and /usr/local's that has one. SDL_VULKAN_LIBRARY in the environment still wins */
+    if (!getenv("SDL_VULKAN_LIBRARY")) {
+        char dirs[4096];
+        snprintf(dirs, sizeof dirs, "%s%s/opt/homebrew/lib:/usr/local/lib", getenv("HOOKSHOT_LIB_PATH") ? getenv("HOOKSHOT_LIB_PATH") : "",
+                 getenv("HOOKSHOT_LIB_PATH") ? ":" : "");
+        int found = 0;
+        for (char *d = dirs, *e; d && *d && !found; d = e ? e + 1 : NULL) {
+            e = strchr(d, ':');
+            if (e) *e = 0;
+            static const char *names[] = {"libvulkan.1.dylib", "libMoltenVK.dylib"};
+            for (int i = 0; i < 2 && !found; i++) {
+                char full[4096];
+                snprintf(full, sizeof full, "%s/%s", d, names[i]);
+                FILE *lib = fopen(full, "rb");
+                if (lib) {
+                    fclose(lib);
+                    hos_sdl_hint("SDL_VULKAN_LIBRARY", full);
+                    found = 1;
+                }
+            }
+        }
+    }
+#endif
     /* (SDL2 on Wayland: libdecor from the start. SDL2 2.32 asks for the compositor's decorations before the window's first
        configure, and a compositor that answers "the client draws them" (COSMIC) has it unmap and map the window again
        with libdecor inside that wait, which then waits forever on a field the switch cleared: no window, no renderer
@@ -306,6 +362,7 @@ void hos_display_loop(void) {
     CloseHandle(CreateThread(NULL, 0, renderer_main, NULL, 0, NULL));
     DWORD refresh_asked = GetTickCount();
     for (;;) {
+        surface_serve();   /* (macos: the renderer's surface, made on this thread) */
         hos_sdl_pads_pump();
         if (GetTickCount() - refresh_asked >= 1000) {   /* (the window may have moved to another display) */
             refresh_asked = GetTickCount();

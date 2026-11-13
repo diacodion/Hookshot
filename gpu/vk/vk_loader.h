@@ -145,7 +145,7 @@
 
 // textures, pipelines and the rest of the replay (extension functions are null when the device lacks them)
 #define VKX_DEVICE3(X) \
-    X(vkCmdDrawMeshTasksIndirectCountEXT) X(vkCmdPushDescriptorSetKHR) X(vkCreateBufferView) X(vkDestroyBufferView) \
+    X(vkCmdDrawMeshTasksIndirectCountEXT) X(vkCmdPushDescriptorSetKHR) X(vkCmdBindIndexBuffer2KHR) X(vkCreateBufferView) X(vkDestroyBufferView) \
     X(vkDestroySampler) X(vkDestroyDescriptorSetLayout) X(vkDestroyPipelineLayout) X(vkDestroyDescriptorPool) \
     X(vkCreatePipelineCache) X(vkDestroyPipelineCache) X(vkGetPipelineCacheData) X(vkMergePipelineCaches) X(vkCmdFillBuffer) \
     X(vkCmdResolveImage) X(vkCmdBeginConditionalRenderingEXT) X(vkCmdEndConditionalRenderingEXT) \

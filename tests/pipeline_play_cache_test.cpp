@@ -43,10 +43,18 @@ struct VkPipelineCacheCreateInfo {
     size_t initialDataSize = 0;
     const void* pInitialData = nullptr;
 };
+constexpr uint32_t VK_DRIVER_ID_MOLTENVK = 14;
 struct {
     int device = 1;
+    uint32_t driver_id = 0;   // (macos: MoltenVK is handed no pipeline cache, driver_cache_off)
     struct { bool pipelineCreationCacheControl = true; } vk13;
 } dev;
+bool env_on(const char* name) {
+    const char* v = std::getenv(name);
+    return v && *v && std::strcmp(v, "0") != 0;
+}
+bool allow_no_cache = false;   // (the MoltenVK cases: a create with no cache is what they expect)
+std::atomic<int> no_cache_creates{0}, no_cache_asks{0};
 VkPipelineCache pcache = nullptr;
 std::string pcache_dir, pcache_path;
 std::atomic<int> creates{0}, destroys{0}, merges{0}, compiles{0}, failed_moves{0};
@@ -148,7 +156,13 @@ bool has(VkPipelineCache c, uint64_t key) {
 }
 VkResult fake_create(VkPipelineCache c, const FakeCI* ci, VkPipeline* pl) {
     *pl = (VkPipeline)&driver;   // (not a pipeline: the caller must not take it on failure)
-    if (!c) std::abort();
+    if (!c) {
+        if (!allow_no_cache) std::abort();
+        ++no_cache_creates;
+        if (ci->flags & VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT) return ++no_cache_asks, VK_PIPELINE_COMPILE_REQUIRED;
+        ++compiles;
+        return *pl = &the_pipeline, VK_SUCCESS;
+    }
     if (ci->flags & VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT) {
         if (has(c, ci->key)) return *pl = &the_pipeline, VK_SUCCESS;
         bool in_driver;
@@ -394,6 +408,22 @@ int run(const std::string& name) {
         CHECK(make(50) == VK_SUCCESS && has(pcache, 50));   // (into the one cache, as before)
         play_cache_save();
         CHECK(!exists(play_path(1)));
+    } else if (name == "moltenvk") {
+        // (macos) no cache handed to MoltenVK: its pipeline cache's one lock queued every compile behind the one under way
+        dev.driver_id = VK_DRIVER_ID_MOLTENVK;
+        allow_no_cache = true;
+        pcache = cache_of({});
+        play_cache_begin();
+        CHECK(make(60) == VK_SUCCESS && no_cache_creates == 1 && compiles == 1 && !has(pcache, 60));
+        constexpr unsigned ask = VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT;
+        CHECK(make(61, ask) == VK_PIPELINE_COMPILE_REQUIRED && no_cache_asks == 1 && compiles == 1);   // (asked, not compiled)
+        CHECK(keys_of(pcache).empty());
+        if (PlayCache* g = play_cache.load()) CHECK(keys_of(g->cache).empty());
+    } else if (name == "moltenvk-cache") {
+        dev.driver_id = VK_DRIVER_ID_MOLTENVK;   // (RX_VK_MVK_PIPELINE_CACHE=1, set by the test: the cache as before)
+        pcache = cache_of({});
+        play_cache_begin();
+        CHECK(make(62) == VK_SUCCESS && no_cache_creates == 0);
     } else {
         CHECK(false);
     }

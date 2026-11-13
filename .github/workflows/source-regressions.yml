@@ -227,6 +227,11 @@ jobs:
         env:
           RX_VK_FOLLOW_STORES: '1'
         run: ${{ runner.temp }}/global-load-16/global_load_16_ir --cas-loops ${{ runner.temp }}/global-load-16/modules
+      # (macos: Profile::global_memory_single_exit, the global helpers in one exit for MoltenVK; the modules are validated below)
+      - name: Check the global memory helpers in one exit
+        run: |
+          "${{ runner.temp }}/global-load-16/global_load_16_ir" --single-exit "${{ runner.temp }}/global-load-16/modules"
+          "${{ runner.temp }}/global-load-16/global_load_16_ir" --single-exit-limits "${{ runner.temp }}/global-load-16/modules"
       - name: Validate every emitted module
         shell: bash
         # (--uniform-buffer-standard-layout: the back end's device has uniformBufferStandardLayout, gpu/vk/vk_main.cpp
@@ -271,6 +276,68 @@ jobs:
         with:
           path: ${{ runner.temp }}/ccache
           key: ${{ steps.ccache.outputs.key }}
+
+  # (macos) Apple silicon: the Vulkan back end (hookshot_vk.so, on MoltenVK at run time) built alone, as nx2/build.py builds it
+  # with RX_VK_ONLY=1 (no game: no lift, no executable), and the game-free checks of the code the macOS port changed or reads.
+  # The headers are the versions scripts/macos/deps.sh fetches, in the CPM layout build.py reads; nothing from Homebrew is
+  # needed for this (the back end links the system's libraries only). The whole suite is not run here yet: some of its checks
+  # are Linux's own (AppImage, /proc, <link.h>, <sys/sysinfo.h>) and run_all.py has no macOS skip list yet.
+  macos:
+    name: macOS (Apple silicon) back end and checks
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check out pinned Vulkan headers
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: KhronosGroup/Vulkan-Headers
+          ref: 74d8a6cb930c68ef617b202c3ff3c59d919e086b # v1.4.345
+          path: _deps/cpm/vulkanheaders/v1.4.345
+          persist-credentials: false
+      - name: Check out pinned SPIR-V headers
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: KhronosGroup/SPIRV-Headers
+          ref: 04f10f650d514df88b76d25e83db360142c7b174 # vulkan-sdk-1.4.341.0
+          path: _deps/cpm/spirv-headers/vulkan-sdk-1.4.341.0
+          persist-credentials: false
+      - name: Check out pinned Vulkan Memory Allocator
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator
+          ref: 1d8f600fd424278486eade7ed3e877c99f0846b1 # v3.3.0
+          path: _deps/cpm/vulkanmemoryallocator/v3.3.0
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      - name: Build the Vulkan back end alone (RX_VK_ONLY)
+        env:
+          RX_CPM: ${{ github.workspace }}/_deps/cpm
+          OOT_WORK: ${{ runner.temp }}/work
+          RX_VK_ONLY: '1'
+        run: |
+          python -I nx2/build.py --standalone --jobs "$(sysctl -n hw.ncpu)"
+          file "$OOT_WORK/sa/build/hookshot_vk.so" | grep -q "Mach-O 64-bit dynamically linked shared library arm64"
+      - name: Game-free checks of the macOS port's code
+        if: ${{ !cancelled() }}
+        env:
+          HOOKSHOT_SPIRV_HEADERS: ${{ github.workspace }}/_deps/cpm/spirv-headers/vulkan-sdk-1.4.341.0/include
+          HOOKSHOT_VULKAN_HEADERS: ${{ github.workspace }}/_deps/cpm/vulkanheaders/v1.4.345/include
+        run: >-
+          python -I -B tests/run_all.py
+          pipeline_play_cache recorder_sync seed_variant_cleanup amd_subgroup_profiles cpu_target link_path_comma
+          mirror_trim test_control test_hookshot_ctl env_on program_stamp_knobs driver_faults linux_driver_fault_guard
+          global_table_loop vendor_fixes native_float_atomic_add auto_settings pipeline_cache_file fallback_pipeline_state
+          linux_preflight
+      - name: Byte-compile the macOS scripts
+        if: ${{ !cancelled() }}
+        run: python -I -m py_compile scripts/macos/scene.py
 
   # Every source-check run, including docs-only PRs: these small fixtures also catch changes in the runner's Mesa.
   # They execute on the CPU, not a hardware GPU; no window, swapchain or game data is involved.

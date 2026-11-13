@@ -64,6 +64,10 @@ PGO = os.environ.get("RX_PGO", "")
 # against that root (the AppImage's: glibc 2.35, so the game runs on older systems than the one that built it).
 # HOOKSHOT_VK_PREBUILT=<hookshot_vk.so>: the Vulkan back end as built already (the AppImage's), not compiled here.
 LINUX = not toolchain.windows()   # (hookshot: RX_TARGET=windows on Linux builds the Windows game, with llvm-mingw)
+# (macos) macOS builds take the Linux route (LINUX stays on: the POSIX runtime, SDL2, FFmpeg through pkg-config) and
+# differ where MAC says: a Mach-O executable linked by Apple's ld, an arm64 or x86-64 host CPU, Homebrew's prefixes,
+# and Vulkan through MoltenVK (gpu/vk asks for the portability subset and a Metal surface)
+MAC = LINUX and sys.platform == "darwin"
 POSIX = os.path.join(kit.HERE, "..", "host", "posix")
 SYSROOT = os.environ.get("HOOKSHOT_SYSROOT", "")
 EXE = "hookshot" if LINUX else "hookshot.exe"
@@ -86,6 +90,20 @@ def check_vk_symbols(so):
     nm = shutil.which("nm") or shutil.which("llvm-nm")
     if not nm:
         return True   # (not a reason to fail a build; the check is a guard, not a dependency)
+    if MAC:
+        # (macos) the dylib is linked with -undefined dynamic_lookup: nm -m says "dynamically looked up" for what no
+        # library it names has, and "weak" for the ones the host may leave out
+        try:
+            out = subprocess.run([nm, "-m", "-u", so], capture_output=True, text=True, check=True).stdout
+        except (OSError, subprocess.CalledProcessError):
+            return True
+        bad = [l.strip() for l in out.splitlines() if "dynamically looked up" in l and "weak" not in l]
+        if not bad:
+            return True
+        print("%s has %d unresolved symbol(s); it would not load:" % (os.path.basename(so), len(bad)))
+        for name in bad[:20]:
+            print("    " + name)
+        return False
     try:
         out = subprocess.run([nm, "-D", "--undefined-only", so], capture_output=True, text=True,
                              check=True).stdout
@@ -143,6 +161,11 @@ def HOT_ORDER():
     p = os.path.join(kit.WORK, "hot_order.txt")
     if not os.path.exists(p) or os.environ.get("RX_NO_ORDER"):
         return []
+    if MAC:   # (Apple's ld: the same list, its names with the leading underscore of Mach-O's C symbols)
+        q = os.path.join(kit.WORK, "hot_order_macho.txt")
+        with open(p) as f, open(q, "w") as g:
+            g.write("".join("_" + l.strip() + "\n" for l in f if l.strip() and not l.startswith("#")))
+        return linker("-order_file", q)
     if LINUX:
         return linker("--symbol-ordering-file=" + p, "--no-warn-symbol-ordering")
     return linker("/order:@" + p.replace("\\", "/"), "/ignore:4037")
@@ -293,7 +316,7 @@ def header_package(cpm_name, probe, env=None, work=None):
                 parent = os.path.dirname(e)
                 if os.path.normpath(os.path.join(parent, "include")) == os.path.normpath(e):
                     return parent
-    for prefix in ("/usr/local", "/usr"):
+    for prefix in (("/opt/homebrew",) if MAC else ()) + ("/usr/local", "/usr"):   # (macos: Homebrew's prefix on Apple silicon first)
         if ok(prefix):
             return prefix
     return None
@@ -348,17 +371,43 @@ def free_mb():
             m = MemoryStatus()
             m.len = ctypes.sizeof(MemoryStatus)
             return m.avail >> 20 if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m)) else None
+        if sys.platform == "darwin":
+            # (macos: no /proc. vm_stat's free, inactive, speculative and purgeable pages: what the kernel gives a new
+            # process without paging anything out)
+            out = subprocess.run(["vm_stat"], capture_output=True, text=True, check=True).stdout
+            page = int(out.split("page size of", 1)[1].split()[0])
+            pages = 0
+            for line in out.splitlines():
+                name, _, value = line.partition(":")
+                if name in ("Pages free", "Pages inactive", "Pages speculative", "Pages purgeable"):
+                    pages += int(value.strip().rstrip("."))
+            return pages * page >> 20
         with open("/proc/meminfo") as f:
             for line in f:
                 if line.startswith("MemAvailable:"):
                     return int(line.split()[1]) >> 10
-    except (OSError, ValueError, AttributeError):
+    except (OSError, ValueError, AttributeError, IndexError, subprocess.SubprocessError):
         return None
     return None
 
 
 def tree_rss(pid):
     """(linux) The resident bytes of a process and the processes it started (a driver that runs its compiler as a child, or ccache)"""
+    if sys.platform == "darwin":   # (macos: no /proc. ps's table of every process: this one and the ones under it)
+        rows = [l.split() for l in subprocess.run(["ps", "-A", "-o", "pid=,ppid=,rss="], capture_output=True, text=True).stdout.splitlines()]
+        rss = {int(r[0]): int(r[2]) for r in rows if len(r) == 3}
+        kids = {}
+        for r in rows:
+            if len(r) == 3:
+                kids.setdefault(int(r[1]), []).append(int(r[0]))
+        if pid not in rss:
+            raise OSError("no process %d" % pid)
+        n, todo = 0, [pid]
+        while todo:
+            q = todo.pop()
+            n += rss.get(q, 0) << 10
+            todo += kids.get(q, [])
+        return n
     with open("/proc/%d/statm" % pid) as f:
         n = int(f.read().split()[1]) * os.sysconf("SC_PAGE_SIZE")
     for task in os.listdir("/proc/%d/task" % pid):
@@ -621,14 +670,21 @@ WRITE_TRACK = [] if os.environ.get("RX_SOFT_WRITE_WATCH") == "0" else ["-DA64_WR
 # 0xc000001d. The game is built on the PC it runs on: a CPU without x86-64-v3's features gets x86-64-v2, or x86-64)
 from host_cpu import host_march, host_mtune   # (make_game.py asks it too: the AppImage's renderer)
 
+# (macos: Apple silicon, an AArch64 host: the guest's own FPU (RECOMP_FPX_HOST 1 in arm64_to_c.h), LSE atomics and the
+# rest of what the CPU has; host_march() gives a -mcpu name there. No -mcx16: 16-byte compare-and-swap is CASP /
+# LDXP+STXP, which clang emits inline here)
+# (os.uname, not platform.machine: on Windows that can run a process (`ver`) where WMI does not answer, which
+# tests/test_cpm_discovery.py refuses while it imports this file; Windows builds are x86-64)
+ARM64 = hasattr(os, "uname") and os.uname().machine.lower() in ("arm64", "aarch64")
 MARCH = os.environ.get("RX_MARCH") or host_march()
 if os.environ.get("RX_MARCH"):
     if MARCH != "x86-64-v3":
         print("build: the game is built for %s (RX_MARCH)" % MARCH, flush=True)
-elif MARCH != "x86-64-v3":
+elif MARCH.startswith("x86-64") and MARCH != "x86-64-v3":
     print("build: this CPU has no AVX2: the game is built for %s (a little slower)" % MARCH, flush=True)
-CPU = ["-march=" + MARCH, "-ffp-contract=off"]
-MTUNE = os.environ.get("RX_MTUNE") or host_mtune()
+CPU = ["-mcpu=" + MARCH, "-ffp-contract=off"] if ARM64 else ["-march=" + MARCH, "-ffp-contract=off"]
+CX16 = [] if ARM64 else ["-mcx16"]
+MTUNE = "" if ARM64 else os.environ.get("RX_MTUNE") or host_mtune()
 if MTUNE:
     CPU += ["-mtune=" + MTUNE]
 OPT = "O1"   # (the lifted code's level; code_hot.c's is RX_HOT_OPT)
@@ -637,7 +693,7 @@ OPT = "O1"   # (the lifted code's level; code_hot.c's is RX_HOT_OPT)
 def flags(gen, rt64, opt, polls):
     return target() + CPU + [
         "-I" + rt64, "-I" + gen, "-I" + os.path.join(kit.KIT, "rt"), "-I" + NX2_RT, "-Wno-everything",
-        "-fno-strict-aliasing", "-mcx16", "-" + opt, "-g0", "-mllvm", "-rotation-max-header-size=0",
+        "-fno-strict-aliasing"] + CX16 + ["-" + opt, "-g0", "-mllvm", "-rotation-max-header-size=0",
         "-ffunction-sections", "-mllvm", "-capture-tracking-max-uses-to-explore=5000"] + \
         (["-DA64_POLLING"] if polls else []) + WRITE_TRACK
 
@@ -1044,7 +1100,9 @@ def main():
                            and not (LINUX and f in ("display.c", "mf_av1.c", "rx_nowgpu.c")) and (f != "rx_nowgpu.c" or not have_wgpu)
                            and (f != "dav1d_av1.c" or dav1d_windows()))
         if LINUX:   # (the window on SDL2, the Win32 calls on POSIX, no Media Foundation and no WebGPU renderer)
-            host_srcs += [os.path.join(POSIX, f) for f in ("win32_posix.c", "display_sdl.c", "linux_stubs.c", "prof.c")]
+            # (macos: prof_darwin.c has the thread profilers on Mach; prof.c's are /proc's and perf_event_open's)
+            host_srcs += [os.path.join(POSIX, f) for f in ("win32_posix.c", "display_sdl.c", "linux_stubs.c",
+                                                           "prof_darwin.c" if MAC else "prof.c")]
     else:
         srcs += [os.path.join(NX2_RT, "eden_shim.c"), write_info(out)]
     if kit.env_on("RX_VK_ONLY"):   # (no lift needed: the back end alone)
@@ -1090,7 +1148,7 @@ def main():
         sum(1 for x in srcs if os.path.basename(x).startswith("code_"))), flush=True)
     # the runtime: ordinary C at -O2, with its own headers (any host/*.h change rebuilds all of it)
     host_fl = target() + CPU + (["-I" + POSIX, "-D_GNU_SOURCE"] if LINUX else []) + \
-        ["-I" + HOST, "-I" + rt64, "-I" + gen, "-Wno-everything", "-O2", "-g0", "-mcx16", "-DA64_POLLING"] + WRITE_TRACK
+        ["-I" + HOST, "-I" + rt64, "-I" + gen, "-Wno-everything", "-O2", "-g0"] + CX16 + ["-DA64_POLLING"] + WRITE_TRACK
     host_deps = deps + b"".join(open(os.path.join(HOST, f), "rb").read() for f in sorted(os.listdir(HOST))
                                 if f.endswith(".h"))
     if LINUX:
@@ -1336,12 +1394,16 @@ def main():
         exe = os.path.join(out, EXE)   # (+ hookshot.map: crash offsets -> f_<guest address>)
         t = time.time()
         # (--export-dynamic-symbol: the window's state, which the Vulkan back end's own Win32 calls read by name)
-        r = subprocess.run([cc] + target() + ["-fuse-ld=lld", "-o", exe] + linker("-Map=" + exe + ".map") +
-                           ["-Wl,--gc-sections", "-Wl,--export-dynamic-symbol=hos_posix_*", "@" + rsp] + HOT_ORDER() +
+        # (macos: Apple's ld. Its -dead_strip is --gc-sections; -export_dynamic keeps the executable's global symbols in its
+        # export table, where the Vulkan back end's dylib finds the window's state and the host's weak functions by name)
+        link_fl = (["-o", exe] + linker("-map", exe + ".map") + ["-Wl,-dead_strip", "-Wl,-export_dynamic"] if MAC else
+                   ["-fuse-ld=lld", "-o", exe] + linker("-Map=" + exe + ".map") +
+                   ["-Wl,--gc-sections", "-Wl,--export-dynamic-symbol=hos_posix_*"])
+        r = subprocess.run([cc] + target() + link_fl + ["@" + rsp] + HOT_ORDER() +
                            (["-fprofile-instr-generate"] if PGO == "gen" else []) +
                            (FFMPEG_LX[1] if FFMPEG_LX else []) + HOST_LIBS,
                            capture_output=True, text=True)
-        undefined = sorted({l.strip() for l in (r.stdout + r.stderr).splitlines() if "undefined symbol" in l})
+        undefined = sorted({l.strip() for l in (r.stdout + r.stderr).splitlines() if "undefined symbol" in l or (MAC and l.lstrip().startswith('"_'))})
         if r.returncode:
             print("link FAILED (%.0fs), %d undefined symbols" % (time.time() - t, len(undefined)))
             print("\n".join(undefined[:60]) if undefined else (r.stdout + r.stderr)[-3000:])
@@ -1404,7 +1466,10 @@ def main():
         vrsp = os.path.join(out, "vk_objs.rsp")
         open(vrsp, "w", encoding="utf-8").write("\n".join('"%s"' % j[2].replace("\\", "/") for j in vk_jobs))
         t = time.time()
-        if LINUX:   # (its C++ runtime inside: the game folder runs where the AppImage's sysroot is older than the system)
+        if MAC:   # (a Mach-O bundle-like dylib under the Linux name: what it takes from the host is looked up when it loads)
+            link = [toolchain.need(toolchain.find("clang++"))] + target() + ["-dynamiclib", "-o", vdll] + \
+                linker("-map", vdll + ".map") + ["-Wl,-dead_strip", "-Wl,-undefined,dynamic_lookup", "@" + vrsp]
+        elif LINUX:   # (its C++ runtime inside: the game folder runs where the AppImage's sysroot is older than the system)
             link = [toolchain.need(toolchain.find("clang++"))] + target() + ["-fuse-ld=lld", "-shared", "-o", vdll] + \
                 linker("-Map=" + vdll + ".map") + ["-Wl,-Bsymbolic", "-Wl,--gc-sections", "-static-libstdc++", "-static-libgcc", "@" + vrsp] + \
                 ([ngx_library(NGX_SDK, True)] if NGX_SDK else []) + ["-ldl", "-lpthread", "-lm"]

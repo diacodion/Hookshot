@@ -23,7 +23,7 @@ import tempfile
 RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 
 ROOT = Path(__file__).resolve().parents[1]
-CASES = ["route", "save", "retry", "users", "merge", "merge-read-failed", "merge-create-failed", "compact", "compact-failed", "off", "no-control"]
+CASES = ["route", "save", "retry", "users", "merge", "merge-read-failed", "merge-create-failed", "compact", "compact-failed", "off", "no-control", "moltenvk", "moltenvk-cache"]
 
 
 def play_block(source):
@@ -56,8 +56,11 @@ def main():
             data = temp / ("data-" + case)
             data.mkdir()
             env = {k: v for k, v in os.environ.items() if k != "RX_VK_PLAY_CACHE"}
+            env.pop("RX_VK_MVK_PIPELINE_CACHE", None)
             if case == "off":
                 env["RX_VK_PLAY_CACHE"] = "0"
+            if case == "moltenvk-cache":
+                env["RX_VK_MVK_PIPELINE_CACHE"] = "1"
             # (each case a fresh process: the switch is read once, the generations are the process's)
             run = subprocess.run([str(exe), case, str(data)], capture_output=True, text=True, timeout=30, env=env)
             sys.stdout.write(run.stdout)

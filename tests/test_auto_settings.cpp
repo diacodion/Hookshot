@@ -18,7 +18,8 @@ static void expect(bool ok, const char* what) {
 int main() {
     using namespace auto_settings;
     // (the copies of the menu's indices agree with upscaler_rows.h)
-    expect((int)GAME == (int)ur::GAME && (int)DLSS == (int)ur::DLSS && (int)FSR4 == (int)ur::FSR4, "upscaler indices as upscaler_rows.h's");
+    expect((int)GAME == (int)ur::GAME && (int)DLSS == (int)ur::DLSS && (int)FSR3 == (int)ur::FSR3 && (int)FSR4 == (int)ur::FSR4,
+           "upscaler indices as upscaler_rows.h's");
     expect(ur::percent(RES_QUALITY) == 67 && ur::percent(RES_BALANCED) == 58 && ur::percent(RES_PERFORMANCE) == 50,
            "render resolution indices: Quality 67, Balanced 58, Performance 50");
 
@@ -54,6 +55,27 @@ int main() {
     igpu.vendor = INTEL, igpu.integrated = true, igpu.vram_mb = 16000;
     c = choose(igpu);
     expect(c.tier == 1 && c.upscaler == GAME, "an integrated GPU: Minimum whatever memory it reports");
+
+    // (macos) an Apple GPU: integrated, no mesh shaders under MoltenVK, MoltenVK's one heap the Mac's whole memory; its tier by the
+    // Mac's memory less the game's ~10 GB, FSR 3.1 its upscaler at every tier
+    Hardware mac;
+    mac.vendor = APPLE, mac.integrated = true, mac.mesh_native = false, mac.vram_mb = 36864, mac.ram_mb = 36864;
+    mac.screen_w = 3456, mac.screen_h = 2234;
+    c = choose(mac);
+    expect(c.tier == 5 && c.upscaler == FSR3 && c.resolution == RES_75 && ur::percent(ur::snap_render(ur::FSR3, c.resolution)) == 75,
+           "M4 Max, 36 GB: Ultra, FSR 3.1 at 75%");
+    expect(std::strstr(c.why, "Apple GPU") && !std::strstr(c.why, "Minimum"), c.why);
+    mac.ram_mb = mac.vram_mb = 16384;
+    expect(choose(mac).tier == 2, "a 16 GB Mac: Low");
+    mac.ram_mb = mac.vram_mb = 8192;
+    c = choose(mac);
+    expect(c.tier == 1 && c.upscaler == FSR3 && c.resolution == 0, "an 8 GB Mac: Minimum (its 50%), FSR 3.1 all the same");
+    mac.ram_mb = 18432, mac.vram_mb = 18432;
+    expect(choose(mac).tier == 3, "an 18 GB Mac: Balanced");
+    mac.ram_mb = 0, mac.vram_mb = 24576;
+    expect(choose(mac).tier == 5, "a Mac whose memory is not known: by MoltenVK's heap, 24 GB: Ultra");
+    igpu.vendor = OTHER;
+    expect(choose(igpu).tier == 1, "another integrated GPU: still Minimum");
 
     Hardware deck;
     deck.vendor = AMD, deck.handheld = true, deck.vram_mb = 1024, deck.screen_w = 1280, deck.screen_h = 800;

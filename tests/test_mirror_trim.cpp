@@ -70,11 +70,11 @@ int main() {
         const std::vector<GuestPool> pools{{0x1000, 0x2000}};
         CHECK(live(0, 64 * MB, 0, kJoin, pools).empty());
     }
-    // the wait grows fourfold each time a range is trimmed again, then it is left alone
-    CHECK(wait(0) == kWait && wait(1) == 4 * kWait && wait(2) == 16 * kWait && wait(kMaxTrims) == 0 && wait(200) == 0);
+    // the wait grows fourfold each time a range is trimmed again, then it is left alone (macos: mirror_trim::, as <sys/wait.h> has a wait of its own)
+    CHECK(mirror_trim::wait(0) == kWait && mirror_trim::wait(1) == 4 * kWait && mirror_trim::wait(2) == 16 * kWait && mirror_trim::wait(kMaxTrims) == 0 && mirror_trim::wait(200) == 0);
     // a range's trims count only while they are recent: a scene change minutes later starts over
     CHECK(counted(2, 100) == 2 && counted(3, kForget) == 3 && counted(3, kForget + 1) == 0 && counted(0, 5) == 0);
-    CHECK(wait(counted(kMaxTrims, 1000)) == 0 && wait(counted(kMaxTrims, kForget + 1)) == kWait);
+    CHECK(mirror_trim::wait(counted(kMaxTrims, 1000)) == 0 && mirror_trim::wait(counted(kMaxTrims, kForget + 1)) == kWait);
     // only while VRAM is short
     CHECK(!pressed(5000 * MB, 7000 * MB) && pressed(5700 * MB, 7000 * MB) && !pressed(5700 * MB, 0));
     std::printf("mirror_trim: ok\n");

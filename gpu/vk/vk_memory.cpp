@@ -2412,8 +2412,13 @@ bool mirror_on() {
         // (k10) off by default on GCN (no stage pinned to 32 lanes, 64-lane waves: RX 400/500, Vega): an RX 580 ran Kokiri Forest
         // at 20 fps with them and 24.5 without, and an RX 590 (#1001) played with them off
         const bool gcn = dev.sg32_stages == 0 && dev.subgroup_size > 32;
-        const int v = e ? atoi(e) != 0 : discrete && !gcn;
-        logf("vk: VRAM mirror of buffer pools %s%s", v ? "on" : "off", !e && discrete && gcn ? " (GCN)" : "");
+        // (macos) on too on an Apple GPU, whose memory is the Mac's: without mirrors every page is written in place, and a readback
+        // waits for its submission's last part (issue 997's rule for integrated GPUs), not the part that writes it back. An M4 Max
+        // in Kokiri Forest: readbacks 3.3 -> 0.4 ms each, 26.8 -> 30.7 fps, the same GPU time and picture
+        const bool apple = dev.props.vendorID == 0x106B;
+        const int v = e ? atoi(e) != 0 : (discrete && !gcn) || apple;
+        logf("vk: VRAM mirror of buffer pools %s%s", v ? "on" : "off",
+             !e && discrete && gcn ? " (GCN)" : !e && apple ? " (Apple)" : "");
         return v;
     }();
     return on != 0;

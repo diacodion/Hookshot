@@ -2077,7 +2077,12 @@ bool share_spawn(std::vector<std::string> argv, const std::string* input = nullp
     posix_spawn_file_actions_t fa;
     posix_spawn_file_actions_init(&fa);
     if (input) {
+#ifdef __APPLE__   // (macos: no pipe2)
+        if (pipe(fds)) return posix_spawn_file_actions_destroy(&fa), false;
+        fcntl(fds[0], F_SETFD, FD_CLOEXEC), fcntl(fds[1], F_SETFD, FD_CLOEXEC);
+#else
         if (pipe2(fds, O_CLOEXEC)) return posix_spawn_file_actions_destroy(&fa), false;   // (no other child holds it open)
+#endif
         posix_spawn_file_actions_adddup2(&fa, fds[0], 0);
         posix_spawn_file_actions_addclose(&fa, fds[1]);
     } else {
@@ -2085,13 +2090,22 @@ bool share_spawn(std::vector<std::string> argv, const std::string* input = nullp
     }
     posix_spawn_file_actions_addopen(&fa, 1, "/dev/null", O_WRONLY, 0);
     posix_spawn_file_actions_addopen(&fa, 2, "/dev/null", O_WRONLY, 0);
+    posix_spawnattr_t* attr = nullptr;
+#ifdef __APPLE__   // (macos: no addclosefrom_np; POSIX_SPAWN_CLOEXEC_DEFAULT closes every descriptor the file actions do not make)
+    posix_spawnattr_t cloexec;
+    posix_spawnattr_init(&cloexec);
+    posix_spawnattr_setflags(&cloexec, POSIX_SPAWN_CLOEXEC_DEFAULT);
+    attr = &cloexec;
+#else
     posix_spawn_file_actions_addclosefrom_np(&fa, 3);   // (a browser or file manager keeps none of the game's files, nor a clipboard pipe)
+#endif
     std::vector<char*> args;
     for (std::string& a : argv) args.push_back(a.data());
     args.push_back(nullptr);
     pid_t pid = 0;
-    const int err = posix_spawnp(&pid, args[0], &fa, nullptr, args.data(), environ);
+    const int err = posix_spawnp(&pid, args[0], &fa, attr, args.data(), environ);
     posix_spawn_file_actions_destroy(&fa);
+    if (attr) posix_spawnattr_destroy(attr);
     if (input) close(fds[0]);
     if (err) {
         if (input) close(fds[1]);
@@ -2124,7 +2138,15 @@ bool share_spawn(std::vector<std::string> argv, const std::string* input = nullp
     }
     close(fds[1]);
     const timespec now{0, 0};
+#ifdef __APPLE__   // (macos: no sigtimedwait; a pending SIGPIPE is taken with sigwait, which then returns at once)
+    (void)now;
+    for (sigset_t pending; sigpending(&pending) == 0 && sigismember(&pending, SIGPIPE);) {
+        int sig = 0;
+        sigwait(&pipe_set, &sig);
+    }
+#else
     while (sigtimedwait(&pipe_set, nullptr, &now) == SIGPIPE) {}
+#endif
     pthread_sigmask(SIG_SETMASK, &old, nullptr);
     int status = 0;
     while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
@@ -2149,6 +2171,8 @@ bool share_clipboard(const std::string& text) {
     }
     CloseClipboard();
     return ok;
+#elif defined(__APPLE__)
+    return share_spawn({"pbcopy"}, &text);   // (macos)
 #else
     const char* wl = getenv("WAYLAND_DISPLAY");
     const char* x = getenv("DISPLAY");
@@ -2172,6 +2196,8 @@ bool share_open(const std::string& what, bool select = false) {
         return (INT_PTR)shell_execute(nullptr, L"open", explorer.c_str(), (L"/select,\"" + w + L"\"").c_str(), nullptr, SW_SHOWNORMAL) > 32;
     }
     return (INT_PTR)shell_execute(nullptr, L"open", w.c_str(), nullptr, nullptr, SW_SHOWNORMAL) > 32;
+#elif defined(__APPLE__)   // (macos: Finder, the zip chosen in its folder with -R)
+    return select ? share_spawn({"open", "-R", what}) : share_spawn({"open", what});
 #else
     (void)select;
     return share_spawn({"xdg-open", what});
