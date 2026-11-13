@@ -1,6 +1,6 @@
 # Contributing to Hookshot
 
-Hookshot is a static recompilation of the Switch 2 *The Legend of Zelda: Ocarina of Time* remake: the game's AArch64
+Hookshot is a static recompilation of a supported console game: the game's AArch64
 code is lifted to C, the Horizon OS and NVN2 are implemented natively, and the GPU work is replayed on Vulkan. No
 emulator is involved, and the game is built on your PC from your own copy.
 
@@ -245,7 +245,7 @@ for scripted input, screenshots, frame dumps and profiles are in the development
 
 - Match the file you're editing: there is no formatter, so follow the indentation, comments and naming around you. Don't
   reformat unrelated code in the same change.
-- Keep OoT-specific code in new files where possible. `nx2/`, `host/` and `gpu/` stay close to mkw-recomp so upstream
+- Keep game-specific code in new files where possible. `nx2/`, `host/` and `gpu/` stay close to mkw-recomp so upstream
   fixes apply as a patch; each sync names its mkw-recomp base commit in the commit message.
 - Don't modify `third_party/`: its parts are upstream copies with their notices in `PROVENANCE.md` (a64-kit's note lists
   the changes Hookshot and Hookshot made to it). Add a new folder and a provenance note instead. CI checks it
@@ -370,9 +370,9 @@ Baseline: nightly @ 55b976c0 (last nightly before #2602)
 main: 87991bc8 (2026-11-12), with #2602
 #2602 had merged already, so this is main against the last nightly before it; main also carried about 50 other merges.
 Hardware: RTX 3080, Windows 11
-Scene: adult Link in Hyrule Field, uncapped
+Scene: the player character in a demanding outdoor area, uncapped
 Method: 120 s each after a warm-up, two interleaved pairs (nightly, main, nightly, main)
-How to reproduce: a save in Hyrule Field by the ranch gate, Ultra preset, the FPS counter at Breakdown
+How to reproduce: a save in that same outdoor area, Ultra preset, the FPS counter at Breakdown
 
 | | nightly @ 55b976c0 (last nightly before #2602) | main @ 87991bc8 (with #2602) | Δ |
 |---|---|---|---|

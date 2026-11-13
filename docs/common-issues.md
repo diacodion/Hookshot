@@ -157,7 +157,7 @@ the driver's limit itself.
 
 [Search performance reports](https://hookshot.magicbean.dev/progress/#problem-search?q=performance)
 
-### Steam Deck: the game freezes and closes in Kokiri Forest or the Great Deku Tree
+### Steam Deck: the game freezes and closes in the starting area or first dungeon
 
 `journalctl -k` shows `gfx_0.0.0 timeout`. Add the line `RX_VK_MESH_NOCULL=2c56dc1006942f74` to `hookshot_env.txt` in
 the game folder: it turns off the culling pass that runs for seconds there, and every model is still drawn
@@ -177,7 +177,7 @@ touchpad.
 
 ### A and B are swapped, or a button does the wrong thing
 
-1. **Check the layout.** In the menu, open **Controls → Controls** and check **Layout preset**: Nintendo has A on the
+1. **Check the layout.** In the menu, open **Controls → Controls** and check **Layout preset**: the default layout has A on the
    right face button, Xbox / PC and Swap Face put it on the bottom one.
 2. **Rebind a button** on that page: choose its row and the Gamepad or Keyboard column, press <kbd>Enter</kbd>, then the
    new button. <kbd>Esc</kbd> cancels, <kbd>Delete</kbd> clears it, and **Reset to defaults** puts them all back.
