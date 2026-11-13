@@ -74,6 +74,7 @@ int step_upscaler(int, int, bool) { return 0; }
 int step(int, int v, int dir) { return v + dir; }
 int snap(int, int v) { return v; }
 int snap_render(int, int v) { return v; }   // (the slider)
+bool full_scale(int) { return false; }   // (only the game's own upscaler here)
 int step_engine(int, int, unsigned) { return 0; }   // (the Upscaler by engine)
 void step_render(int up, int v, int dir, int* u, int* r) { *u = up, *r = v + dir; }
 }
