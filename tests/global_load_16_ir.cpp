@@ -6,6 +6,7 @@
 #include <fstream>
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -801,6 +802,93 @@ static void check_vertex_load_controls(bool inline_128, const char* name) {
     std::printf("PASS: %s\n", name);
 }
 
+// (macos, Profile::global_memory_single_exit) a compute program of 32-, 64- and 128-bit global loads and 32-bit stores over two
+// storage buffers. With the profile's flag (and a program big enough: EDEN_NX2_GM_SINGLE_EXIT_MIN_GLOBAL / _MIN_INSTS) each
+// global helper has one return, its result (a load's) and its matched flag in Function variables: Metal inlines the helpers
+// (MoltenVK's SPIRV-Cross drops DontInline) and with a return in each test never finished two of OoT's programs. Without the
+// flag the helpers are as before, a return in each test. CI validates every module.
+static std::vector<u32> emit_single_exit_program(bool flag) {
+    ObjectPool<IR::Inst> inst_pool;
+    IR::Block block{inst_pool};
+    IR::Program program;
+    program.stage = Stage::Compute;
+    program.workgroup_size = {1, 1, 1};
+    program.blocks.push_back(&block);
+    program.post_order_blocks.push_back(&block);
+    IR::AbstractSyntaxNode node{};
+    node.type = IR::AbstractSyntaxNode::Type::Block;
+    node.data.block = &block;
+    program.syntax_list.push_back(node);
+    program.syntax_list.push_back({.type = IR::AbstractSyntaxNode::Type::Return});
+    IR::IREmitter ir{block};
+    const IR::U32 a{ir.LoadGlobal32(ir.Imm64(u64{0x1000}))};
+    (void)ir.LoadGlobal64(ir.Imm64(u64{0x1010}));
+    (void)ir.LoadGlobal128(ir.Imm64(u64{0x1020}));
+    ir.WriteGlobal32(ir.Imm64(u64{0x2000}), a);
+    ir.Epilogue();
+    TestEnvironment env;
+    Optimization::CollectShaderInfoPass(env, program);
+    if (!program.info.uses_global_memory || !program.info.stores_global_memory) fail("single exit: no global loads and stores");
+    program.info.constant_buffer_descriptors.push_back({0, 1});
+    program.info.storage_buffers_descriptors.push_back({0, 0x10, 1, true});
+    program.info.storage_buffers_descriptors.push_back({0, 0x20, 1, true});
+    program.info.used_constant_buffer_types |= IR::Type::U32 | IR::Type::U32x2;
+    Profile profile{};
+    profile.supported_spirv = 0x00010600;
+    profile.support_int64 = true;
+    profile.support_descriptor_aliasing = true;
+    profile.min_ssbo_alignment = 16;
+    profile.global_memory_single_exit = flag;
+    return EmitSPIRV(profile, program);
+}
+
+// (the functions the program calls: its global helpers, each with its returns and Function variables. The module also
+// defines helpers this program does not call, the global atomics', which keep their form)
+struct HelperShape {
+    u32 returns = 0;
+    u32 variables = 0;
+    bool returns_value = false;
+};
+static std::vector<HelperShape> helper_shapes(const ModuleInfo& module) {
+    u32 entry = 0;
+    for (const auto& inst : module.instructions)
+        if (inst.op == spv::Op::OpEntryPoint && inst.words.size() >= 2) entry = inst.words[1];
+    std::set<u32> called;
+    for (const auto& inst : module.instructions)
+        if (inst.op == spv::Op::OpFunctionCall && inst.words.size() >= 3) called.insert(inst.words[2]);
+    std::vector<HelperShape> shapes;
+    for (size_t i = 0; i < module.instructions.size(); ++i) {
+        const auto& inst = module.instructions[i];
+        if (inst.op != spv::Op::OpFunction || inst.words.size() < 2 || inst.words[1] == entry || !called.count(inst.words[1]))
+            continue;
+        HelperShape shape;
+        for (++i; i < module.instructions.size() && module.instructions[i].op != spv::Op::OpFunctionEnd; ++i) {
+            const auto op = module.instructions[i].op;
+            if (op == spv::Op::OpReturn || op == spv::Op::OpReturnValue) ++shape.returns;
+            if (op == spv::Op::OpReturnValue) shape.returns_value = true;
+            if (op == spv::Op::OpVariable) ++shape.variables;
+        }
+        shapes.push_back(shape);
+    }
+    return shapes;
+}
+
+static void check_single_exit(bool flag, bool expect_single, const char* name) {
+    const auto module = inspect(save_module(name, emit_single_exit_program(flag)));
+    const auto shapes = helper_shapes(module);
+    if (shapes.size() != 4) fail("single exit: not one helper for each of the three loads and the store");
+    bool any_multi = false;
+    for (const HelperShape& shape : shapes) {
+        if (shape.returns > 1) any_multi = true;
+        if (!expect_single) continue;
+        if (shape.returns != 1) fail("single exit: a global helper with more than one return");
+        // (a load: its result and its matched flag; a store: its flag; and a table loop's counter where there is one)
+        if (shape.variables < (shape.returns_value ? 2u : 1u)) fail("single exit: a helper without its result or flag variable");
+    }
+    if (!expect_single && !any_multi) fail("single exit off: the helpers lost their returns in each test");
+    std::printf("PASS: %s\n", name);
+}
+
 // (mma_layout.h global_table_loop, RX_VK_GM_LOOP=1) a global load whose only storage buffer is a table of 16 entries, searched in
 // the loop: CI validates the module, the return inside the loop's body with it
 static void check_table_loop() {
@@ -843,6 +931,21 @@ int main(int argc, char** argv) {
     if (argc == 3 && std::string(argv[1]) == "--cas-loops") {
         output_dir = argv[2];
         check_cas_program();
+        return 0;
+    }
+    if (argc == 3 && std::string(argv[1]) == "--single-exit") {   // (every program big enough: the limits at 0)
+        output_dir = argv[2];
+        setenv("EDEN_NX2_GM_SINGLE_EXIT_MIN_GLOBAL", "0", 1);
+        setenv("EDEN_NX2_GM_SINGLE_EXIT_MIN_INSTS", "0", 1);
+        check_single_exit(true, true, "single-exit-on");
+        check_single_exit(false, false, "single-exit-off");
+        return 0;
+    }
+    if (argc == 3 && std::string(argv[1]) == "--single-exit-limits") {   // (the default limits: a small program keeps its returns)
+        output_dir = argv[2];
+        unsetenv("EDEN_NX2_GM_SINGLE_EXIT_MIN_GLOBAL");
+        unsetenv("EDEN_NX2_GM_SINGLE_EXIT_MIN_INSTS");
+        check_single_exit(true, false, "single-exit-small-program");
         return 0;
     }
     if (argc == 2 && std::string(argv[1]) == "--expect-original-stub") {

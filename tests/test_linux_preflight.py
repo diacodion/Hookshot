@@ -68,6 +68,7 @@ class LinuxPreflightTests(unittest.TestCase):
         self.stack.enter_context(mock.patch.object(self.make, "LINUX", True))
         self.stack.enter_context(mock.patch.object(self.make, "CROSS", False))
         self.stack.enter_context(mock.patch.object(self.build, "LINUX", True))
+        self.stack.enter_context(mock.patch.object(self.build, "MAC", False))   # (Linux, also when the checks run on a Mac)
         self.stack.enter_context(mock.patch.object(self.build, "NGX_SDK", ""))
         self.stack.enter_context(mock.patch.object(self.build, "FSR", False))
         self.stack.enter_context(mock.patch.object(self.build.kit, "ROOT", str(self.checkout)))

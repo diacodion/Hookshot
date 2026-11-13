@@ -22,6 +22,15 @@
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#if defined(__APPLE__) && !defined(posix_fallocate)   // (a test's fault injection may name its own)
+// (macos) No posix_fallocate: F_PREALLOCATE reserves the blocks the same way, all of them or none, counted from the file's
+// physical end (start is where the caller's range begins: 0 for a new file, whose blocks are not there yet). Its contract
+// kept: an error number, 0 when done
+inline int posix_fallocate(int fd, off_t start, off_t n) {
+    fstore_t store{F_ALLOCATEALL, F_PEOFPOSMODE, 0, start + n, 0};
+    return fcntl(fd, F_PREALLOCATE, &store) == -1 ? errno : 0;
+}
+#endif
 #endif
 
 namespace mkwvk {

@@ -11,7 +11,7 @@
 
 namespace auto_settings {
 
-enum Vendor : int { OTHER = 0, NVIDIA = 1, AMD = 2, INTEL = 3 };
+enum Vendor : int { OTHER = 0, NVIDIA = 1, AMD = 2, INTEL = 3, APPLE = 4 };
 
 struct Hardware {
     int vendor = OTHER;
@@ -43,8 +43,8 @@ struct Choice {
 };
 
 // (upscaler_rows.h's, kept here so the rules compile on their own; the test checks they agree)
-enum { GAME = 0, DLSS = 1, FSR4 = 4 };
-enum { RES_QUALITY = 3, RES_PERFORMANCE = 4, RES_BALANCED = 5 };
+enum { GAME = 0, DLSS = 1, FSR3 = 3, FSR4 = 4 };
+enum { RES_75 = 2, RES_QUALITY = 3, RES_PERFORMANCE = 4, RES_BALANCED = 5 };
 
 // The Render resolution each preset sets (vk_menu.cpp apply_preset; tests/test_auto_settings.py checks they agree): the tier's
 // own, with the game's own upscaler
@@ -55,13 +55,22 @@ constexpr int kTierResolution[] = {0, 4, 2, 1, 1, 1};
 // upscaler, and 12 GB cards report 12,000-12,288 MB. An integrated GPU, a handheld or a card without mesh shaders starts at
 // Minimum whatever its memory says: the memory it reports is shared with the system, or the fallback costs the frame more than
 // the memory saves
+// (macos) An Apple GPU is integrated and has no mesh shaders under MoltenVK, yet neither makes it a Minimum card: its memory is
+// the Mac's own, which MoltenVK reports whole as the one heap (36 GB on a 36 GB M4 Max), and the compute fallback is what
+// every Mac runs (an M4 Max held ~30 fps with it at the full picture). Its tier is by the Mac's memory less the ~10 GB the
+// game takes itself (kAppleGameMb), on the same steps: 8 GB Minimum, 16 GB Low, 18 GB Balanced, 24 GB and up Ultra
+constexpr uint32_t kAppleGameMb = 10240;
+inline uint32_t apple_gpu_mb(const Hardware& h) {
+    const uint32_t mac = h.ram_mb ? h.ram_mb : h.vram_mb;
+    return mac > kAppleGameMb ? mac - kAppleGameMb : 0;
+}
 inline int tier_of(const Hardware& h) {
-    if (h.integrated || h.handheld || !h.mesh_native) return 1;
-    const uint32_t mb = h.vram_mb;
+    if (h.vendor != APPLE && (h.integrated || h.handheld || !h.mesh_native)) return 1;
+    const uint32_t mb = h.vendor == APPLE ? apple_gpu_mb(h) : h.vram_mb;
     int t = mb <= 4608 ? 1 : mb <= 6656 ? 2 : mb <= 11776 ? 3 : mb <= 13312 ? 4 : 5;
     // (under 12 GB of RAM the game's memory and the copies the driver keeps of its textures leave little: a lower tier's
     // smaller budgets)
-    if (h.ram_mb && h.ram_mb < 12288 && t > 2) t = 2;
+    if (h.vendor != APPLE && h.ram_mb && h.ram_mb < 12288 && t > 2) t = 2;   // (a Mac's is in mb already)
     return t;
 }
 
@@ -74,7 +83,11 @@ inline Choice choose(const Hardware& h) {
     Choice c;
     c.tier = tier_of(h);
     char b[160];
-    if (h.integrated) add(c, "integrated GPU: Minimum");
+    if (h.vendor == APPLE) {
+        std::snprintf(b, sizeof b, "Apple GPU, %u MB of the Mac's memory (%u MB of it past the game's own): tier %d",
+                      (unsigned)(h.ram_mb ? h.ram_mb : h.vram_mb), (unsigned)apple_gpu_mb(h), c.tier);
+        add(c, b);
+    } else if (h.integrated) add(c, "integrated GPU: Minimum");
     else if (h.handheld) add(c, "handheld: Minimum");
     else if (!h.mesh_native) add(c, "no mesh shaders (the compute fallback): Minimum");
     else {
@@ -85,7 +98,15 @@ inline Choice choose(const Hardware& h) {
     }
     // The upscaler: the one the card has hardware for, else the game's own (on every card, and what the presets were tuned
     // on). At Minimum the game's own at its lowest share is the lightest
-    if (c.tier >= 2 && h.rtx && h.dlss_built) {
+    // (macos) An Apple GPU: AMD FSR 3.1, built from AMD's shaders (vk_fsr3.cpp), at every tier. The game's own upscaler is a
+    // network MoltenVK leaves out (its upscales are linear stretches there); FSR 3.1 resolves the game's dithering and the grass
+    // blades, at ~1 ms of an M4 Max's frame. From Low up the 3D at 75%, Low's own: FSR 3.1 keeps a tier's 100% (an M4 Max in
+    // Kokiri Forest: 25 fps there, 31 at 75%)
+    if (h.vendor == APPLE) {
+        c.upscaler = FSR3;
+        if (c.tier >= 2) c.resolution = RES_75;
+        add(c, "Apple GPU: FSR 3.1 (the game's own upscaler does not run under MoltenVK)");
+    } else if (c.tier >= 2 && h.rtx && h.dlss_built) {
         c.upscaler = DLSS;
         c.resolution = c.tier == 2 ? RES_PERFORMANCE : c.tier == 3 ? RES_BALANCED : RES_QUALITY;
         add(c, c.tier == 2 ? "NVIDIA RTX: DLSS Performance" : c.tier == 3 ? "NVIDIA RTX: DLSS Balanced" : "NVIDIA RTX: DLSS Quality");

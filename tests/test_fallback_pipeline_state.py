@@ -101,6 +101,7 @@ struct Quarantine {
 driver_faults::Quarantine& fault_quarantine() { static driver_faults::Quarantine q; return q; }
 std::string driver_faults_path() { return {}; }
 void driver_fault_note(uint64_t) {}
+void mesh_native_refused(uint64_t) {}   // (macos: a mesh pipeline the driver refused, vk_shader.cpp)
 constexpr VkResult kDriverFault = static_cast<VkResult>(-77);
 bool driver_cache_only = false, quick_build = false, gate_busy = false, slow_full_build = false;
 int test_slow_ms() { return 0; }

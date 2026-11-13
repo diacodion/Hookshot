@@ -74,6 +74,38 @@ extern thread_local bool g_all_global_this;
 extern thread_local bool g_gm_port_this;
 }
 namespace mkwvk {
+
+// (macos) Mesh programs whose native pipeline the driver refused (MoltenVK with mesh shaders: Metal's 32 KB of threadgroup
+// memory, which SPIRV-Cross stages a mesh's outputs in, is less than some of OoT's take): their draws take the compute fallback
+std::mutex native_mesh_refused_mu;
+std::unordered_set<uint64_t> native_mesh_refused_keys;
+void mesh_native_refused(uint64_t key) {
+    std::lock_guard lk(native_mesh_refused_mu);
+    if (native_mesh_refused_keys.insert(key).second)
+        logf("vk: mesh program %016llx: no native pipeline here, its draws take the compute fallback", (unsigned long long)key);
+}
+bool key_listed(const char* hex, const char* var);   // (below)
+bool mesh_native_was_refused(uint64_t key) {
+    if (!dev.mesh_shader) return false;
+    // (diagnosis, for bisecting what a driver's native mesh shaders draw wrong: RX_VK_MESH_FALLBACK_KEYS=<hex>,... sends those
+    // programs to the compute fallback; RX_VK_MESH_NATIVE_KEYS=<hex>,... sends every other. Prefixes match. RX_VK_LOG_MESH_KEYS=1
+    // names each mesh program once. What they found with MoltenVK's PR 2842: docs/macos.md, "Native mesh shaders")
+    static const std::string fb_list = getenv("RX_VK_MESH_FALLBACK_KEYS") ? getenv("RX_VK_MESH_FALLBACK_KEYS") : "";
+    static const std::string native_list = getenv("RX_VK_MESH_NATIVE_KEYS") ? getenv("RX_VK_MESH_NATIVE_KEYS") : "";
+    static const bool listed_fb = !fb_list.empty(), listed_native = !native_list.empty();
+    static const bool log_keys = env_on("RX_VK_LOG_MESH_KEYS");
+    if (listed_fb || listed_native || log_keys) {
+        char hex[17];
+        snprintf(hex, sizeof hex, "%016llx", (unsigned long long)key);
+        const bool forced = (listed_fb && key_listed(hex, "RX_VK_MESH_FALLBACK_KEYS")) || (listed_native && !key_listed(hex, "RX_VK_MESH_NATIVE_KEYS"));
+        std::lock_guard lk(native_mesh_refused_mu);
+        static std::unordered_set<uint64_t> seen;
+        if (log_keys && seen.insert(key).second) logf("vk: mesh program %s: %s", hex, forced ? "fallback (listed)" : "native");
+        if (forced) return true;
+    }
+    std::lock_guard lk(native_mesh_refused_mu);
+    return native_mesh_refused_keys.count(key) != 0;
+}
 struct NvnState;
 uint32_t compute_ssbo_table(const NvnState& s, uint32_t* count, uint32_t* layout_end);   // (vk_bank.cpp)
 bool seed_cs_buffer_word(uint32_t offset);   // (vk_bank.cpp)
@@ -598,6 +630,9 @@ bool handle_tables_on() {
 Shader::Profile make_profile() {
     Shader::Profile p{};
     p.supported_spirv = 0x00010600;
+    // (macos) the global memory helpers in one exit on MoltenVK (profile.h): with a return in each of their tests, inlined by
+    // Metal, two of OoT's compute programs never finished compiling. RX_VK_GM_SINGLE_EXIT=0: as elsewhere, 1: on any driver
+    p.global_memory_single_exit = env_int("RX_VK_GM_SINGLE_EXIT", dev.driver_id == VK_DRIVER_ID_MOLTENVK ? 1 : 0) != 0;
     p.unified_descriptor_binding = true;
     p.support_descriptor_aliasing = true;
     p.support_int8 = p.support_int16 = p.support_int64 = true;
@@ -610,6 +645,30 @@ Shader::Profile make_profile() {
     p.support_fp16_signed_zero_nan_preserve = p.support_fp32_signed_zero_nan_preserve = true;
     p.support_vote = true;
     p.supported_subgroup_stages = VK_SHADER_STAGE_ALL;
+    {   // (macos) A driver without subgroups in every classic stage (MoltenVK: fragment, compute and tessellation control only;
+        // Metal has no thread index in a vertex function, and SPIRV-Cross stops at "Subgroup builtins are not available in this
+        // type of function"): the stages it lacks take the back end's one-lane paths (emit_spirv_warp.cpp). The mask is by
+        // Shader::Stage, whose first six are Vulkan's stage bits; VertexA follows the vertex stage, and task and mesh programs
+        // follow their own stages, or compute's when they run as compute shaders (the mesh fallback)
+        const uint32_t classic = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT |
+                                 VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_GEOMETRY_BIT |
+                                 VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT;
+        const uint32_t have = dev.subgroup_stages;
+        if ((have & classic) != classic && have) {
+            uint32_t mask = have & classic;
+            if (have & VK_SHADER_STAGE_VERTEX_BIT) mask |= 1u << (uint32_t)Shader::Stage::VertexA;
+            const bool as_compute = !dev.mesh_shader || dev.task_mesh_fallback;
+            if ((have & VK_SHADER_STAGE_TASK_BIT_EXT) || (as_compute && (have & VK_SHADER_STAGE_COMPUTE_BIT)))
+                mask |= 1u << (uint32_t)Shader::Stage::Task;
+            if ((have & VK_SHADER_STAGE_MESH_BIT_EXT) || (as_compute && (have & VK_SHADER_STAGE_COMPUTE_BIT)))
+                mask |= 1u << (uint32_t)Shader::Stage::Mesh;
+            // (RX_VK_MESH_SUBGROUPS=1, a test: native task and mesh programs with subgroups too. MoltenVK's mesh shaders (PR 2842)
+            // do not report them, but Metal has SIMD-group functions in object and mesh functions: an M4 Max's lanes, broadcasts and
+            // ballots came out right in both)
+            if (env_on("RX_VK_MESH_SUBGROUPS")) mask |= (1u << (uint32_t)Shader::Stage::Task) | (1u << (uint32_t)Shader::Stage::Mesh);
+            p.supported_subgroup_stages = mask;   // (vk_main.cpp's "subgroups:" line says the stages)
+        }
+    }
     p.support_viewport_index_layer_non_geometry = true;
     p.support_typeless_image_loads = true;
     p.support_demote_to_helper_invocation = true;
@@ -1025,6 +1084,13 @@ const Shader::Profile& profile_pinned() {
     static const Shader::Profile p = [] {
         Shader::Profile q = profile();
         if (dev.sg32_stages & VK_SHADER_STAGE_COMPUTE_BIT) q.warp_size_potentially_larger_than_guest = false, q.max_subgroup_size = 32;
+        // (macos) A task or mesh program run as a compute shader has compute's subgroups, whatever the driver says of the task and mesh
+        // stages: make_profile gives them compute's only when every mesh program is a fallback, and with MoltenVK's mesh shaders a
+        // program goes to the fallback one at a time (a pipeline Metal refused, mesh_native_refused). With the one-lane paths there,
+        // every lane read as lane 0 and a ballot as its own bit: the foliage's task programs compacted their lists onto one slot, and the
+        // grass and leaves came out missing or at other instances' places
+        if (q.SupportsSubgroupStage(Shader::Stage::Compute))
+            q.supported_subgroup_stages |= (1u << (uint32_t)Shader::Stage::Task) | (1u << (uint32_t)Shader::Stage::Mesh);
         return q;
     }();
     return p;
@@ -1267,12 +1333,20 @@ uint64_t translator_stamp() {
                               getenv("RX_VK_WARP64") ? 1u : 0u,
                               // (and where the translation starts a storage binding: offsets are counted from there, so a cache
                               // made on a 16-aligned GPU is no use on a 64-aligned one in the same folder, a laptop's two GPUs)
-                              (uint32_t)storage_binding_align()};
+                              (uint32_t)storage_binding_align(),
+                              // (macos) and the stages with subgroup operations: those without take the one-lane paths. The mesh
+                              // fallback's (compute) translations follow profile_pinned's
+                              profile().supported_subgroup_stages, profile_pinned().supported_subgroup_stages};
     add(lanes, sizeof lanes);
     // (k10) f16 lowered to f32 on a GPU without f16 shaders (host_info): only then, so other GPUs keep their caches
     if (!dev.vk12.shaderFloat16) {
         const uint32_t no_f16 = 0x6e663136u;   // ("nf16")
         add(&no_f16, sizeof no_f16);
+    }
+    // (macos) the global memory helpers in one exit (Profile::global_memory_single_exit): only then, so other GPUs keep theirs
+    if (profile().global_memory_single_exit) {
+        const uint32_t single_exit = 0x31786567u;   // ("gex1": global memory, one exit)
+        add(&single_exit, sizeof single_exit);
     }
     // (the records keep Shader::Info as it lies in memory: a cache written by another C++ library (the MSVC build's, then the
     // llvm-mingw one's libc++) has other layouts, and reading it crashed at start. The library and the sizes, so it starts again)
@@ -1784,8 +1858,8 @@ const Program* mesh_program_locked(const NvnState& s, const uint8_t color_types[
     static int logged;
     if (logged++ < 6) log_program_stages(s, "mesh draw");
     if (!mesh) return nullptr;
-    const bool fallback = dev.uses_mesh_fallback(task != nullptr);
     const uint64_t key = mesh_key(task, *mesh, fsc, prim, color_types);
+    const bool fallback = dev.uses_mesh_fallback(task != nullptr) || mesh_native_was_refused(key);
     auto& variants = programs[key];
     program_cache_load(key, variants);
     const uint64_t codes[4] = {mesh->key, fsc ? fsc->key : 0, task ? task->key : 0, prim ? prim->key : 0};
@@ -2296,7 +2370,7 @@ std::unique_ptr<Program> seed_translate(const SeedStage* const by_stage[8], cons
     p->compute = by_stage[5] != nullptr;
     const bool mesh = by_stage[7] != nullptr;
     if (mesh && !dev.mesh_shader && !dev.mesh_fallback) return nullptr;
-    p->fallback = mesh && dev.uses_mesh_fallback(by_stage[6] != nullptr);
+    p->fallback = mesh && (dev.uses_mesh_fallback(by_stage[6] != nullptr) || mesh_native_was_refused(p->key));
     p->mesh = mesh && !p->fallback;
     if (mesh)
         translate_mesh_into(*p, *blank, by_stage[6] ? &code[6] : nullptr, code[7], nullptr, by_stage[1] ? &code[1] : nullptr, color_types);
@@ -2490,7 +2564,7 @@ static const Program* seed_variant_made(const uint64_t code[3], bool mesh, const
     p->key = mesh ? mesh_key(by_stage[6] ? &code_of[6] : nullptr, code_of[7], fs, nullptr, color_types)
                   : graphics_key(code_of[0], fs, attributes, color_types, p->scene_tonemap);
     if (mesh && !dev.mesh_shader && !dev.mesh_fallback) return nullptr;
-    p->fallback = mesh && dev.uses_mesh_fallback(by_stage[6] != nullptr);
+    p->fallback = mesh && (dev.uses_mesh_fallback(by_stage[6] != nullptr) || mesh_native_was_refused(p->key));
     p->mesh = mesh && !p->fallback;
     p->codes[0] = code[0], p->codes[1] = code[1], p->codes[2] = code[2];
     if (questions) questions_in = questions, questions_at = 0, answers_in = answers;

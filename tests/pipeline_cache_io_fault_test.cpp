@@ -50,6 +50,9 @@ static BOOL io_remove(LPCWSTR p){if(refuse(CLEANUP)){SetLastError(ERROR_ACCESS_D
 #else
 static int io_create(char* path){if(refuse(CREATE))return -1;return mkstemp(path);}
 static int io_resize(int fd,off_t n){if(refuse(RESIZE)||refuse(TRUNCATE))return -1;return ftruncate(fd,n);}
+#if defined(__APPLE__)   // (macos has no posix_fallocate: pipeline_cache_file.h's, which this file's macro takes the place of)
+static int posix_fallocate(int fd,off_t start,off_t n){fstore_t s{F_ALLOCATEALL,F_PEOFPOSMODE,0,start+n,0};return fcntl(fd,F_PREALLOCATE,&s)==-1?errno:0;}
+#endif
 [[maybe_unused]] static int io_allocate(int fd,off_t start,off_t n){if(refuse(ALLOCATE))return ENOSPC;return posix_fallocate(fd,start,n);}
 [[maybe_unused]] static int io_lock(int fd,int op){if(refuse(LOCK)){errno=EWOULDBLOCK;return -1;}return flock(fd,op);}
 [[maybe_unused]] static int io_time(int fd,const timespec times[2]){if(refuse(TOUCH))return -1;return futimens(fd,times);}

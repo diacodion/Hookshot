@@ -29,6 +29,13 @@ success. The failed-attempt path must feed back the returned word and retry.
 The two alternative single-exchange global CAS routes must return directly,
 without being counted as retry loops. CI validates all twenty-two modules.
 
+`--single-exit OUTPUT_DIRECTORY` (macOS's MoltenVK, `Profile::global_memory_single_exit`) emits one compute
+program of 32-, 64- and 128-bit global loads and a 32-bit store over two storage buffers. With the profile's flag and the
+size limits at 0 (`EDEN_NX2_GM_SINGLE_EXIT_MIN_GLOBAL`, `_MIN_INSTS`), each helper the program calls has exactly one return
+and its result and matched-flag variables; without the flag the helpers keep a return in each test.
+`--single-exit-limits OUTPUT_DIRECTORY` checks that a program this small keeps that form under the default limits. CI
+validates these three modules with the others.
+
 The fixture checks the emitted SPIR-V dependency chain; it does not execute a
 shader or driver, and does not validate odd guest addresses or AMD hardware. It
 tests the SPIR-V backend's lowering contract only.

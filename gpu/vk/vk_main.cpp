@@ -156,8 +156,15 @@ bool create_instance() {
         vkEnumerateInstanceExtensionProperties(nullptr, &n, nullptr);
         std::vector<VkExtensionProperties> all(n);
         vkEnumerateInstanceExtensionProperties(nullptr, &n, all.data());
+#ifdef __APPLE__
+        // (macos: SDL's window is on Cocoa and its surface a Metal layer's. MoltenVK is a "portability" driver: the loader
+        // lists it only when asked to, below)
+        for (const char* want : {"VK_EXT_metal_surface", "VK_KHR_portability_enumeration"})
+            if (has_extension(all, want)) exts[n_exts++] = want;
+#else
         for (const char* want : {"VK_KHR_xlib_surface", "VK_KHR_xcb_surface", "VK_KHR_wayland_surface"})
             if (has_extension(all, want)) exts[n_exts++] = want;
+#endif
     }
 #endif
     VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
@@ -179,6 +186,10 @@ bool create_instance() {
     }
     ci.enabledExtensionCount = (uint32_t)ext_list.size();
     ci.ppEnabledExtensionNames = ext_list.data();
+#ifdef __APPLE__
+    for (const char* e : ext_list)
+        if (!strcmp(e, "VK_KHR_portability_enumeration")) ci.flags |= 0x00000001;   // (VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR)
+#endif
     // RX_VK_VALIDATION=1: the Khronos validation layer (when installed)
     const char* layer = "VK_LAYER_KHRONOS_validation";
     if (env_on("RX_VK_VALIDATION")) ci.enabledLayerCount = 1, ci.ppEnabledLayerNames = &layer;
@@ -283,6 +294,8 @@ bool create_device() {
         flag = has_extension(exts, name);
         if (flag) want.push_back(name);
     };
+    // (macos: MoltenVK's "this is a subset of Vulkan" extension, which a device that lists it must be created with)
+    if (has_extension(exts, "VK_KHR_portability_subset")) want.push_back("VK_KHR_portability_subset");
     // (#1001: how task and mesh programs run, mesh_mode.h: RX_VK_MESH_SHADERS=native or compute, a launch switch; unset,
     // Automatic. RX_VK_FORCE_MESH_FALLBACK=1, a test, is Compute over it: mesh shaders not used where they are, so the no-mesh
     // fallback the GTX 10xx and RX 5000 cards run (issue 640) can be tried on any GPU. The Graphics tab's row it was, and its
@@ -338,6 +351,10 @@ bool create_device() {
     optional(VK_EXT_DEPTH_CLIP_CONTROL_EXTENSION_NAME, dev.depth_clip_control);
     optional(VK_EXT_ROBUSTNESS_2_EXTENSION_NAME, dev.null_descriptor);
     optional(VK_EXT_INDEX_TYPE_UINT8_EXTENSION_NAME, dev.index_uint8);
+    // (macos) MoltenVK turns 8-bit indices into 16-bit ones before each draw, all of the bound range: bound with its size
+    // (vk_draw.cpp bind_index), that is the draw's indices and not the rest of the game's pool. Asked for on MoltenVK only
+    if (has_extension(exts, "VK_MVK_moltenvk") || has_extension(exts, "VK_EXT_metal_objects"))
+        optional(VK_KHR_MAINTENANCE_5_EXTENSION_NAME, dev.maintenance5);
     optional(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME, dev.push_descriptor);
     optional(VK_EXT_CONDITIONAL_RENDERING_EXTENSION_NAME, dev.conditional_rendering);
     optional(VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME, dev.provoking_vertex);
@@ -477,6 +494,8 @@ bool create_device() {
     if (dev.mesh_shader) *tail = &mesh, tail = &mesh.pNext;
     if (dev.null_descriptor) *tail = &robust2, tail = &robust2.pNext;
     if (dev.index_uint8) *tail = &u8, tail = &u8.pNext;
+    VkPhysicalDeviceMaintenance5FeaturesKHR maint5{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES_KHR};
+    if (dev.maintenance5) *tail = &maint5, tail = &maint5.pNext;
     if (dev.dynamic_state3) *tail = &eds3, tail = &eds3.pNext;
     if (dev.custom_border_color) *tail = &border, tail = &border.pNext;
     if (dev.depth_clip_control) *tail = &clip, tail = &clip.pNext;
@@ -507,6 +526,7 @@ bool create_device() {
     if (module_id && module_idf.shaderModuleIdentifier) module_ids_on();
     descriptor_buffer.descriptorBufferCaptureReplay = VK_FALSE;
     dev.view_2d_of_3d = dev.view_2d_of_3d && v2d3d.sampler2DViewOf3D;
+    dev.maintenance5 = dev.maintenance5 && maint5.maintenance5;
     coop.cooperativeMatrixRobustBufferAccess = VK_FALSE;
     dev.coop_matrix = dev.coop_matrix && coop.cooperativeMatrix &&
                       f12.vulkanMemoryModel && f12.vulkanMemoryModelDeviceScope;
@@ -607,13 +627,14 @@ bool create_device() {
         const bool pin = f13.subgroupSizeControl && sc.minSubgroupSize <= 32 && sc.maxSubgroupSize >= 32 && !env_on("RX_VK_NO_SUBGROUP_PIN");
         dev.sg32_stages = pin ? sc.requiredSubgroupSizeStages : 0;
         dev.subgroup_size = sg.subgroupSize;
+        dev.subgroup_stages = sg.supportedStages;   // (macos: MoltenVK has subgroups in fragment and compute stages only: vk_shader.cpp)
         dev.subgroup_max = sc.maxSubgroupSize > sg.subgroupSize ? sc.maxSubgroupSize : sg.subgroupSize;
         dev.driver_id = drv.driverID;
         // (RADV on GCN 1-4, GFX6-8: no 16-bit shader inputs and outputs there, which RADV has from GFX9 (packed 16-bit math) on.
         // Its compiler cannot build the biggest mesh fallback programs: fallback_size_policy.h)
         dev.radv_gcn = drv.driverID == VK_DRIVER_ID_MESA_RADV && !f11.storageInputOutput16;
-        logf("vk: subgroups: default %u lanes, %u-%u, pinned to 32 on stages %#x; RADV on GCN 1-4: %s", sg.subgroupSize, sc.minSubgroupSize,
-             sc.maxSubgroupSize, (unsigned)dev.sg32_stages, dev.radv_gcn ? "yes" : "no");
+        logf("vk: subgroups: default %u lanes, %u-%u, pinned to 32 on stages %#x, in stages %#x; RADV on GCN 1-4: %s", sg.subgroupSize,
+             sc.minSubgroupSize, sc.maxSubgroupSize, (unsigned)dev.sg32_stages, (unsigned)sg.supportedStages, dev.radv_gcn ? "yes" : "no");
     }
     if (!f13.dynamicRendering || !f13.synchronization2 || !f12.timelineSemaphore) {
         logf("vk: the GPU lacks dynamic rendering, synchronization2 or timeline semaphores");
@@ -1449,7 +1470,8 @@ void auto_profile() {
     ::auto_settings::Hardware hw;
     const VkPhysicalDeviceProperties& p = dev.props;
     hw.vendor = p.vendorID == 0x10de ? ::auto_settings::NVIDIA : p.vendorID == 0x1002 ? ::auto_settings::AMD
-              : p.vendorID == 0x8086 ? ::auto_settings::INTEL : ::auto_settings::OTHER;
+              : p.vendorID == 0x8086 ? ::auto_settings::INTEL : p.vendorID == 0x106B ? ::auto_settings::APPLE   // (macos)
+              : ::auto_settings::OTHER;
     hw.integrated = p.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
     for (uint32_t i = 0; i < dev.memory.memoryHeapCount; i++)
         if (dev.memory.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)

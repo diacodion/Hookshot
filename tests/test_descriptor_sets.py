@@ -52,7 +52,8 @@ struct Program {
     VkShaderStageFlags push_stages = 0;
     bool push = false, uses_render_area = false, uses_push = false, fallback = false;
 };
-struct Device { VkDevice device{}; bool push_descriptor = true; uint32_t max_push_descriptors = 32; } dev;
+struct Device { VkDevice device{}; bool push_descriptor = true; uint32_t max_push_descriptors = 32;
+               VkDriverId driver_id = DRIVER_ID; } dev;
 bool vkCmdPushDescriptorSetKHR = true;
 constexpr uint32_t kPushSize = 64;
 unsigned calls = 0;
@@ -80,7 +81,7 @@ VkResult vkCreatePipelineLayout(VkDevice, const VkPipelineLayoutCreateInfo* p,
     fixture += block(source, "void ensure_layout(")
     fixture += r'''
 int main(int argc, char** argv) {
-    assert(argc == 2);
+    assert(argc == 2);   // (the driver is DRIVER_ID, set when the fixture is compiled)
     const bool expect_push = atoi(argv[1]) != 0;
     auto check = [](bool expected) {
         Program p;
@@ -110,15 +111,18 @@ int main(int argc, char** argv) {
         cpp = Path(tmp) / "fixture.cpp"
         exe = Path(tmp) / "fixture"
         cpp.write_text(fixture, encoding="utf-8")
-        subprocess.run([args.cxx, "-std=c++20", "-I", args.headers, "-I", str(ROOT / "gpu/vk/compat"),
-                        str(cpp), "-o", str(exe)], check=True)
-        for value, expected in [(None, "1"), ("0", "1"), ("1", "0")]:
-            env = os.environ.copy()
-            env.pop("RX_VK_DESCRIPTOR_SETS", None)
-            if value is not None:
-                env["RX_VK_DESCRIPTOR_SETS"] = value
-            subprocess.run([str(exe), expected], env=env, check=True)
-    print("PASS: descriptor strategy preserves layout contents, limits and default behavior")
+        # (MoltenVK takes pooled sets unless RX_VK_DESCRIPTOR_SETS=0: SPIRV-Cross cannot alias a pushed set's arrays)
+        for driver, cases in (("VK_DRIVER_ID_MESA_RADV", [(None, "1"), ("0", "1"), ("1", "0")]),
+                              ("VK_DRIVER_ID_MOLTENVK", [(None, "0"), ("0", "1"), ("1", "0")])):
+            subprocess.run([args.cxx, "-std=c++20", "-DDRIVER_ID=" + driver, "-I", args.headers,
+                            "-I", str(ROOT / "gpu/vk/compat"), str(cpp), "-o", str(exe)], check=True)
+            for value, expected in cases:
+                env = os.environ.copy()
+                env.pop("RX_VK_DESCRIPTOR_SETS", None)
+                if value is not None:
+                    env["RX_VK_DESCRIPTOR_SETS"] = value
+                subprocess.run([str(exe), expected], env=env, check=True)
+    print("PASS: descriptor strategy preserves layout contents, limits and default behavior, MoltenVK's included")
 
 
 if __name__ == "__main__":

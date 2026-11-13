@@ -19,6 +19,9 @@
 #if defined(__linux__)
 #include <malloc.h>
 #endif
+#if !defined(_WIN32)
+#include <unistd.h>   // (sysconf: the system's RAM where there is no /proc/meminfo)
+#endif
 #include <atomic>
 #include <new>
 #include <chrono>
@@ -4671,6 +4674,10 @@ void texture_frame(uint64_t completed) {
                     }
                 }
                 fclose(f);
+            }
+            if (system_ram == 0) {   // (macos: no /proc; the Mac's memory, which its GPU shares)
+                const long pages = sysconf(_SC_PHYS_PAGES), page = sysconf(_SC_PAGE_SIZE);
+                if (pages > 0 && page > 0) system_ram = (uint64_t)pages * (uint64_t)page;
             }
 #endif
             if (system_ram == 0) system_ram = 8ull << 30;  // 8 GB fallback

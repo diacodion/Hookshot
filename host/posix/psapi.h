@@ -3,6 +3,9 @@
 #ifndef HOOKSHOT_POSIX_PSAPI_H
 #define HOOKSHOT_POSIX_PSAPI_H
 #include <windows.h>
+#ifdef __APPLE__
+#include <mach/mach.h>
+#endif
 typedef struct {
     DWORD cb, PageFaultCount;
     SIZE_T PeakWorkingSetSize, WorkingSetSize, QuotaPeakPagedPoolUsage, QuotaPagedPoolUsage, QuotaPeakNonPagedPoolUsage,
@@ -15,6 +18,18 @@ typedef struct {
 } PROCESS_MEMORY_COUNTERS_EX;
 static inline BOOL K32GetProcessMemoryInfo(HANDLE p, PROCESS_MEMORY_COUNTERS *out, DWORD cb) {
     (void)p;
+#ifdef __APPLE__   /* (macos: Mach's task info. The footprint is what Activity Monitor shows as Memory) */
+    {
+        task_vm_info_data_t vi;
+        mach_msg_type_number_t cnt = TASK_VM_INFO_COUNT;
+        if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&vi, &cnt) != KERN_SUCCESS) return FALSE;
+        memset(out, 0, cb);
+        out->cb = cb, out->WorkingSetSize = (SIZE_T)vi.resident_size, out->PeakWorkingSetSize = (SIZE_T)vi.resident_size_peak;
+        out->PagefileUsage = (SIZE_T)vi.phys_footprint;
+        if (cb >= sizeof(PROCESS_MEMORY_COUNTERS_EX)) ((PROCESS_MEMORY_COUNTERS_EX *)out)->PrivateUsage = (SIZE_T)vi.phys_footprint;
+        return TRUE;
+    }
+#endif
     FILE *f = fopen("/proc/self/status", "r");
     if (!f) return FALSE;
     SIZE_T rss = 0, hwm = 0, anon = 0;

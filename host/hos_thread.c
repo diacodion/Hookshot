@@ -16,7 +16,11 @@
 #ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION   /* (older Windows SDKs lack it: Windows 10 1803 and later take it) */
 #define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
 #endif
+#if defined(__aarch64__)   /* (macos, Apple silicon: ISB stands in for PAUSE, about as long a wait) */
+#define _mm_pause() __asm__ volatile("isb")
+#else
 #include <emmintrin.h>
+#endif
 #ifdef __EMSCRIPTEN__
 #include <sched.h>
 #include <stdatomic.h>

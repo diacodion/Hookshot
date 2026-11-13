@@ -33,6 +33,7 @@ struct {
     bool mesh_shader = true, mesh_fallback = false;
     bool uses_mesh_fallback(bool) const { return false; }
 } dev;
+bool mesh_native_was_refused(uint64_t) { return false; }   // (vk_shader.cpp: no program refused here)
 std::map<VkShaderModule, unsigned> destroyed;
 unsigned created = 0, releases = 0;
 VkShaderModule make_test_module() {

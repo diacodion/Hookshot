@@ -52,6 +52,7 @@ inline void note_work() {
 #define vkCmdBindPipeline(...) (::mkwvk::rec::rx_vkCmdBindPipeline(__VA_ARGS__))
 #define vkCmdBindDescriptorSets(...) (::mkwvk::rec::rx_vkCmdBindDescriptorSets(__VA_ARGS__))
 #define vkCmdBindIndexBuffer(...) (::mkwvk::rec::rx_vkCmdBindIndexBuffer(__VA_ARGS__))
+#define vkCmdBindIndexBuffer2KHR(...) (::mkwvk::rec::rx_vkCmdBindIndexBuffer2KHR(__VA_ARGS__))
 #define vkCmdBindVertexBuffers2(...) (::mkwvk::rec::rx_vkCmdBindVertexBuffers2(__VA_ARGS__))
 #define vkCmdPushConstants(...) (::mkwvk::rec::rx_vkCmdPushConstants(__VA_ARGS__))
 #define vkCmdPushDescriptorSetKHR(...) (::mkwvk::rec::rx_vkCmdPushDescriptorSetKHR(__VA_ARGS__))

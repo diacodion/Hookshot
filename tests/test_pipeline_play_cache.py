@@ -25,7 +25,7 @@ import tempfile
 RUN_ALL_ARGS = ["--cxx", "{cxx}"]
 
 ROOT = Path(__file__).resolve().parents[1]
-CASES = ["route", "save", "retry", "users", "merge", "merge-read-failed", "merge-create-failed", "compact", "compact-failed", "off", "no-control", "lock-users"]
+CASES = ["route", "save", "retry", "users", "merge", "merge-read-failed", "merge-create-failed", "compact", "compact-failed", "off", "no-control", "lock-users", "moltenvk", "moltenvk-cache"]
 
 
 def play_block(source):
@@ -67,11 +67,14 @@ def main():
         for case in CASES:
             data = temp / ("data-" + case)
             data.mkdir()
-            env = {k: v for k, v in os.environ.items() if k not in ("RX_VK_PLAY_CACHE", "RX_VK_PCACHE_FETCH_LOCK")}
+            env = {k: v for k, v in os.environ.items()
+                   if k not in ("RX_VK_PLAY_CACHE", "RX_VK_PCACHE_FETCH_LOCK", "RX_VK_MVK_PIPELINE_CACHE")}
             if case == "off":
                 env["RX_VK_PLAY_CACHE"] = "0"
             if case == "lock-users":   # (the fetch lock on, as on Intel's Windows driver)
                 env["RX_VK_PCACHE_FETCH_LOCK"] = "1"
+            if case == "moltenvk-cache":
+                env["RX_VK_MVK_PIPELINE_CACHE"] = "1"
             # (each case a fresh process: the switch is read once, the generations are the process's)
             run = subprocess.run([str(exe), case, str(data)], capture_output=True, text=True, timeout=30, env=env)
             sys.stdout.write(run.stdout)

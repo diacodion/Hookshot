@@ -79,6 +79,8 @@ struct Device {
     VkShaderStageFlags sg32_stages = 0;   // (stages that run at 32 lanes when asked: the size the translated programs assume)
     uint32_t subgroup_size = 32, subgroup_max = 32;   // (the lanes a stage not pinned runs at, and the most it can have)
     VkDriverId driver_id{};
+    VkShaderStageFlags subgroup_stages = 0;   // (VkPhysicalDeviceSubgroupProperties::supportedStages)
+    bool maintenance5 = false;   // (VK_KHR_maintenance5: vkCmdBindIndexBuffer2KHR, an index buffer bound with its size)
     bool radv_gcn = false;   // (hookshot) RADV on a GCN 1-4 card (GFX6-8: RX 400/500, R9 2xx/3xx/Fury): fallback_size_policy.h
     VendorFixes fixes{};   // (hookshot) the vendor and driver workarounds this device needs (vk_vendor.h; vk_main.cpp create_device)
     uint32_t max_push_descriptors = 0;
@@ -263,6 +265,9 @@ void memory_collect_written();
 void memory_capture_submit();
 /// The replay of the next submit: its capture (false: none, the pages are collected now as before)
 bool memory_take_capture(uint64_t value, uint64_t completed);
+/// (macos, vk_shader.cpp) A mesh program whose native pipeline the driver refused: its draws take the compute fallback
+void mesh_native_refused(uint64_t key);
+bool mesh_native_was_refused(uint64_t key);
 int64_t memory_late_wait_ns();   // (hookshot: RX_VK_FRAME_TRACE's late_wait_ms)
 bool memory_capture_now(uint64_t value, uint64_t completed);   // (hookshot: made and taken at once)
 /// The submission the replay records next (bindings note it: a pool's mirror is in use until it is done)

@@ -47,6 +47,11 @@
 #include <sys/un.h>
 #include <time.h>
 #include <unistd.h>
+#if defined(__APPLE__) && !defined(SOCK_CLOEXEC)   /* (macos: set with fcntl after the socket is made, below) */
+#include <fcntl.h>
+#define SOCK_CLOEXEC 0
+#define SOCK_NONBLOCK 0
+#endif
 #endif
 
 #define CTL_LINE_MAX 65536            /* a request longer than this is refused (too_long) */
@@ -2019,10 +2024,17 @@ static int transport_open(const char *path) {
     }
     listen_fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
     if (listen_fd < 0) return ctl_log("control: socket: %s", strerror(errno)), 0;
+#ifdef __APPLE__   /* (macos: socket() takes no flags there) */
+    fcntl(listen_fd, F_SETFD, FD_CLOEXEC);
+    fcntl(listen_fd, F_SETFL, fcntl(listen_fd, F_GETFL) | O_NONBLOCK);
+#endif
     const mode_t old = umask(077);
     const int bound = bind(listen_fd, (struct sockaddr *)&a, sizeof a);
     umask(old);
-    if (bound || chmod(path, 0600) || listen(listen_fd, 4)) {
+    /* (the backlog: connections not yet accepted. Linux holds a connect past it until there is room; macOS refuses it at
+       once (ECONNREFUSED): 8 of 12 clients dialling at once were refused with 4, on a CI runner whose bridge thread accepted
+       them more slowly than they came. Clients past the bridge's 8 are still told "too many clients" once accepted) */
+    if (bound || chmod(path, 0600) || listen(listen_fd, 32)) {
         ctl_log("control: %s: %s", path, strerror(errno));
         close(listen_fd);
         listen_fd = -1;
@@ -2067,6 +2079,15 @@ static void transport_wait(int ms) {
     for (int i = 0; i < CTL_CONNS; i++) {
         Conn *c = &G.conns[i];
         if (!c->used) continue;
+#ifdef __APPLE__
+        /* (macos) poll says POLLHUP only when an event is asked for, and with POLLIN it says so for a peer that merely
+           stopped writing. A client whose input ended is asked about on its own: POLLOUT answers POLLHUP once it is gone
+           altogether, and plain POLLOUT while it still reads its replies */
+        if (c->eof) {
+            struct pollfd q = {c->fd, POLLOUT, 0};
+            if (poll(&q, 1, 0) > 0 && (q.revents & (POLLHUP | POLLERR))) c->closing = 1;
+        }
+#endif
         fds[n].fd = c->fd, fds[n].events = (short)((c->eof ? 0 : POLLIN) | (c->out.n ? POLLOUT : 0)), idx[n++] = i;
     }
     if (poll(fds, (nfds_t)n, ms) <= 0) return;
@@ -2084,11 +2105,21 @@ static void transport_wait(int ms) {
         }
     }
     if (fds[0].revents & POLLIN) {
+#ifdef __APPLE__   /* (macos: no accept4 and no SO_PEERCRED; the flags by fcntl, the peer's user by getpeereid) */
+        const int fd = accept(listen_fd, NULL, NULL);
+        if (fd < 0) return;
+        fcntl(fd, F_SETFD, FD_CLOEXEC);
+        fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
+        uid_t peer_uid = (uid_t)-1;
+        gid_t peer_gid = (gid_t)-1;
+        if (getpeereid(fd, &peer_uid, &peer_gid) || peer_uid != getuid()) {
+#else
         const int fd = accept4(listen_fd, NULL, NULL, SOCK_NONBLOCK | SOCK_CLOEXEC);
         if (fd < 0) return;
         struct ucred cred;
         socklen_t len = sizeof cred;
         if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &cred, &len) || cred.uid != getuid()) {
+#endif
             ctl_log("control: a client of another user turned away");
             close(fd);
             return;

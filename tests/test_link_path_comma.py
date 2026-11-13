@@ -47,13 +47,13 @@ def build_tree():
     return ast.parse(BUILD_SCRIPT.read_text(encoding="utf-8"), filename=str(BUILD_SCRIPT))
 
 
-def link_functions(linux, mingw, work):
+def link_functions(linux, mingw, work, mac=False):
     """linker and HOT_ORDER as build.py has them, for that platform, with `work` as the build files folder"""
     functions = [n for n in build_tree().body if isinstance(n, ast.FunctionDef) and n.name in NAMES]
     missing = sorted(set(NAMES) - {n.name for n in functions})
     if missing:
         raise AssertionError("%s has no %s" % (BUILD_SCRIPT, ", ".join(n + "()" for n in missing)))
-    ns = {"os": os, "LINUX": linux, "kit": types.SimpleNamespace(WORK=work),
+    ns = {"os": os, "LINUX": linux, "MAC": mac, "kit": types.SimpleNamespace(WORK=work),
           "toolchain": types.SimpleNamespace(mingw=lambda: mingw)}
     exec(compile(ast.Module(body=functions, type_ignores=[]), str(BUILD_SCRIPT), "exec"), ns)
     return ns["linker"], ns["HOT_ORDER"]
@@ -121,6 +121,15 @@ class LinkerKeepsPathsWhole(LinkerCase):
                          ["-Xlinker", "-Xlink=/map:C:/Games, Zelda/hookshot.map"])
         self.assertEqual(hot_order(), ["-Xlinker", "-Xlink=/order:@" + self.order.replace("\\", "/"),
                                        "-Xlinker", "-Xlink=/ignore:4037"])
+
+    def test_macos(self):
+        """(macos) Apple's ld: its map and order file each an argument of their own; the order file's names are Mach-O's"""
+        linker, hot_order = link_functions(True, "", self.work, mac=True)
+        mapfile = os.path.join(self.work, "sa", "build", "hookshot.map")
+        self.assertEqual(linker("-map", mapfile), ["-Xlinker", "-map", "-Xlinker", mapfile])
+        macho = os.path.join(self.work, "hot_order_macho.txt")
+        self.assertEqual(hot_order(), ["-Xlinker", "-order_file", "-Xlinker", macho])
+        self.assertEqual(Path(macho).read_text(encoding="utf-8"), "_start\n")
 
     def test_no_order_without_the_list(self):
         os.remove(self.order)

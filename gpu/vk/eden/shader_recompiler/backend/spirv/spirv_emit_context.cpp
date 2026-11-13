@@ -20,6 +20,7 @@
 #include "shader_recompiler/backend/spirv/emit_spirv.h"
 #include "shader_recompiler/backend/spirv/mma_layout.h"
 #include "shader_recompiler/backend/spirv/spirv_emit_context.h"
+#include "shader_recompiler/frontend/ir/opcodes.h"   // (macos: NameOf, the global accesses counted for one exit)
 #ifndef HOOKSHOT_ENV_H   // (env_on: the switches' one rule)
 #include "hookshot_env.h"
 #endif
@@ -589,6 +590,28 @@ EmitContext::EmitContext(const Profile& profile_, const RuntimeInfo& runtime_inf
     DefineImages(program.info, image_binding, bindings.image_scaling_index);
     DefineAttributeMemAccess(program.info);
     DefineWriteStorageCasLoopFunction(program.info);
+    if (profile.global_memory_single_exit && program.info.uses_global_memory) {
+        // (macos) only the big programs with many global accesses: one exit evaluates every test of every access, which cost
+        // ~1.3 ms a frame in Kokiri Forest when every program had it, ~0.6 ms with these limits at 64 and 16000. The programs
+        // Metal took long over had 69-95 accesses in 28-47 thousand instructions (3e6fe279 and 44511d69 never finished,
+        // abccf81b took 95 s, 78ccf147 48 s); those under 22 thousand compiled in under 3 s as they were.
+        // EDEN_NX2_GM_SINGLE_EXIT_MIN_GLOBAL / _MIN_INSTS: other limits (0 and 0: every program)
+        const auto limit{[](const char* name, size_t def) {
+            const char* v{std::getenv(name)};
+            return v && *v ? static_cast<size_t>(std::strtoull(v, nullptr, 10)) : def;
+        }};
+        static const size_t min_global{limit("EDEN_NX2_GM_SINGLE_EXIT_MIN_GLOBAL", 64)};
+        static const size_t min_insts{limit("EDEN_NX2_GM_SINGLE_EXIT_MIN_INSTS", 24000)};
+        size_t insts{}, global{};
+        for (IR::Block* const block : program.blocks) {
+            for (const IR::Inst& inst : *block) {
+                ++insts;
+                const std::string_view name{IR::NameOf(inst.GetOpcode())};
+                if (name.starts_with("LoadGlobal") || name.starts_with("WriteGlobal") || name.starts_with("GlobalAtomic")) ++global;
+            }
+        }
+        gm_single_exit = global >= min_global && insts >= min_insts;
+    }
     DefineGlobalMemoryFunctions(program.info);
     DefineRescalingInput(program.info);
     DefineRenderArea(program.info);
@@ -1123,8 +1146,21 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
         }
         return OpAccessChain(it->second.second, OpConvertUToPtr(it->second.first, address), Const(0U));
     };
+    // (macos, Profile::global_memory_single_exit) the helper being defined in one exit: its result (a load's) and whether an
+    // access matched, made by define_body. A test after a match is still made but not taken (not_done), a match stores and goes on to its
+    // merge (end_then) instead of returning, and the helper returns the result at its end. Metal inlines the helpers at every
+    // access (MoltenVK's SPIRV-Cross drops DontInline), and with a return in each test its compiler did not finish 3e6fe279 and
+    // 44511d69 in 15 minutes (OoT, M4 Max); in one exit each compiles in under 2 s
+    bool se_want{false};
+    Id se_type{}, se_res{}, se_done{};
+    const auto not_done{[&](Id cond) {
+        return Sirit::ValidId(se_done) ? OpLogicalAnd(U1, OpLogicalNot(U1, OpLoad(U1, se_done)), cond) : cond;
+    }};
+    const auto end_then{[&](Id merge) {
+        if (Sirit::ValidId(se_done)) OpBranch(merge);
+    }};
     // (the page table's lookup of addr: hit(target) is called in the block where the page is mapped, its device address in target,
-    // and must end that block (a return). Falls through after it)
+    // and must end that block (a return; in one exit, the matched flag set). Falls through after it)
     // (RX_VK_FOLLOW_STORES=1: writes and atomics through the table too; off by default, see the storage buffer pass)
     static const bool follow_stores{env_on("RX_VK_FOLLOW_STORES")};
     // (hookshot) size: the access's bytes. An access that runs past its 4 KB page is left to the miss path: the table maps pages one
@@ -1143,7 +1179,8 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
         const Id page_index{OpSelect(U64, in_a, OpShiftRightLogical(U64, offset_a, Const(12U)),
                                      OpIAdd(U64, OpShiftRightLogical(U64, offset_b, Const(12U)), Constant(U64, u64{kGuestPagesBytes >> 12})))};
         const Id fits{OpULessThanEqual(U1, OpBitwiseAnd(U64, addr, Constant(U64, u64{0xfff})), Constant(U64, u64{0x1000 - size}))};
-        const Id inside{OpLogicalAnd(U1, OpLogicalAnd(U1, OpLogicalOr(U1, in_a, in_b), OpINotEqual(U1, table, Constant(U64, u64{0}))), fits)};
+        const Id inside{not_done(
+            OpLogicalAnd(U1, OpLogicalAnd(U1, OpLogicalOr(U1, in_a, in_b), OpINotEqual(U1, table, Constant(U64, u64{0}))), fits))};
         const Id then_label{OpLabel()};
         const Id else_label{OpLabel()};
         OpSelectionMerge(else_label, spv::SelectionControlMask::MaskNone);
@@ -1158,6 +1195,7 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
         OpBranchConditional(mapped, hit_label, miss_label);
         AddLabel(hit_label);
         hit(OpIAdd(U64, page, OpBitwiseAnd(U64, addr, Constant(U64, u64{0xfff}))));
+        end_then(miss_label);
         AddLabel(miss_label);
         OpBranch(else_label);
         AddLabel(else_label);
@@ -1212,14 +1250,25 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
     const auto define_body{[&](DefPtr ssbo_member, Id addr, Id element_pointer, u32 shift,
                                auto&& callback, bool add_label = true) {
         if (add_label) AddLabel();
-        // A helper may have only the page-table path, with no bound view of this type.
-        if (!Sirit::ValidId(element_pointer)) return;
+        if (se_want) {   // (one exit: the function's variables first, then their first values, below)
+            if (Sirit::ValidId(se_type)) se_res = AddLocalVariable(TypePointer(spv::StorageClass::Function, se_type), spv::StorageClass::Function);
+            se_done = AddLocalVariable(TypePointer(spv::StorageClass::Function, U1), spv::StorageClass::Function);
+        }
+        // A helper may have only the page-table path, with no bound view of this type. (one exit: the page-table path and
+        // the helper's return read the variables, so they get their first values here too)
+        if (!Sirit::ValidId(element_pointer)) {
+            if (Sirit::ValidId(se_res)) OpStore(se_res, ConstantNull(se_type));
+            if (Sirit::ValidId(se_done)) OpStore(se_done, false_value);
+            return;
+        }
         // (hookshot, global_table_loop: the tables' entries in a loop, its counter here, where the function's variables must be.
         // The CAS loops' callers open the block themselves: theirs stay written out)
         const Id table_counter{global_table_loop && add_label && !ssbo_tables.empty()
                                    ? AddLocalVariable(TypePointer(spv::StorageClass::Function, U32[1]), spv::StorageClass::Function)
                                    : Id{}};
         if (Sirit::ValidId(table_counter)) AddCapability(spv::Capability::StorageBufferArrayDynamicIndexing);   // (the tables by k)
+        if (Sirit::ValidId(se_res)) OpStore(se_res, ConstantNull(se_type));
+        if (Sirit::ValidId(se_done)) OpStore(se_done, false_value);
         const size_t num_buffers{info.storage_buffers_descriptors.size()};
         // (from Fritchii) Info::native_global_bounds: the candidate pointers the storage buffer pass bound for accesses it
         // left global (any single descriptor not in the driver bank) carry no NVN size word: the address goes to the
@@ -1254,7 +1303,7 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
                 if (!candidate[index]) {
                     continue;
                 }
-                const Id cond{OpIEqual(U1, best_index, Const(static_cast<u32>(index)))};
+                const Id cond{not_done(OpIEqual(U1, best_index, Const(static_cast<u32>(index))))};
                 const Id then_label{OpLabel()};
                 const Id else_label{OpLabel()};
                 OpSelectionMerge(else_label, spv::SelectionControlMask::MaskNone);
@@ -1263,6 +1312,7 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
                 const Id ssbo_offset{OpUConvert(U32[1], OpISub(U64, addr, bases[index]))};
                 const Id ssbo_index{OpShiftRightLogical(U32[1], ssbo_offset, Const(shift))};
                 callback(OpAccessChain(element_pointer, ssbos[index].*ssbo_member, zero, ssbo_index));
+                end_then(else_label);
                 AddLabel(else_label);
             }
         }
@@ -1299,8 +1349,8 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
                 const Id bound_end{OpIAdd(U64, ssbo_addr, OpUConvert(U64, OpShiftLeftLogical(U32[1], elements, Const(shift))))};
                 ssbo_end = OpSelect(U64, OpULessThan(U1, bound_end, ssbo_end), bound_end, ssbo_end);
             }
-            const Id cond{OpLogicalAnd(U1, OpUGreaterThanEqual(U1, addr, ssbo_addr),
-                                       OpULessThan(U1, addr, ssbo_end))};
+            const Id cond{not_done(OpLogicalAnd(U1, OpUGreaterThanEqual(U1, addr, ssbo_addr),
+                                                OpULessThan(U1, addr, ssbo_end)))};
             const Id then_label{OpLabel()};
             const Id else_label{OpLabel()};
             OpSelectionMerge(else_label, spv::SelectionControlMask::MaskNone);
@@ -1311,6 +1361,7 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
             const Id ssbo_index{OpShiftRightLogical(U32[1], ssbo_offset, Const(shift))};
             const Id ssbo_pointer{OpAccessChain(element_pointer, ssbo_id, zero, ssbo_index)};
             callback(ssbo_pointer);
+            end_then(else_label);
             AddLabel(else_label);
         }
         for (const GlobalTableVars& table : ssbo_tables) {   // (hookshot: Info::global_tables)
@@ -1353,7 +1404,7 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
                     const Id capped{OpSelect(U64, OpULessThan(U1, bound_end, ssbo_end), bound_end, ssbo_end)};
                     ssbo_end = OpSelect(U64, OpIEqual(U1, size_word, zero), bound_end, capped);
                 }
-                const Id cond{OpLogicalAnd(U1, OpUGreaterThanEqual(U1, addr, ssbo_addr), OpULessThan(U1, addr, ssbo_end))};
+                const Id cond{not_done(OpLogicalAnd(U1, OpUGreaterThanEqual(U1, addr, ssbo_addr), OpULessThan(U1, addr, ssbo_end)))};
                 const Id then_label{OpLabel()};
                 const Id else_label{OpLabel()};
                 OpSelectionMerge(else_label, spv::SelectionControlMask::MaskNone);
@@ -1362,6 +1413,7 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
                 const Id ssbo_offset{OpUConvert(U32[1], OpISub(U64, addr, ssbo_addr))};
                 const Id ssbo_index{OpShiftRightLogical(U32[1], ssbo_offset, Const(shift))};
                 callback(OpAccessChain(element_pointer, table_id, k, zero, ssbo_index));   // (ends in a return)
+                end_then(else_label);
                 AddLabel(else_label);
                 OpBranch(next);
                 AddLabel(next);
@@ -1392,7 +1444,7 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
                     const Id capped{OpSelect(U64, OpULessThan(U1, bound_end, ssbo_end), bound_end, ssbo_end)};
                     ssbo_end = OpSelect(U64, OpIEqual(U1, size_word, zero), bound_end, capped);
                 }
-                const Id cond{OpLogicalAnd(U1, OpUGreaterThanEqual(U1, addr, ssbo_addr), OpULessThan(U1, addr, ssbo_end))};
+                const Id cond{not_done(OpLogicalAnd(U1, OpUGreaterThanEqual(U1, addr, ssbo_addr), OpULessThan(U1, addr, ssbo_end)))};
                 const Id then_label{OpLabel()};
                 const Id else_label{OpLabel()};
                 OpSelectionMerge(else_label, spv::SelectionControlMask::MaskNone);
@@ -1401,10 +1453,23 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
                 const Id ssbo_offset{OpUConvert(U32[1], OpISub(U64, addr, ssbo_addr))};
                 const Id ssbo_index{OpShiftRightLogical(U32[1], ssbo_offset, Const(shift))};
                 callback(OpAccessChain(element_pointer, table_id, Const(k), zero, ssbo_index));
+                end_then(else_label);
                 AddLabel(else_label);
             }
         }
-        record_miss(addr);   // (EvilOOT, RX_VK_MISS_LOG: here no buffer held the address)
+        if (Sirit::ValidId(se_done) && miss_index != SIZE_MAX) {   // (one exit: only when nothing matched, as before)
+            const Id missed{OpLogicalNot(U1, OpLoad(U1, se_done))};
+            const Id then_label{OpLabel()};
+            const Id end_label{OpLabel()};
+            OpSelectionMerge(end_label, spv::SelectionControlMask::MaskNone);
+            OpBranchConditional(missed, then_label, end_label);
+            AddLabel(then_label);
+            record_miss(addr);
+            OpBranch(end_label);
+            AddLabel(end_label);
+        } else {
+            record_miss(addr);   // (EvilOOT, RX_VK_MISS_LOG: here no buffer held the address)
+        }
     }};
     // (hookshot) the helpers below are DontInline: inlined at each of a culling program's hundreds of global accesses, with EvilOOT's
     // fuller buffer search, NVIDIA's compiler took 41 s on 53caac5f and the driver reset. Lichii PR 408 found the same (161 s for 68 programs)
@@ -1424,13 +1489,19 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
         const Id func_id{OpFunction(type, inline_here ? spv::FunctionControlMask::Inline : spv::FunctionControlMask::DontInline,
                                     function_type)};
         const Id addr{OpFunctionParameter(U64)};
-        define_body(ssbo_member, addr, element_pointer, shift,
-                    [&](Id ssbo_pointer) { OpReturnValue(OpLoad(type, ssbo_pointer)); });
-        guest_lookup(addr, 1U << shift, [&](Id target) {
-            if (gp_level >= 3) OpReturnValue(psb_load(type, target, 4U));
-            else OpReturnValue(ConstantNull(type));
+        const bool single{gm_single_exit};
+        se_want = single, se_type = type;
+        define_body(ssbo_member, addr, element_pointer, shift, [&](Id ssbo_pointer) {
+            if (single) OpStore(se_res, OpLoad(type, ssbo_pointer)), OpStore(se_done, true_value);
+            else OpReturnValue(OpLoad(type, ssbo_pointer));
         });
-        OpReturnValue(ConstantNull(type));
+        guest_lookup(addr, 1U << shift, [&](Id target) {
+            const Id value{gp_level >= 3 ? psb_load(type, target, 4U) : ConstantNull(type)};
+            if (single) OpStore(se_res, value), OpStore(se_done, true_value);
+            else OpReturnValue(value);
+        });
+        OpReturnValue(single ? OpLoad(type, se_res) : ConstantNull(type));
+        se_want = false, se_type = se_res = se_done = Id{};
         OpFunctionEnd();
         return func_id;
     }};
@@ -1439,15 +1510,20 @@ void EmitContext::DefineGlobalMemoryFunctions(const Info& info) {
         const Id func_id{OpFunction(void_id, spv::FunctionControlMask::DontInline, function_type)};
         const Id addr{OpFunctionParameter(U64)};
         const Id data{OpFunctionParameter(type)};
+        const bool single{gm_single_exit};
+        se_want = single, se_type = Id{};
         define_body(ssbo_member, addr, element_pointer, shift, [&](Id ssbo_pointer) {
             OpStore(ssbo_pointer, data);
-            OpReturn();
+            if (single) OpStore(se_done, true_value);
+            else OpReturn();
         });
         if (follow_stores) guest_lookup(addr, 1U << shift, [&](Id target) {   // (hookshot: through the page table, as the loads: the culling's outputs)
             if (gp_level >= 3) OpStore(psb_member(type, target), data, spv::MemoryAccessMask::Aligned, 4U);
-            OpReturn();
+            if (single) OpStore(se_done, true_value);
+            else OpReturn();
         });
         OpReturn();
+        se_want = false, se_type = se_res = se_done = Id{};
         OpFunctionEnd();
         return func_id;
     }};

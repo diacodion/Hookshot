@@ -36,6 +36,9 @@ const char *hos_version(void) { return HOOKSHOT_VERSION; }   /* (discord_rpc.c's
 #include <sys/prctl.h>
 #include <sys/sysinfo.h>
 #endif
+#ifdef __APPLE__
+#include "posix/darwin.h"   /* (macos) */
+#endif
 #include <errno.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -155,6 +158,7 @@ static int reserve_guest(void) {
        (udmabuf, gpu/vk/vk_memory.cpp import_dma_buf) instead of a host pointer: amdgpu checks every page of a host-pointer
        import again at each command submission, 15-45 ms a submission in Kokiri Forest. Pages of a shared mapping are freed
        with MADV_REMOVE, not MADV_DONTNEED (hos_posix_guest_discard). HOS_GUEST_MEMFD=0: anonymous memory, as before */
+#ifdef __linux__   /* (macos: anonymous memory; MoltenVK takes the game's pages as host pointers, Metal's no-copy buffers) */
     {
         /* (only where /dev/udmabuf can be opened: a shared mapping's pages cannot be host-pointer imports (RADV:
            VK_ERROR_INVALID_EXTERNAL_HANDLE), so a pool udmabuf refused would be no import at all. A pool larger than udmabuf's
@@ -208,13 +212,18 @@ static int reserve_guest(void) {
             hos_log("mem: no memfd for the guest window (errno %d): anonymous memory", errno);
         }
     }
+#else
+    if (startup_stderr >= 0) close(startup_stderr), startup_stderr = -1;
+#endif
     if (mmap((void *)A64_HOST_BASE, GUEST_SPACE, PROT_READ | PROT_WRITE,
              MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE | MAP_NORESERVE, -1, 0) != (void *)A64_HOST_BASE)
-        return 0;
+        return 0;   /* (macos: the address is a hint there, darwin.h; something else at 16 TB fails the same way) */
     /* (issue 312) no transparent huge pages in the guest window: the renderer imports its pools as userptr memory, and every
        collapse khugepaged makes in them changes their mappings, which the kernel answers by pinning the pages again at the
        next submission: ~250 ms a submit on RADV while the GPU sat idle. HOS_THP=1: as before */
+#ifdef __linux__
     if (!env_on("HOS_THP")) madvise((void *)A64_HOST_BASE, GUEST_SPACE, MADV_NOHUGEPAGE);
+#endif
 #ifdef __linux__
     /* (HOS_NO_THP=1, experiment: none outside the window either. With THP "always" 400-450 MB of the host heap's and the binary's bss are huge
        pages, each resident whole when any of its 2 MB is touched) */
@@ -230,7 +239,11 @@ static int reserve_guest(void) {
 int hos_guest_memfd = -1;
 int hos_posix_guest_memfd(void) { return hos_guest_memfd; }
 int hos_posix_guest_discard(void *p, size_t n) {
+#ifdef __APPLE__
+    return hos_darwin_discard(p, n);   /* (macos: fresh zero pages, posix/darwin.h) */
+#else
     return madvise(p, n, hos_guest_memfd >= 0 ? MADV_REMOVE : MADV_DONTNEED);
+#endif
 }
 #endif
 
@@ -575,7 +588,7 @@ void hos_oot_cct_speed(Ctx *c, uint64_t controller, int per_second) {
     memcpy(&c->vreg[0][0], &speed, sizeof speed);
 }
 
-#if defined(_WIN32) || defined(__linux__)   /* (the debug tools: host/posix has what they call) */
+#if defined(_WIN32) || defined(__linux__) || defined(__APPLE__)   /* (the debug tools: host/posix has what they call) */
 /* OneShotAddOrRemovePouchContent (f_828d4a70) for one pouch content by actor name: delta > 0 adds, < 0 removes.
    Returns the event status (top bits of the result word), or -1 when the pouch is not ready. */
 static int oot_pouch_change(Ctx *c, const char *name, int delta) {
@@ -1432,7 +1445,7 @@ int hos_oot_player_free(void) {
 }
 
 int hos_oot_flight_shortcut_ready(void) {
-#if defined(_WIN32) || defined(__linux__)   /* (the debug tools: host/posix has what they call) */
+#if defined(_WIN32) || defined(__linux__) || defined(__APPLE__)   /* (the debug tools: host/posix has what they call) */
     const int64_t seen = __atomic_load_n(&flight_player_seen, __ATOMIC_RELAXED);
     return seen && hos_now_ns() - seen < 250000000;
 #else
@@ -1440,7 +1453,7 @@ int hos_oot_flight_shortcut_ready(void) {
 #endif
 }
 
-#if defined(_WIN32) || defined(__linux__)   /* (the debug tools: host/posix has what they call) */
+#if defined(_WIN32) || defined(__linux__) || defined(__APPLE__)   /* (the debug tools: host/posix has what they call) */
 static void oot_write_flight_rotation(Ctx *c, uint64_t matrix) {
     const float s = sinf(flight_transform_yaw), co = cosf(flight_transform_yaw);
     const float rotation[3][3] = {{co, 0, s}, {0, 1, 0}, {-s, 0, co}};
@@ -1455,7 +1468,7 @@ static void oot_write_flight_rotation(Ctx *c, uint64_t matrix) {
 #endif
 
 void hos_oot_flight_rotation(Ctx *c, uint64_t controller, uint64_t matrix) {
-#if defined(_WIN32) || defined(__linux__)   /* (the debug tools: host/posix has what they call) */
+#if defined(_WIN32) || defined(__linux__) || defined(__APPLE__)   /* (the debug tools: host/posix has what they call) */
     if (flight_transform_controller == controller) oot_write_flight_rotation(c, matrix);
 #else
     (void)c;
@@ -1465,7 +1478,7 @@ void hos_oot_flight_rotation(Ctx *c, uint64_t controller, uint64_t matrix) {
 }
 
 void hos_oot_flight_pose(Ctx *c, uint64_t actor, uint64_t matrix) {
-#if defined(_WIN32) || defined(__linux__)   /* (the debug tools: host/posix has what they call) */
+#if defined(_WIN32) || defined(__linux__) || defined(__APPLE__)   /* (the debug tools: host/posix has what they call) */
     if (flight_pose_actor == actor) {
         flight_pose_actor = 0;
         oot_write_flight_rotation(c, matrix);
@@ -1554,7 +1567,7 @@ int hos_oot_opening(Ctx *c, int mode) {
 }
 
 void hos_oot_lift_player(Ctx *c, uint64_t actor) {
-#if defined(_WIN32) || defined(__linux__)   /* (the debug tools: host/posix has what they call) */
+#if defined(_WIN32) || defined(__linux__) || defined(__APPLE__)   /* (the debug tools: host/posix has what they call) */
     flight_pose_actor = 0;
     if (recomp_load64(c, actor) != 0x84b45e18ULL) return;
     const uint64_t components = recomp_load64(c, actor + 624);
@@ -1577,7 +1590,7 @@ void hos_oot_lift_player(Ctx *c, uint64_t actor) {
 #endif
 }
 
-#if defined(_WIN32) || defined(__linux__)   /* (the debug tools: host/posix has what they call) */
+#if defined(_WIN32) || defined(__linux__) || defined(__APPLE__)   /* (the debug tools: host/posix has what they call) */
 static void oot_build_free_view(Ctx *c, uint64_t view, uint64_t out) {
     int rx_option(int id, int otherwise);
     static uint64_t active_view;
@@ -1638,7 +1651,7 @@ static void oot_build_free_view(Ctx *c, uint64_t view, uint64_t out) {
 #endif
 
 void hos_oot_free_view(Ctx *c, uint64_t view) {
-#if defined(_WIN32) || defined(__linux__)   /* (the debug tools: host/posix has what they call) */
+#if defined(_WIN32) || defined(__linux__) || defined(__APPLE__)   /* (the debug tools: host/posix has what they call) */
     int rx_option(int id, int otherwise);
     if (!view || recomp_load64(c, view) != 0x84c18a88ULL) return;
 
@@ -2099,6 +2112,12 @@ static DWORD WINAPI game_thread(void *p) {
 static void driver_cache_room(void) {
     setenv("__GL_SHADER_DISK_CACHE_SIZE", "10737418240", 0);   /* (10 GiB, bytes) */
     setenv("MESA_SHADER_CACHE_MAX_SIZE", "10G", 0);
+#ifdef __APPLE__
+    /* (macos) MoltenVK encodes a submission's Metal commands in vkQueueSubmit, on the replay's thread: ~8 ms of an M4 Max's
+       frame in Kokiri Forest. Asynchronous, it encodes them on a thread of its own, in the order they were submitted: 30 -> 33.5
+       fps at the game's 3/4 (docs/macos.md) */
+    setenv("MVK_CONFIG_SYNCHRONOUS_QUEUE_SUBMITS", "0", 0);
+#endif
 }
 #include <errno.h>
 #include <sys/stat.h>

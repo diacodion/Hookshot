@@ -691,7 +691,12 @@ void ensure_layout(Program& p) {
         add(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, st.vk_stage, st.info.image_descriptors);
     }
     // Compare the driver's push cost with the existing per-recording pools. Keep helper passes' push layouts unchanged.
-    static const bool descriptor_sets = env_on("RX_VK_DESCRIPTOR_SETS");
+    // (macos) MoltenVK takes the pools by default. Eden's SPIR-V declares one binding several times (a constant buffer's or
+    // a storage buffer table's views by type); SPIRV-Cross can alias a descriptor array that way only inside a Metal argument
+    // buffer, and a pushed set is never one ("Attempting to alias same binding with a descriptor array which is not
+    // implemented through argument buffers"). RX_VK_DESCRIPTOR_SETS=1 / 0: from a pool / pushed, on any driver
+    static const bool descriptor_sets = getenv("RX_VK_DESCRIPTOR_SETS") ? env_on("RX_VK_DESCRIPTOR_SETS")
+                                                                        : dev.driver_id == VK_DRIVER_ID_MOLTENVK;
     p.push = !descriptor_sets && dev.push_descriptor && vkCmdPushDescriptorSetKHR && total <= dev.max_push_descriptors;
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     if (p.push) li.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR;
@@ -1010,6 +1015,20 @@ void play_cache_save(int wait_ms = -1, bool queue = true) {
         }
     }
 }
+/// (macos) No VkPipelineCache handed to MoltenVK. It compiles a pipeline's Metal libraries while holding its pipeline cache's
+/// one lock (MVKPipelineCache::getShaderLibrary), so with every pipeline made through one cache the workers' compiles queued
+/// behind each other, and a draw that waits for its pipeline (pipe_wait_ms) waited behind compiles it had nothing to do with:
+/// submits of 2-12 s after a save loaded (samples of the stalls: the replay and three workers in that lock, one compiling).
+/// Without it MoltenVK keeps each shader module's libraries under the module's own lock. Kokiri Forest from a cold Metal
+/// cache, M4 Max, 2026-11-12: frames of over 250 ms before it settled 29.5 s against 129 s, in play after 50 s against 78 s,
+/// every pipeline compiled after 148 s against 197 s (with the global memory helpers in one exit; before that two workers
+/// were held by compiles that never finished, and the full warm-up came out slower without the cache). Only the asks without
+/// a cache: no better than before. Nothing else is lost: pcache is neither read nor saved on MoltenVK (pcache_init).
+/// RX_VK_MVK_PIPELINE_CACHE=1: the cache, as before
+bool driver_cache_off() {
+    static const bool off = dev.driver_id == VK_DRIVER_ID_MOLTENVK && !env_on("RX_VK_MVK_PIPELINE_CACHE");
+    return off;
+}
 /// Before play, a pipeline made with pcache. In play pcache is left as it was read: asked of it first, a pipeline new to it would
 /// grow it all the same (NVIDIA copies in what it takes from its own cache). Asked without compiling
 /// (VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT), in this order:
@@ -1031,6 +1050,7 @@ void play_cache_save(int wait_ms = -1, bool queue = true) {
 thread_local bool ask_start_first = false;
 template <class CI>
 VkResult create_cached(VkResult (*create)(VkPipelineCache, const CI*, VkPipeline*), const CI* ci, VkPipeline* pl) {
+    if (driver_cache_off()) return create(VK_NULL_HANDLE, ci, pl);
     PlayCache* g = play_cache.load();
     if (!g) return create(pcache, ci, pl);
     const bool ask_only = (ci->flags & VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT) != 0;
@@ -1082,8 +1102,15 @@ bool play_cache_in_use() { return play_cache.load() != nullptr; }
 bool pcache_no_save = false;   // (RX_VK_PCACHE_LOAD=0: pcache_init)
 // (RX_VK_PCACHE_LOAD=0, an A/B of what the file costs in memory: its 2.5 GB read whole and held by the driver. The cache
 // starts empty and is not saved; the driver's own shader cache is all there is)
+// (macos) MoltenVK: off unless RX_VK_PCACHE_LOAD says otherwise. With the file of an earlier run loaded (60 MB of Metal shader
+// source after a few minutes of play), the first compute pipeline of gameplay never came back from Metal's compiler and the
+// game stood still; without it the same run plays. Metal keeps its own compiled shaders across runs (and pcache is not handed
+// to MoltenVK at all: driver_cache_off)
 bool pcache_load_off() {
-    static const bool off = [] { const char* e = getenv("RX_VK_PCACHE_LOAD"); return e && env_value_off(e); }();   // (hookshot_env.h: 0/off/false/no)
+    static const bool off = [] {
+        const char* e = getenv("RX_VK_PCACHE_LOAD");
+        return e ? env_value_off(e) : dev.driver_id == VK_DRIVER_ID_MOLTENVK;   // (hookshot_env.h: 0/off/false/no)
+    }();
     return off;
 }
 /// (hookshot) The pipeline cache's files go when they were made for another translator than this one (program_cache_stamp,
@@ -1483,7 +1510,7 @@ VkResult graphics_with(VkPipelineCache cache, const VkGraphicsPipelineCreateInfo
     if (cache && cache == pcache) return cached_graphics(ci, pl);
     IntelDriverGate gate(compiles_nothing(ci->flags));
     if (gate.busy) return intel_gate_busy();
-    return guarded_graphics_held(cache, ci, pl);
+    return guarded_graphics_held(driver_cache_off() ? VK_NULL_HANDLE : cache, ci, pl);
 }
 
 /// A target's write mask: the state's channel mask, nothing for a target the fragment shader leaves unwritten
@@ -2773,6 +2800,7 @@ VkPipeline build_graphics(const Program& p, const NvnState& s, const Targets& at
         static std::atomic<int> logged;
         if (logged++ < 10) logf("vk: graphics pipeline for %016llx not made (%d)", (unsigned long long)p.key, (int)r);
         pl = VK_NULL_HANDLE;
+        if (p.mesh) mesh_native_refused(p.key);   // (its draws take the compute fallback from now on: vk_shader.cpp)
     }
     pcache_built_since_save += !driver_cache_only && !quick_build;
     if (!quick_build) {   // (hookshot: quick builds are counted apart, in quick_pipeline's log line)
@@ -6970,13 +6998,33 @@ bool vertex_set_same(uint64_t stamp, const uint64_t* addr, const uint64_t* size,
     }
     return true;
 }
+/// 8-bit indices as 16-bit ones; with primitive restart on, 8-bit's restart index (0xFF) becomes 16-bit's (0xFFFF)
+void widen_u8_indices(const uint8_t* in, uint16_t* out, uint64_t n, bool restart) {
+    for (uint64_t i = 0; i < n; i++) out[i] = restart && in[i] == 0xFF ? 0xFFFF : in[i];
+}
+/// (macos) 8-bit indices made 16-bit by the replay (draw): on MoltenVK, unless RX_VK_U8_TO_U16=0 (and =1 tries it elsewhere)
+bool u8_indices_widened() {
+    static const bool on = [] {
+        const char* e = getenv("RX_VK_U8_TO_U16");
+        return e ? atoi(e) != 0 : dev.driver_id == VK_DRIVER_ID_MOLTENVK;
+    }();
+    return on;
+}
 /// The index buffer already bound on this command buffer (a new recording is not)
 bool index_bind_same(uint64_t buffer, uint64_t offset, uint32_t type, uint64_t cached_buffer, uint64_t cached_offset,
                      uint32_t cached_type, int on) {
     return on && buffer && buffer == cached_buffer && offset == cached_offset && type == cached_type;
 }
-void bind_index(VkCommandBuffer cmd, VkBuffer buffer, VkDeviceSize offset, VkIndexType type) {
+void bind_index(VkCommandBuffer cmd, VkBuffer buffer, VkDeviceSize offset, VkIndexType type, VkDeviceSize size = 0) {
     const uint64_t b = (uint64_t)(uintptr_t)buffer;
+    // (macos) 8-bit indices on MoltenVK: bound with the size the draw reads. MoltenVK makes 16-bit indices of the whole bound
+    // range before every such draw, and the range of a plain bind is the rest of the buffer, here the rest of an imported pool
+    // (tens of MB a draw, a hundred draws a frame: Metal refused the frame's command buffer, "Insufficient Memory")
+    if (size && type == VK_INDEX_TYPE_UINT8_EXT && dev.maintenance5 && vkx::vkCmdBindIndexBuffer2KHR) {
+        vkCmdBindIndexBuffer2KHR(cmd, buffer, offset, size, type);
+        last_ib.on = false;
+        return;
+    }
     if (index_bind_same(b, (uint64_t)offset, (uint32_t)type, last_ib.buffer, last_ib.offset, last_ib.type, last_ib.on))
         return;
     vkCmdBindIndexBuffer(cmd, buffer, offset, type);
@@ -7990,9 +8038,12 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
         BufferRef cnt = d.count_addr ? gpu_buffer_bind(d.count_addr, 4, false) : BufferRef{};
         if (!args) SKIP_HERE();
         if (d.indexed) {
-            BufferRef ib = gpu_buffer_bind(d.ibuf, 4, false);
+            // (macos: an indirect draw's index count is not known here; 8-bit indices get 16 KB of them, bind_index)
+            const uint64_t ib_bytes = d.itype == 0 && dev.maintenance5 ? 16384 : 4;
+            BufferRef ib = gpu_buffer_bind(d.ibuf, ib_bytes, false);
+            if (!ib && ib_bytes > 4) ib = gpu_buffer_bind(d.ibuf, 4, false);
             if (!ib) SKIP_HERE();
-            bind_index(cmd, ib.buffer, ib.offset, itype);
+            bind_index(cmd, ib.buffer, ib.offset, itype, ib_bytes);
             occ.issue();
             if (cnt) vkCmdDrawIndexedIndirectCount(cmd, args.buffer, args.offset, cnt.buffer, cnt.offset, std::max(d.max, 1), ind_stride);
             else vkCmdDrawIndexedIndirect(cmd, args.buffer, args.offset, std::max(d.max, 1), ind_stride);
@@ -8001,6 +8052,25 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
             if (cnt) vkCmdDrawIndirectCount(cmd, args.buffer, args.offset, cnt.buffer, cnt.offset, std::max(d.max, 1), ind_stride);
             else vkCmdDrawIndirect(cmd, args.buffer, args.offset, std::max(d.max, 1), ind_stride);
         }
+    } else if (d.indexed && d.itype == 0 && u8_indices_widened()) {
+        // (macos) 8-bit indices made 16-bit here, into the recording's stream, as the quads above (u8_indices_widened). Metal has
+        // no 8-bit indices: MoltenVK converts them with a compute dispatch before each such draw, which ends the Metal render pass
+        // and starts it again, its targets stored and loaded (~75 a frame in Kokiri Forest: 29.7 -> 30.6 fps). The restart index
+        // of a strip or fan, 0xFF, becomes 16-bit's 0xFFFF. An indirect draw's count is not known here: MoltenVK's, as before
+        const uint64_t n = (uint64_t)std::max(d.count, 1);
+        if (n > (1u << 24)) SKIP_HERE();
+        static thread_local std::vector<uint8_t> raw;
+        raw.resize(n);
+        if (!memory_read_as_submitted(d.ibuf, raw.data(), n)) SKIP_HERE();
+        const uint64_t at16 = stream_alloc(n * 2, 16);
+        if (at16 == UINT64_MAX) SKIP_HERE();
+        uint16_t* out = reinterpret_cast<uint16_t*>(cur->mapped + at16);
+        const bool restart = s.restart && topo != VK_PRIMITIVE_TOPOLOGY_POINT_LIST && topo != VK_PRIMITIVE_TOPOLOGY_LINE_LIST &&
+                             topo != VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST && topo != VK_PRIMITIVE_TOPOLOGY_PATCH_LIST;
+        widen_u8_indices(raw.data(), out, n, restart);
+        bind_index(cmd, cur->stream, at16, VK_INDEX_TYPE_UINT16);
+        FINE_SCOPE(FT_DRAWCALL);
+        vkCmdDrawIndexed(cmd, (uint32_t)d.count, (uint32_t)std::max(1, d.instances), 0, d.base_vertex, (uint32_t)d.base_instance);
     } else if (d.indexed) {
         const uint32_t unit = d.itype == 0 ? 1 : d.itype == 1 ? 2 : 4;
         BufferRef ib;
@@ -8009,7 +8079,7 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
             ib = gpu_buffer_bind(d.ibuf, (uint64_t)std::max(d.count, 1) * unit, false);
             if (!ib) SKIP_HERE();
             FINE_N(FC_IBIND, 1);
-            bind_index(cmd, ib.buffer, ib.offset, itype);
+            bind_index(cmd, ib.buffer, ib.offset, itype, (uint64_t)std::max(d.count, 1) * unit);
         }
         FINE_SCOPE(FT_DRAWCALL);
         occ.issue();
@@ -8900,7 +8970,7 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background, b
         // (into the app's pipeline cache, saved to hookshot_vk_pipelines.bin: without it the next start compiled them again in play
         // where the driver's own cache missed them, AMD's 15 s culling compiles each time)
         IntelDriverGate gate;
-        if (guarded_compute_held(pcache, &ci, &pl) == VK_SUCCESS && pl) {
+        if (guarded_compute_held(driver_cache_off() ? VK_NULL_HANDLE : pcache, &ci, &pl) == VK_SUCCESS && pl) {
             vkDestroyPipeline(dev.device, pl, nullptr);
             libs++;
             pcache_built_since_save++;
