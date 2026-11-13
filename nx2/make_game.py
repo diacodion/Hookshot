@@ -587,11 +587,12 @@ def check_cache_paths(out, paths):
                  "Choose a different output folder." % path)
 
 
-def check_cpu():
+def check_cpu(fsr=False):
     """(linux) The AppImage's Vulkan back end (HOOKSHOT_VK_PREBUILT) is built for x86-64-v3 elsewhere
     (scripts/linux/appimage.sh), while the game follows this PC (nx2/host_cpu.py): on a CPU without AVX2 it would stop at
-    its start. Said now, before the game is read, not 40 minutes in (issue 363)"""
-    if not os.environ.get("HOOKSHOT_VK_PREBUILT") or os.environ.get("RX_MARCH"):
+    its start. Said now, before the game is read, not 40 minutes in (issue 363). fsr: this build has AMD FSR 4, which compiles its
+    own back end (nx2/build.py prebuilt_renderer), for this PC"""
+    if not os.environ.get("HOOKSHOT_VK_PREBUILT") or os.environ.get("RX_MARCH") or fsr:
         return
     sys.path.insert(0, HERE)
     from host_cpu import host_march
@@ -736,6 +737,9 @@ def check_linux_prerequisites(work=None):
                 missing.append("%s header %s (CPM package %s: RX_CPM, clone/cpm, work/eg/.cache/cpm, then sibling "
                                "mkw-recomp/Eglantine caches; then %s, package root or include/; then /usr/local, /usr)"
                                % (name, probe, package, env))
+        if build.FSR and not os.path.isfile(os.path.join(build.FSR_HEADERS, "api", "include", "ffx_api.h")):
+            missing.append("AMD's FSR API headers in %s (AMD FSR 4: third_party/fidelityfx; or build without --fsr)"
+                           % os.path.normpath(build.FSR_HEADERS))
     build.ffmpeg_linux(missing)
     cc = build.toolchain.find("clang")
     # A source checkout also builds a64emit with clang++, even with a prebuilt renderer.
@@ -2180,26 +2184,32 @@ def main(a=None):
     a.language = build_language(a, out)   # (now: the folder's own language.txt is still the one the player left)
     warn_slow_disk(out, work)   # (a warning, not a stop: a hard drive still builds, only much slower)
     check_writable(out)
-    check_cpu()   # (no game read yet: the AppImage on a CPU without AVX2 stops here)
+    # (AMD FSR 4: the build's switch for nx2/build.py, set or cleared here, before the checks: on Linux it compiles its own
+    # Vulkan back end, as with DLSS, so the AppImage's prebuilt one is neither checked nor used. One set in the shell is not
+    # taken for this build's: --fsr, or the folder's mark, decides)
+    fsr = fsr_wanted(a, out)
+    if fsr:
+        os.environ["HOOKSHOT_FSR"] = "1"
+    else:
+        os.environ.pop("HOOKSHOT_FSR", None)
+    check_cpu(fsr)   # (no game read yet: the AppImage on a CPU without AVX2 stops here)
     if getattr(a, "fetch_ngx_sdk", False):
         fetch_ngx_sdk(a)   # (the SDK selects a source renderer instead of HOOKSHOT_VK_PREBUILT)
     check_windows_sdk(work)
     stop_stray_compilers(work, a.default_work)
     drop_stale_objects(work)
-    # (AMD FSR 4: the build's switch for nx2/build.py, and the folder's mark for the next --update)
-    if fsr_wanted(a, out):
-        os.environ["HOOKSHOT_FSR"] = "1"
+    # (AMD FSR 4: the folder's mark for the next --update)
+    if fsr:
         if getattr(a, "fetch_fsr_runtime", False) and not LINUX:
             fetch_fsr_runtime(a)
         elif getattr(a, "fetch_fsr_runtime", False):
             print("--fetch-fsr-runtime: AMD publishes this runtime for Windows only; on Linux see the readme "
                   "(amd_fidelityfx_upscaler_vk.so)", flush=True)
         open(os.path.join(out, FSR_MARK), "w").close()
-        if os.environ.get("HOOKSHOT_VK_PREBUILT"):   # (the AppImage's back end, built without FSR 4)
-            print("--fsr: this build uses the prebuilt Vulkan back end (HOOKSHOT_VK_PREBUILT), which has no AMD FSR 4: the "
-                  "Upscaler row will not offer it", flush=True)
+        if os.environ.get("HOOKSHOT_VK_PREBUILT"):   # (the AppImage's back end, built without FSR 4: nx2/build.py prebuilt_renderer)
+            print("--fsr: the Vulkan back end is compiled here with AMD FSR 4, not the prebuilt one (HOOKSHOT_VK_PREBUILT)",
+                  flush=True)
     else:
-        os.environ.pop("HOOKSHOT_FSR", None)
         if os.path.isfile(os.path.join(out, FSR_MARK)):
             os.remove(os.path.join(out, FSR_MARK))
     exefs = os.path.join(work, "exefs")

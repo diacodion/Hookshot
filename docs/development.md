@@ -254,6 +254,7 @@ A build reads and writes tens of gigabytes. When the game folder or the build fi
 | `RX_HOT_OPT=<level>` | The hot pieces' optimisation level (default `O2`); `O1` for [a faster build for development](#a-faster-build-for-development) |
 | `RX_MARCH=<level>` | The CPU level to build for (default this PC's: `x86-64-v3`, else `x86-64-v2`, else `x86-64`) |
 | `RX_VK_ONLY=1` | Only the Vulkan back end, with no lift |
+| `HOOKSHOT_VK_PREBUILT=<hookshot_vk.so>` | (Linux) The Vulkan back end as built already, the AppImage's; set aside by a build with DLSS (`HOOKSHOT_NGX_SDK`) or AMD FSR 4 (`HOOKSHOT_FSR=1`, `make_game.py --fsr`), which compiles its own |
 | `OOT_WORK`, `OOT_DUMP`, `OOT_EXEFS`, `OOT_ROMFS` | The work folder and the dump's folders, over `work/dump.txt` |
 
 The Windows Builder's own choices set two of these for its build. **Build workers**: Automatic keeps `HOOKSHOT_JOBS`

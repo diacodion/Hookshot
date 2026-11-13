@@ -214,8 +214,11 @@ NGX_SDK = ngx_sdk(os.environ.get("HOOKSHOT_NGX_SDK", ""), LINUX)
 NGX_MSVC_RT = "vk_ngx_msvc_rt.cpp"
 # HOOKSHOT_FSR=1: the Vulkan back end with AMD FSR 4 (gpu/vk/vk_fsr4.cpp), from AMD's FSR API headers (third_party/fidelityfx,
 # MIT). AMD's signed DLLs are not part of the build: the user's, loaded at run time. Off without it (make_game.py --fsr sets
-# it; the camera jitter it needs is in every build: nx2/oot_jitter.py)
+# it; the camera jitter it needs is in every build: nx2/oot_jitter.py). The AppImage's prebuilt back end has none, so a Linux
+# build with it compiles its own, as with NVIDIA DLSS (prebuilt_renderer), from the headers the AppImage carries (FSR_HEADERS,
+# which make_game.py's Linux check looks for before the game is read)
 FSR = os.environ.get("HOOKSHOT_FSR", "") == "1"
+FSR_HEADERS = os.path.join(kit.HERE, "..", "third_party", "fidelityfx")
 
 
 def ngx_link(sdk, mingw):
@@ -309,8 +312,8 @@ def vulkan_headers(work=None):
 
 
 def prebuilt_renderer():
-    # The AppImage's renderer has no NGX: an SDK build compiles its own instead.
-    return "" if NGX_SDK else os.environ.get("HOOKSHOT_VK_PREBUILT", "")
+    # The AppImage's renderer has neither NGX nor AMD FSR 4: a build with either compiles its own instead.
+    return "" if NGX_SDK or FSR else os.environ.get("HOOKSHOT_VK_PREBUILT", "")
 
 
 def cache_put(obj, key):

@@ -12,7 +12,8 @@
 # otherwise empty one, so nothing of the checkout or of CI's caches stands in for what the image lacks:
 #   - AppRun --cli --help: nx2/make_game.py, as the builder window starts it;
 #   - nx2/build.py --standalone --dry-run, as make_game.py runs it: its whole start-up up to the compile, which is where
-#     the game's lifted code is first needed. Every other file the compile would read must be in the image.
+#     the game's lifted code is first needed. Every other file the compile would read must be in the image. Once more with
+#     AMD FSR 4 (HOOKSHOT_FSR=1), which compiles the Vulkan back end from the image's sources and AMD's FSR API headers.
 # Neither may write into the image's tree: on a player's PC it is read-only.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
@@ -54,6 +55,11 @@ echo "== nx2/build.py --standalone --dry-run (as nx2/make_game.py runs it, with 
 # (-B: no __pycache__ written into the image's tree. make_game.py's other settings: nx2/make_game.py, the compile's run())
 (cd "$T" && in_image env OOT_WORK="$TMP/work" RX_RELEASE=1 A64_HOT_CHUNK=1 PYTHONIOENCODING=utf-8 \
     "$R/usr/python/bin/python3" -I -B -u -X utf8 nx2/build.py --standalone --jobs 1 --dry-run)
+
+echo "== the same with AMD FSR 4 (make_game.py --fsr): the Vulkan back end compiled from the image's sources and AMD's headers"
+(cd "$T" && in_image env OOT_WORK="$TMP/work-fsr" RX_RELEASE=1 A64_HOT_CHUNK=1 PYTHONIOENCODING=utf-8 HOOKSHOT_FSR=1 \
+    "$R/usr/python/bin/python3" -I -B -u -X utf8 nx2/build.py --standalone --jobs 1 --dry-run) | tee "$TMP/fsr.txt"
+grep -q "with AMD FSR 4" "$TMP/fsr.txt" || { echo "a build with AMD FSR 4 did not compile its own Vulkan back end"; exit 1; }
 
 # (Python's own __pycache__ aside: AppRun runs Python with -I, which writes it where it can, and does without where it cannot)
 written=$(find "$R" -type f -newer "$TMP/before" ! -path "*/__pycache__/*" -print)

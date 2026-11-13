@@ -91,6 +91,15 @@ class PlayerBuildFromTheAppImage(unittest.TestCase):
         self.assertNotIn("as built", r.stdout)   # (the back end compiled here, not the prebuilt one)
         self.assertRegex(r.stdout, r"dry run: [1-9]\d* files to compile besides the lift's, 0 missing")
 
+    def test_fsr_compiles_the_back_end_from_the_packaged_tree(self):
+        # (AMD FSR 4 chosen: the prebuilt back end has none, so the build compiles gpu/vk from the image's tree with AMD's FSR
+        # API headers, which the image carries in third_party/fidelityfx)
+        r = dry_run(self.tools, self.lib, self.root, HOOKSHOT_FSR="1")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("with AMD FSR 4", r.stdout)
+        self.assertNotIn("as built", r.stdout)   # (the back end compiled here, not the prebuilt one)
+        self.assertRegex(r.stdout, r"dry run: [1-9]\d* files to compile besides the lift's, 0 missing")
+
     def test_a_file_the_image_lacks_fails(self):
         first = (self.tools / "third_party/opus/sources.txt").read_text().split()[0]
         (self.tools / "third_party/opus" / first).unlink()

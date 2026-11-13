@@ -114,15 +114,15 @@ class AppImageCheck(unittest.TestCase):
     def setUp(self):
         self.make_game = load("make_game_cpu_test", ROOT / "nx2" / "make_game.py")
 
-    def run_check(self, env, march):
+    def run_check(self, env, march, fsr=False):
         fake = mock.MagicMock(host_march=mock.MagicMock(return_value=march))
         with mock.patch.dict(os.environ, {}, clear=False), mock.patch.dict(sys.modules, {"host_cpu": fake}), \
                 contextlib.redirect_stdout(io.StringIO()) as out:
-            for k in ("HOOKSHOT_VK_PREBUILT", "RX_MARCH"):
+            for k in ("HOOKSHOT_VK_PREBUILT", "RX_MARCH", "HOOKSHOT_FSR"):
                 os.environ.pop(k, None)
             os.environ.update(env)
             try:
-                self.make_game.check_cpu()
+                self.make_game.check_cpu(fsr)
             except SystemExit as stopped:
                 return stopped.code, out.getvalue()
         return None, out.getvalue()
@@ -135,6 +135,16 @@ class AppImageCheck(unittest.TestCase):
     def test_appimage_with_avx2_goes_on(self):
         self.assertIsNone(self.run_check({"HOOKSHOT_VK_PREBUILT": "/x/hookshot_vk.so"}, "x86-64-v3")[0])
 
+    def test_fsr_build_without_avx2_goes_on(self):
+        # (AMD FSR 4: the build compiles its own Vulkan back end for this PC, so the prebuilt one's AVX2 does not matter)
+        self.assertIsNone(self.run_check({"HOOKSHOT_VK_PREBUILT": "/x/hookshot_vk.so"}, "x86-64-v2", fsr=True)[0])
+
+    def test_fsr_in_the_shell_is_not_the_builds(self):
+        # (HOOKSHOT_FSR=1 left in the shell, a build without --fsr: it uses the prebuilt back end, so the check still stops)
+        code, out = self.run_check({"HOOKSHOT_VK_PREBUILT": "/x/hookshot_vk.so", "HOOKSHOT_FSR": "1"}, "x86-64-v2")
+        self.assertEqual(code, 1)
+        self.assertIn("AVX2", out)
+
     def test_source_build_without_avx2_goes_on(self):
         self.assertIsNone(self.run_check({}, "x86-64-v2")[0])
 
@@ -145,7 +155,7 @@ class AppImageCheck(unittest.TestCase):
     def test_checked_before_the_game_is_read(self):
         src = (ROOT / "nx2" / "make_game.py").read_text(encoding="utf-8")
         main = src[src.index("def main("):]
-        self.assertLess(main.index("check_cpu()"), main.index("drop_stale_objects(work)"))
+        self.assertLess(main.index("check_cpu(fsr)"), main.index("drop_stale_objects(work)"))
         check = src[src.index("def check(a, work):"):]
         self.assertLess(check.index("check_cpu()"), check.index("if a.nup:"))
 
