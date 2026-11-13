@@ -119,6 +119,7 @@ static void decode_next(Dec *d) {
     d->qn++;
 }
 static void decode_pending(Dec *d) { decode_next(d); }
+static void input_room(Dec *d) { (void)d; }   /* (the input limit's event: tests/test_video_input_limit.py) */
 
 @ACQUIRE@
 
