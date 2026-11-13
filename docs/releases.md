@@ -16,7 +16,7 @@ GitHub, and nothing is compatible with Hookshot's 2.x updates (NotRexed/Hookshot
 | **Two products** | Hookshot releases its **builders** (Windows and Linux). The launcher releases **itself**. Each from its own repository, with its own versions |
 | **Three channels each** | `stable` (tag `vX.Y.Z`), `rc` (tag `vX.Y.Z-rc.N`, and every stable), `nightly` (every push to `main`). Read from the release list |
 | **One key** | CI signs `SHA256SUMS` with the release key (ECDSA P-256). The launcher has the public key built in |
-| **tools.lock** | The Windows builder's build tools are not in Hookshot's releases: `tools.lock` names each one (URLs, SHA-256, size) |
+| **tools.lock** | The builders' build tools, Windows' and Linux's, are not in Hookshot's releases: `tools.lock` names each one (URLs, SHA-256, size) |
 | **Tags, not release PRs** | A maintainer releases by pushing a tag. CI checks the number against the commits, builds, signs and publishes. Notes by git-cliff |
 | **Updates** | The launcher installs and updates the builder of each build, and updates itself, from these releases. The builders and the game look for no update themselves |
 
@@ -27,8 +27,8 @@ Each version is one Forgejo release, made by `.forgejo/workflows/release.yml`:
 | Hookshot (MagicBeanDev/Hookshot) | The launcher (MagicBeanDev/LongshotLauncher) |
 |---|---|
 | `HookshotBuilder-<v>-windows-x64.zip`: the Windows builder (its setup as `HookshotBuilder.exe`, the builder and Hookshot's sources in `HookshotBuilder\`, `tools.lock`, `VERSION`, and `recomplauncher.json` at the top) | `LongshotLauncher-<v>-windows-x64-setup.exe`: one self-contained program that installs itself (below); `LongshotLauncher-<v>-windows-x64-portable.zip`: the same program as `LongshotLauncher.exe` with its `portable` file |
-| `Hookshot-<v>-x86_64.AppImage`: the Linux builder, with its tools and `recomplauncher.json` inside | `LongshotLauncher-<v>-x86_64.AppImage` |
-| `tools.lock`: the tools the Windows builder downloads | |
+| `Hookshot-<v>-x86_64.AppImage`: the Linux builder (the builder, its Python, Hookshot's sources, the Vulkan back end, its `tools.lock` and `recomplauncher.json`); its build tools are not inside | `LongshotLauncher-<v>-x86_64.AppImage` |
+| `tools.lock`: the tools the builders download | |
 | `SHA256SUMS`, `SHA256SUMS.sig` | `SHA256SUMS`, `SHA256SUMS.sig` |
 
 `SHA256SUMS` is `sha256sum`'s format, one `<64 hex>  <name>` line per file. `SHA256SUMS.sig` is the base64 of the DER ECDSA
@@ -63,7 +63,8 @@ launcher (`Core/ReleaseManifest.cs`, `Newest`) and in `scripts/release.py` (`new
 - **Pulling** a bad version is deleting its release, or setting it back to a draft: its channel then offers the one before
   by itself.
 - The **nightlies** past the newest 5 are deleted, with their tags, by the run that makes a new one. Nothing else is pruned.
-- Anything else in the list is on no channel: Hookshot's `tools` release, a 2.x tag, a git describe name.
+- Anything else in the list is on no channel: a 2.x tag, a git describe name. (The builders' tools are not releases:
+  they are packages, below.)
 - A nightly's count is the number of commits: for Hookshot since the fork (e2a4d45, "Rename the project to Hookshot"), for
   the launcher since its first commit.
 
@@ -100,33 +101,50 @@ Rotating the key: RELEASING.md, "Rotate the key".
 
 ## tools.lock (Hookshot)
 
-The Windows builder needs build tools that are not Hookshot's own code: llvm-mingw, Python with the prompt packages, emsdk,
-the CPM cache (FFmpeg, Vulkan and SPIR-V headers, VMA, dav1d), wgpu-native, the prebuilt files of `third_party`
-(a64emit.dll, lld-link.exe, SDL2/SDL3, zbic.dll) and the play profile. They are not in the release: `tools.lock` names them.
+The builders need build tools that are not Hookshot's own code. Windows (`windows-x64` lines): llvm-mingw, Python with the
+prompt packages, emsdk, the CPM cache (FFmpeg, Vulkan and SPIR-V headers, VMA, dav1d), wgpu-native, the prebuilt files of
+`third_party` (a64emit.dll, lld-link.exe, SDL2/SDL3, zbic.dll), and the play profile when there is one (optional: without
+it the game is built all the same, a little slower in play). Linux (`linux-x64` lines): LLVM's clang
+and lld (`emsdk`), the glibc 2.35 `sysroot`, `ffmpeg` with dav1d, `sdl2` and the Vulkan, SPIR-V and VMA headers (`cpm`).
+They are not in the release: `tools.lock` names them.
 
 ```
 tool <name> <version> <system> <sha256> <size> <dest> <prefix> <url> [<url> ...]
-tool llvm-mingw 20261104 windows-x64 5521…40f 191037046 HookshotBuilder/tools/llvm-mingw llvm-mingw-20261104-ucrt-x86_64 https://git.notrexed.dev/Hookshot/Hookshot/releases/download/tools/5521…-llvm-mingw.zip https://github.com/mstorsjo/…
+tool llvm-mingw 20261104 windows-x64 5521…40f 191037046 HookshotBuilder/tools/llvm-mingw llvm-mingw-20261104-ucrt-x86_64 https://git.magicbean.dev/api/packages/MagicBeanDev/generic/llvm-mingw-windows-x64/20261104/5521…-llvm-mingw.zip https://github.com/mstorsjo/…
 ```
 
-- **Installing.** The builder's setup (`builder/setup/setup.c`) and the launcher (`Core/ToolsLock.cs`, `Toolchains`) download
-  each tool from the first URL that answers with the right bytes. They check its size and SHA-256 and unpack the archive's
+- **Installing.** The Windows builder's setup (`builder/setup/setup.c`), the Linux AppImage (`builder/linux/linux_tools.py`)
+  and the launcher (`Core/ToolsLock.cs`, `Toolchains`) download each tool of their system from the first URL that answers
+  with the right bytes. They check its size and SHA-256 and unpack the archive's
   `<prefix>` folder as `<dest>` in the install. A tool another installed version has, with the same SHA-256 and unpacked
   the same way, is taken from it and not downloaded again. `scripts/tools.py install` does the same, for CI and developers.
-- **Where the archives are.** Every tool is downloaded first from Hookshot's long-lived **`tools` release** (assets named
-  `<sha256>-<name>.zip`). Where an archive came from (upstream for llvm-mingw, NotRexed/Hookshot's `builder-parts` release
-  for the four taken from Hookshot) is its fallback URL, so no install depends on a repository we do not control alone. An archive Hookshot
-  makes itself (Python with our packages, the CPM cache with dav1d, the prebuilt `third_party` files, the play profile) is
-  only in the `tools` release, put there by `scripts/tools.py`. The `tools` release is never pruned and is on no channel.
+- **Where the archives are: Packages.** Every tool is downloaded first from Hookshot's copy, a file of a **generic
+  package** of the MagicBeanDev organization (its *Packages* tab): the package `<name>-<system>` (`emsdk-windows-x64`,
+  `emsdk-linux-x64`: a tool's Windows and Linux builds have versions of their own), its version the tool's, the file
+  `<sha256>-<name>.zip`, at `https://git.magicbean.dev/api/packages/MagicBeanDev/generic/<name>-<system>/<version>/<file>`.
+  Anyone downloads them with no account. A package version's files never change (Forgejo refuses a second upload of a
+  name), and nothing prunes them, so an older version's tools stay downloadable. Where an archive came from (upstream for
+  llvm-mingw, NotRexed/Hookshot's `builder-parts` release for those taken from Hookshot) is its fallback URL, so no install
+  depends on a repository we do not control alone. An archive Hookshot makes itself (the CPM cache with dav1d, the
+  prebuilt `third_party` files, the Linux tools, a play profile) is only in Packages, put there by `scripts/tools.py`.
 - **Bumping a tool** is a pull request that edits `tools.lock`, with the archive uploaded by `scripts/tools.py mirror`,
-  `add` or `assemble` (RELEASING.md, "Bump a tool"). The release workflow refuses a `tools.lock` that lacks a tool the
+  `add` or `assemble`: a new package version, then the line (RELEASING.md, "Bump a tool"). The release workflow refuses a
+  `tools.lock` whose package files are not there with their size and SHA-256, or that lacks a tool the
   builder needs (`tools.py check --require`), in its first job, before anything is built.
-- **Today's lock.** Python, emsdk, the CPM cache and wgpu-native are taken as they are from Hookshot v2.1.0's Windows
-  builder (NotRexed/Hookshot's `builder-parts` release), with their SHA-256. Llvm-mingw is upstream's. Three are still to
-  make before the first release: the CPM cache with dav1d, the `third_party` prebuilt files and the play profile
-  (RELEASING.md, One-time setup).
-- **Linux.** The Linux builder is an AppImage that carries its tools (`scripts/linux/deps.sh` pins each download by its
-  SHA-256), so `tools.lock` has no Linux lines.
+- **Today's lock.** Windows: Python, emsdk and wgpu-native are taken as they are from Hookshot v2.1.0's Windows builder
+  (NotRexed/Hookshot's `builder-parts` release), with their SHA-256; llvm-mingw is upstream's; the CPM cache is Hookshot
+  v2.1.0's with dav1d added (`scripts/windows/dav1d.sh`), and `third-party` the prebuilt files of Hookshot v2.1.0's
+  `third_party` part (`assemble third-party`). Linux: `scripts/linux/deps.sh tools`'s. There is no play profile yet: the
+  lock has no `profile` line, and `check --require` does not ask for one.
+- **Linux.** The AppImage carries only the builder: its Python (the window, the tools' download and `make_game.py` run on it,
+  and its packages follow `requirements.txt`, which changes with the version), Hookshot's sources and the prebuilt Vulkan
+  back end. Each `linux-x64` tool's `dest` is where the AppImage had it (`usr/lib/hookshot/emsdk`, `usr/share/hookshot/cpm`,
+  ...). The launcher unpacks them beside the unpacked AppImage, as on Windows. An AppImage started by itself
+  (`builder/linux/AppRun`) finds them there, or in the launcher's copy of the same version, or in
+  `$XDG_DATA_HOME/hookshot/builder/toolchains/<v>/`; what is missing it downloads there at its first start, with a progress
+  window (`--cli`: lines on stderr), linking a tool another version there has. Once there, no connection is needed.
+  `scripts/linux/deps.sh tools` makes the Linux archives from its pinned downloads (`scripts/tools.py pack`: modes and
+  relative links kept).
 
 ## How the launcher reads it
 
@@ -140,7 +158,10 @@ tool llvm-mingw 20261104 windows-x64 5521…40f 191037046 HookshotBuilder/tools/
    - Windows: building a version downloads its `HookshotBuilder-<v>-windows-x64.zip` and its `tools.lock`, each checked
      against `SHA256SUMS`, then installs the zip and each tool (above) into `<home>/toolchains/<v>.part`. The folder is
      renamed when complete.
-   - Linux: it downloads `Hookshot-<v>-x86_64.AppImage`, checks it, and unpacks it with its own `--appimage-extract`.
+   - Linux: it downloads `Hookshot-<v>-x86_64.AppImage`, checks it, and unpacks it with its own `--appimage-extract`, then
+     installs the `linux-x64` tools of the `tools.lock` inside it (covered by the AppImage's checksum) into the same folder,
+     each checked by its SHA-256, as on Windows. An AppImage with no `tools.lock` inside (one that carried its tools) needs
+     none.
 3. **Itself.** The launcher's own channel offers a newer launcher, or, after the player picked another channel, that
    channel's newest. *Update the launcher* downloads it beside the current file as `<name>.new` and checks it against
    `SHA256SUMS`. It starts it with `--self-check` (it must print `LongshotLauncher <version>` and exit 0 within a minute),

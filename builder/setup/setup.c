@@ -716,7 +716,7 @@ static DWORD WINAPI work(LPVOID unused) {
                     BCryptOpenAlgorithmProvider(&a, BCRYPT_SHA256_ALGORITHM, NULL, 0);
                     BCryptCreateHash(a, &fs.h, NULL, 0, NULL, 0, 0);
                     g_http_status = 0;
-                    /* (a tool's second URL, its copy in Hookshot's tools release, every other try) */
+                    /* (a tool's second URL, where it came from, every other try; its first is Hookshot's package) */
                     got = http_get(attempt % 2 == 1 && p->url2[0] ? p->url2 : p->url, file_sink, &fs, p->size, NULL);
                     CloseHandle(fs.f);
                     unsigned char d[32];

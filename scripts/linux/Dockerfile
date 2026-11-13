@@ -1,10 +1,12 @@
 # The Linux AppImage's build environment, for building it on any distribution: the system CI builds it in
 # (.forgejo/workflows/build-linux.yml, Ubuntu 22.04) with the same packages. Ubuntu 22.04 is not a preference: the
-# AppImage carries this system's C library as the game's sysroot, so the game it builds runs on glibc 2.35 and newer.
+# sysroot tools.lock gives the builder (scripts/linux/deps.sh tools) is this system's C library, so the game it builds runs
+# on glibc 2.35 and newer, and the AppImage's Python and Tk run there too.
 # Keep the package list in step with the workflow's "System packages" step.
 #
-# The image holds the system packages only. The checkout is mounted at /src when it runs, so build-linux/deps (LLVM,
-# Python, FFmpeg, SDL2, headers) is kept between runs and the AppImage lands in the checkout's build-linux/.
+# The image holds the system packages only. The checkout is mounted at /src when it runs, so build-linux/deps (Python,
+# and with deps.sh tools LLVM, FFmpeg, SDL2, the headers and the sysroot) is kept between runs and the AppImage lands in
+# the checkout's build-linux/.
 # scripts/linux/docker.sh builds the image and runs it.
 FROM ubuntu:22.04
 

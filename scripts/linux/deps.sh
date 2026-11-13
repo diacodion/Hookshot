@@ -1,23 +1,37 @@
 #!/bin/bash
-# What the Linux AppImage carries, fetched and built into build-linux/deps (or $DEPS): each part once, kept while its
-# version stays the same. Run on the oldest system the AppImage is for (CI: Ubuntu 22.04, glibc 2.35).
+# What the Linux AppImage carries, and the Linux builder's build tools, fetched and built into build-linux/deps (or $DEPS):
+# each part once, kept while its version stays the same. Run on the oldest system the AppImage is for (CI: Ubuntu 22.04,
+# glibc 2.35).
 #
+#   scripts/linux/deps.sh         what the AppImage carries and is packed with (python/, tk/, appimagetool, the runtime)
+#   scripts/linux/deps.sh tools   also the build tools, each packed as a tools.lock archive into build-linux/deps/tools/
+#                                 (a maintainer's step when a tool changes: RELEASING.md, "Bump a tool"; add.sh there
+#                                 holds the tools.py add lines). The builder downloads them by tools.lock, not the AppImage
+#
+# The AppImage:
+#   python/           CPython (python-build-standalone) with lz4, numpy, capstone, unicorn and zstandard: the tools
+#                     (and nx2/prompt_requirements.txt's, which draw the button prompts), the builder's window, and the
+#                     first start's download of the build tools (builder/linux/linux_tools.py)
+#   tk/               libtcl9tk9.0.so built with Xft, with libXft and libXrender: put over python/'s, which draws only
+#                     X core fonts (under XWayland one 13 px bitmap font, whatever the size asked for or the screen)
+#   appimagetool      the AppImage packer
+#   runtime-x86_64    the AppImage runtime it puts in front of the image (pinned: appimagetool's own download of the
+#                     'continuous' one, at packing time, fails whenever GitHub answers 504)
+# The build tools (tools.lock's linux-x64 lines, each <name>/ here packed as tools/<name>.zip):
 #   emsdk/upstream/   LLVM's clang and lld (the layout third_party/a64-kit/tools/toolchain.py finds through EMSDK):
 #                     the player's PC compiles the game with them. The play profile (work/hookshot_pieces.prof) wants
 #                     LLVM 23 or newer.
-#   python/           CPython (python-build-standalone) with lz4, numpy, capstone, unicorn and zstandard: the tools
-#                     (and nx2/prompt_requirements.txt's, which draw the button prompts)
-#   tk/               libtcl9tk9.0.so built with Xft, with libXft and libXrender: put over python/'s, which draws only
-#                     X core fonts (under XWayland one 13 px bitmap font, whatever the size asked for or the screen)
 #   ffmpeg/           FFmpeg's libavcodec, libswscale, libswresample, libavutil, static and LGPL, with dav1d for OoT's
 #                     AV1 movies (VP8 / VP9 too) - linked into the game
 #   sdl2/             libSDL2-2.0.so.0: the window, sound and controllers, placed beside the game
 #   cpm/              Vulkan-Headers, SPIRV-Headers and VulkanMemoryAllocator, in the CPM cache layout nx2/build.py reads
-#   appimagetool      the AppImage packer
-#   runtime-x86_64    the AppImage runtime it puts in front of the image (pinned: appimagetool's own download of the
-#                     'continuous' one, at packing time, fails whenever GitHub answers 504)
+#                     (their include/ folders and licenses go in the archive)
+#   sysroot/          this system's C library (headers, start files, the libraries to link against) and GCC's runtime
+#                     pieces: the game is compiled and linked against it, so it runs on glibc 2.35 and newer
 set -euo pipefail
 cd "$(dirname "$0")/../.."
+WHAT=${1:-appimage}
+case $WHAT in appimage|tools) ;; *) echo "usage: scripts/linux/deps.sh [tools]"; exit 2 ;; esac
 DEPS=${DEPS:-$PWD/build-linux/deps}
 DL=$DEPS/downloads
 mkdir -p "$DEPS" "$DL"
@@ -94,7 +108,7 @@ mark() { echo "$2" > "$DEPS/.$1"; }
 # (in the background, beside the parts below, which do not use it: unpacking its archive is one xz thread for about three
 # minutes, while the others build with every core. Its output is printed when it is done; a failure stops the script there)
 LLVM_JOB=
-if ! done_for llvm "$LLVM_VER"; then
+if [ "$WHAT" = tools ] && ! done_for llvm "$LLVM_VER"; then
   (
     fetch "https://github.com/llvm/llvm-project/releases/download/llvmorg-$LLVM_VER/LLVM-$LLVM_VER-Linux-X64.tar.xz" llvm.tar.xz "$LLVM_SHA256"
     rm -rf "$DEPS/emsdk" "$DEPS/llvm-x"
@@ -153,7 +167,7 @@ fi
 
 # ---- dav1d and FFmpeg (static, position independent: linked into the game's executable) ----
 P=$DEPS/ffmpeg
-if ! done_for ffmpeg "$FFMPEG_VER-$DAV1D_VER"; then
+if [ "$WHAT" = tools ] && ! done_for ffmpeg "$FFMPEG_VER-$DAV1D_VER"; then
     rm -rf "$P" "$DEPS/src-dav1d" "$DEPS/src-ffmpeg"
     fetch "https://code.videolan.org/videolan/dav1d/-/archive/$DAV1D_VER/dav1d-$DAV1D_VER.tar.gz" dav1d.tar.gz
     mkdir -p "$DEPS/src-dav1d" && tar -xzf "$DL/dav1d.tar.gz" -C "$DEPS/src-dav1d" --strip-components=1
@@ -173,7 +187,7 @@ if ! done_for ffmpeg "$FFMPEG_VER-$DAV1D_VER"; then
 fi
 
 # ---- SDL2 (its X11, Wayland and sound back ends load their libraries at run time) ----
-if ! done_for sdl2 "$SDL_VER"; then
+if [ "$WHAT" = tools ] && ! done_for sdl2 "$SDL_VER"; then
     fetch "https://github.com/libsdl-org/SDL/releases/download/release-$SDL_VER/SDL2-$SDL_VER.tar.gz" sdl2.tar.gz "$SDL_SHA256"
     rm -rf "$DEPS/src-sdl2" "$DEPS/sdl2"
     mkdir -p "$DEPS/src-sdl2" && tar -xzf "$DL/sdl2.tar.gz" -C "$DEPS/src-sdl2" --strip-components=1
@@ -189,7 +203,7 @@ if ! done_for sdl2 "$SDL_VER"; then
 fi
 
 # ---- the Vulkan back end's headers ----
-if ! done_for cpm "$VK_HEADERS-$SPIRV_HEADERS-$VMA"; then
+if [ "$WHAT" = tools ] && ! done_for cpm "$VK_HEADERS-$SPIRV_HEADERS-$VMA"; then
     rm -rf "$DEPS/cpm"
     get_headers() {   # repo tag name tree
         fetch "https://github.com/$1/archive/refs/tags/$2.tar.gz" "$3-$2.tar.gz"
@@ -203,19 +217,15 @@ if ! done_for cpm "$VK_HEADERS-$SPIRV_HEADERS-$VMA"; then
     mark cpm "$VK_HEADERS-$SPIRV_HEADERS-$VMA"
 fi
 
-# ---- the licenses of what the AppImage carries (Python's and its modules' are in python/) ----
-if ! done_for licenses "$LLVM_VER-$FFMPEG_VER-$DAV1D_VER-$SDL_VER-$TCLTK_VER"; then
+# ---- the licenses of what the AppImage carries besides Hookshot (Python's and its modules' are in python/; each build
+# tool's are in its own archive, below) ----
+if ! done_for licenses "tk-$TCLTK_VER"; then
     L=$DEPS/licenses
     rm -rf "$L" && mkdir -p "$L"
-    curl -fsSL -o "$L/LLVM-LICENSE.TXT" "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-$LLVM_VER/llvm/LICENSE.TXT"
-    curl -fsSL -o "$L/FFmpeg-COPYING.LGPLv2.1" "https://raw.githubusercontent.com/FFmpeg/FFmpeg/n$FFMPEG_VER/COPYING.LGPLv2.1"
-    curl -fsSL -o "$L/FFmpeg-LICENSE.md" "https://raw.githubusercontent.com/FFmpeg/FFmpeg/n$FFMPEG_VER/LICENSE.md"
-    curl -fsSL -o "$L/dav1d-COPYING" "https://code.videolan.org/videolan/dav1d/-/raw/$DAV1D_VER/COPYING"
-    cp "$DEPS/sdl2/LICENSE.txt" "$L/SDL2-LICENSE.txt"
     cp "$DEPS/tk/Tk-license.terms" "$L/Tk-license.terms"
     cp /usr/share/doc/libxft2/copyright "$L/libXft-copyright"
     cp /usr/share/doc/libxrender1/copyright "$L/libXrender-copyright"
-    mark licenses "$LLVM_VER-$FFMPEG_VER-$DAV1D_VER-$SDL_VER-$TCLTK_VER"
+    mark licenses "tk-$TCLTK_VER"
 fi
 
 # ---- appimagetool ----
@@ -236,5 +246,65 @@ if [ -n "$LLVM_JOB" ]; then
     cat "$DEPS/llvm.log"
     rm -f "$DEPS/llvm.log"
     [ "$llvm_status" = 0 ] || { echo "LLVM: failed (exit $llvm_status)"; exit 1; }
+fi
+
+if [ "$WHAT" = tools ]; then
+    # ---- the sysroot (made again each time: it is this system's files, which its packages' updates change) ----
+    S=$DEPS/sysroot
+    rm -rf "$S"
+    mkdir -p "$S/usr/lib/x86_64-linux-gnu" "$S/usr/lib/gcc/x86_64-linux-gnu" "$S/lib64"
+    ln -s usr/lib "$S/lib"
+    cp -a /usr/include "$S/usr/"
+    rm -rf "$S/usr/include/c++" "$S/usr/include/x86_64-linux-gnu/c++" "$S/usr/include/llvm"* "$S/usr/include/clang"*
+    M=/usr/lib/x86_64-linux-gnu
+    for f in crt1.o crti.o crtn.o Scrt1.o rcrt1.o libc.so libc.so.6 libc_nonshared.a libm.so libm.so.6 libm.a libmvec.so libmvec.so.1 \
+             libmvec.a libpthread.so.0 libpthread.a libdl.so.2 libdl.a librt.so.1 librt.a libutil.a libgcc_s.so.1 ld-linux-x86-64.so.2; do
+        # System aliases can have absolute targets (e.g. libmvec.so). Carry their bytes: an archive holds relative
+        # links only (scripts/tools.py pack), and the game must not link against the player's own libraries.
+        [ -e "$M/$f" ] && cp -aL "$M/$f" "$S/usr/lib/x86_64-linux-gnu/" || true
+    done
+    cp -aL /lib64/ld-linux-x86-64.so.2 "$S/lib64/"
+    GCC=$(ls -d /usr/lib/gcc/x86_64-linux-gnu/*/ | sort -V | tail -1)
+    GV=$(basename "$GCC")
+    G=$S/usr/lib/gcc/x86_64-linux-gnu/$GV
+    mkdir -p "$G" "$S/usr/include/c++" "$S/usr/include/x86_64-linux-gnu/c++"
+    cp -aL "/usr/include/c++/$GV" "$S/usr/include/c++/"
+    cp -aL "/usr/include/x86_64-linux-gnu/c++/$GV" "$S/usr/include/x86_64-linux-gnu/c++/"
+    for f in crtbegin.o crtbeginS.o crtbeginT.o crtend.o crtendS.o libgcc.a libgcc_eh.a libgcc_s.so libstdc++.a libstdc++fs.a libstdc++exp.a; do
+        [ -e "$GCC/$f" ] && cp -aL "$GCC/$f" "$G/" || true
+    done
+    # (libgcc_s.so is a linker script naming /lib/x86_64-linux-gnu/libgcc_s.so.1: found in the sysroot through lib -> usr/lib)
+
+    # ---- each tool's licenses in its own folder, then the archives tools.lock names ----
+    lic() { [ -s "$2" ] || "${CURL[@]}" -sS -o "$2" "$1"; }
+    lic "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-$LLVM_VER/llvm/LICENSE.TXT" "$DEPS/emsdk/LLVM-LICENSE.TXT"
+    lic "https://raw.githubusercontent.com/FFmpeg/FFmpeg/n$FFMPEG_VER/COPYING.LGPLv2.1" "$DEPS/ffmpeg/FFmpeg-COPYING.LGPLv2.1"
+    lic "https://raw.githubusercontent.com/FFmpeg/FFmpeg/n$FFMPEG_VER/LICENSE.md" "$DEPS/ffmpeg/FFmpeg-LICENSE.md"
+    lic "https://code.videolan.org/videolan/dav1d/-/raw/$DAV1D_VER/COPYING" "$DEPS/ffmpeg/dav1d-COPYING"
+    # (the headers' include/ folders, with their licenses: nothing else of them is compiled)
+    STAGE=$DEPS/tools-stage
+    rm -rf "$STAGE" && mkdir -p "$STAGE/cpm"
+    for d in "$DEPS"/cpm/*/*; do
+        r=${d#"$DEPS/cpm/"}
+        mkdir -p "$STAGE/cpm/$r"
+        cp -a "$d/include" "$STAGE/cpm/$r/"
+        for f in "$d"/LICENSE*; do [ -f "$f" ] && cp "$f" "$STAGE/cpm/$r/"; done
+    done
+    OUT=$DEPS/tools
+    rm -rf "$OUT" && mkdir -p "$OUT"
+    for t in "$DEPS/emsdk" "$DEPS/ffmpeg" "$DEPS/sdl2" "$DEPS/sysroot" "$STAGE/cpm"; do
+        python3 -I scripts/tools.py pack "$t" --out "$OUT/$(basename "$t").zip"
+    done
+    # (the lines that publish them as package versions and write tools.lock: RELEASING.md, "Bump a tool")
+    {
+        echo "# scripts/linux/deps.sh tools: each archive into Hookshot's packages and tools.lock (RELEASE_TOKEN: your token)"
+        add() { echo "python3 -I scripts/tools.py add $1 $2 \"${OUT#"$PWD/"}/$1.zip\" --system linux-x64 --dest $3 --prefix $1"; }
+        add emsdk "$LLVM_VER" usr/lib/hookshot/emsdk
+        add ffmpeg "$FFMPEG_VER-dav1d-$DAV1D_VER" usr/lib/hookshot/ffmpeg
+        add sdl2 "$SDL_VER" usr/lib/hookshot/sdl2
+        add sysroot "ubuntu22.04-gcc$GV-$(date -u +%Y%m%d)" usr/lib/hookshot/sysroot
+        add cpm "$VK_HEADERS-$SPIRV_HEADERS-$VMA" usr/share/hookshot/cpm
+    } > "$OUT/add.sh"
+    cat "$OUT/add.sh"
 fi
 echo "deps in $DEPS: $(du -sh --exclude=downloads "$DEPS" | cut -f1)"

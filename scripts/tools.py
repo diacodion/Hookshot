@@ -1,19 +1,25 @@
-"""tools.lock: the build tools the Windows Hookshot Builder needs (docs/releases.md, "tools.lock"; RELEASING.md, "Bump a
-tool"). Python's standard library only.
+"""tools.lock: the build tools the Hookshot Builders need, for Windows (windows-x64) and Linux (linux-x64) (docs/releases.md,
+"tools.lock"; RELEASING.md, "Bump a tool"). Python's standard library only. --system picks a system's lines (windows-x64
+unless named); the Linux builder reads its lines with this file too (builder/linux/linux_tools.py).
 
     python -I scripts/tools.py check [--require <name> ...]
         reads tools.lock and refuses a bad line (a name, a SHA-256, a size, a path that leaves the install, a link that is not
-        https) or a missing tool. The release workflow requires every tool the builder needs (REQUIRED)
-    python -I scripts/tools.py fetch <name> [--cache <folder>]
+        https) or a missing tool. The release workflow requires every tool each builder needs (REQUIRED), and each line's
+        copy in Hookshot's store to be there with its size and SHA-256 (the package API)
+    python -I scripts/tools.py fetch <name> [--system <s>] [--cache <folder>]
         the tool's archive, from the first of its URLs that answers, checked by its size and SHA-256; prints its path
-    python -I scripts/tools.py install <install folder> [--cache <folder>] [--only <name> ...]
-        every tool (or the ones named) unpacked into a builder install, as the setup and the launcher do: <prefix> of the
-        archive becomes <dest>
-    python -I scripts/tools.py mirror <name>
-        puts the tool's archive, fetched from its URLs, in Hookshot's "tools" release as <sha256>-<name>.zip, and makes
-        that copy its line's first URL, the others the fallback ($RELEASE_TOKEN: your own token)
-    python -I scripts/tools.py add <name> <version> <archive> --dest <folder> [--prefix <folder in the archive>]
-        an archive Hookshot made, uploaded to the "tools" release and written into tools.lock in place of the tool's line
+    python -I scripts/tools.py install <install folder> [--system <s>] [--cache <folder>] [--only <name> ...]
+        every tool of the system (or the ones named) unpacked into a builder install, as the setup and the launcher do:
+        <prefix> of the archive becomes <dest>
+    python -I scripts/tools.py mirror <name> [--system <s>]
+        puts the tool's archive, fetched from its URLs, in Hookshot's store (the organization's generic package
+        <name>-<system>, version <version>, file <sha256>-<name>.zip), and makes that copy its line's first URL, the others
+        the fallback ($RELEASE_TOKEN: your own token)
+    python -I scripts/tools.py add <name> <version> <archive> --dest <folder> [--prefix <folder in the archive>] [--system <s>]
+        an archive Hookshot made, uploaded to Hookshot's store and written into tools.lock in place of the tool's line
+    python -I scripts/tools.py pack <folder> --out <zip>
+        a folder as a tool's archive, under its own name: its files with their modes (executable or not) and its relative
+        links, deterministic (scripts/linux/deps.sh tools packs the Linux builder's tools with it). Then `add` it
     python -I scripts/tools.py assemble python --requirements nx2/prompt_requirements.txt --out <zip>
     python -I scripts/tools.py assemble cpm --add <CPM folder> --out <zip>
     python -I scripts/tools.py assemble third-party --from <archive with tools/third_party> --out <zip>
@@ -42,10 +48,14 @@ LOCK = os.path.join(ROOT, "tools.lock")
 CACHE = os.path.join(ROOT, "build-tools-cache")
 REPO = "MagicBeanDev/Hookshot"
 SERVER = "https://git.magicbean.dev"
-TOOLS_TAG = "tools"
-MIRROR = "%s/%s/releases/download/%s/" % (SERVER, REPO, TOOLS_TAG)
-# (the tools a Windows builder needs: the release workflow refuses a lock without one of them)
-REQUIRED = ("llvm-mingw", "python", "emsdk", "cpm", "wgpu-native", "third-party", "profile")
+OWNER = REPO.split("/")[0]
+SYSTEMS = ("windows-x64", "linux-x64")
+# (the tools each builder needs: the release workflow refuses a lock without one of them. The Linux builder's AppImage carries
+# its Python; the rest is here, builder/linux/linux_tools.py). The play profile is not required: without its line the game is
+# built without one (nx2/make_game.py copies work/'s files only when they are there), a little slower in play; `assemble
+# profile` and `add` put one in when there is one
+REQUIRED = {"windows-x64": ("llvm-mingw", "python", "emsdk", "cpm", "wgpu-native", "third-party"),
+            "linux-x64": ("emsdk", "cpm", "ffmpeg", "sdl2", "sysroot")}
 NAME = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 VERSION = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$")
 PREBUILT_EXT = (".dll", ".exe", ".lib", ".sha1")
@@ -82,14 +92,14 @@ def parse(text):
             fail("tools.lock line %d: not 'tool <name> <version> <system> <sha256> <size> <dest> <prefix> <url>...'" % n)
         name, version, system, sha, size, dest, prefix, urls = w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8:]
         problems = [why for ok, why in (
-            (NAME.match(name), "name"), (VERSION.match(version), "version"), (system in ("windows-x64", "linux-x64"), "system"),
+            (NAME.match(name), "name"), (VERSION.match(version), "version"), (system in SYSTEMS, "system"),
             (re.fullmatch(r"[0-9a-f]{64}", sha), "sha256"), (size.isdigit() and 0 < int(size) < (1 << 34), "size"),
             (path_ok(dest), "dest"), (prefix == "-" or path_ok(prefix), "prefix"),
             (all(u.startswith("https://") and " " not in u for u in urls), "url")) if not ok]
         if problems:
             fail("tools.lock line %d (%s): bad %s" % (n, name, ", ".join(problems)))
         if any(t.name == name and t.system == system for t in tools):
-            fail("tools.lock line %d: %s twice" % (n, name))
+            fail("tools.lock line %d: %s for %s twice" % (n, name, system))
         tools.append(Tool(name, version, system, sha, int(size), dest, prefix, urls))
     return tools
 
@@ -99,11 +109,15 @@ def load(path=LOCK):
         return parse(f.read())
 
 
-def named(tools, name):
+def named(tools, name, system="windows-x64"):
     for t in tools:
-        if t.name == name:
+        if t.name == name and t.system == system:
             return t
-    fail("no %s in tools.lock" % name)
+    fail("no %s for %s in tools.lock" % (name, system))
+
+
+def of_system(tools, system):
+    return [t for t in tools if t.system == system]
 
 
 def write_line(tool, path=LOCK):
@@ -139,9 +153,25 @@ def get(url, timeout=600):
         return r.read()
 
 
-def fetch(tool, cache=CACHE, getter=get):
+def download(url, path, size, progress=None, timeout=600):
+    """url into path, streamed, stopped past size; its SHA-256. progress(bytes so far) after each block"""
+    req = urllib.request.Request(url, headers={"User-Agent": "hookshot-tools"})
+    h, have = hashlib.sha256(), 0
+    with urllib.request.urlopen(req, timeout=timeout) as r, open(path, "wb") as f:
+        for block in iter(lambda: r.read(1 << 20), b""):
+            have += len(block)
+            if have > size:
+                raise OSError("larger than tools.lock gives")
+            h.update(block)
+            f.write(block)
+            if progress:
+                progress(have)
+    return have, h.hexdigest()
+
+
+def fetch(tool, cache=CACHE, getter=None, progress=None):
     """The tool's archive in cache as <sha256>.zip (the same cache for every version), from its first URL that gives the
-    right bytes"""
+    right bytes. getter(url) -> bytes in place of the download (the tests); progress(bytes so far) while it downloads"""
     os.makedirs(cache, exist_ok=True)
     path = os.path.join(cache, tool.sha256 + ".zip")
     if os.path.isfile(path) and os.path.getsize(path) == tool.size and sha256_file(path) == tool.sha256:
@@ -149,27 +179,60 @@ def fetch(tool, cache=CACHE, getter=get):
     last = "no URL"
     for url in tool.urls:
         try:
-            data = getter(url)
+            if getter is None:
+                size, sha = download(url, path + ".part", tool.size, progress)
+            else:
+                data = getter(url)
+                size, sha = len(data), hashlib.sha256(data).hexdigest()
+                with open(path + ".part", "wb") as f:
+                    f.write(data)
         except (urllib.error.URLError, OSError) as e:
             last = "%s: %s" % (url, e)
             continue
-        if len(data) != tool.size or hashlib.sha256(data).hexdigest() != tool.sha256:
+        if size != tool.size or sha != tool.sha256:
+            os.remove(path + ".part")
             last = "%s: not the size and SHA-256 tools.lock gives" % url
             continue
-        with open(path + ".part", "wb") as f:
-            f.write(data)
         os.replace(path + ".part", path)
         return path
     fail("%s: %s" % (tool.name, last))
 
 
+def link_ok(rel, target):
+    """A link at rel (inside the folder) to target: relative, its ".." first, and landing inside the folder (as the launcher's
+    Toolchains.Symlink)"""
+    parts = target.split("/")
+    ups = 0
+    while ups < len(parts) and parts[ups] == "..":
+        ups += 1
+    if not target or target.startswith("/") or "\\" in target or ".." in parts[ups:]:
+        return False
+    return ups <= len(rel.split("/")) - 1
+
+
 def unpack(archive, prefix, dest):
-    """The archive's members under prefix ("-": all) into dest, which must not exist yet; nothing outside dest is written"""
+    """The archive's members under prefix ("-": all) into dest, which must not exist yet; nothing outside dest is written. A
+    member made on Linux keeps its mode (executable or not) and, when it is a link, stays a link, relative and inside dest"""
     if os.path.exists(dest):
         fail("%s is there already" % dest)
     tmp = dest + ".part"
     shutil.rmtree(tmp, ignore_errors=True)
     lead = "" if prefix == "-" else prefix.rstrip("/") + "/"
+    os.makedirs(tmp)
+    try:
+        n = _unpack_into(archive, lead, tmp)
+    except BaseException:
+        shutil.rmtree(tmp, ignore_errors=True)   # (nothing half unpacked is left)
+        raise
+    if not n:
+        shutil.rmtree(tmp, ignore_errors=True)
+        fail("%s has nothing under %s" % (archive, prefix))
+    os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
+    os.replace(tmp, dest)
+    return n
+
+
+def _unpack_into(archive, lead, tmp):
     root = os.path.realpath(tmp)
     n = 0
     with zipfile.ZipFile(archive) as z:
@@ -178,26 +241,58 @@ def unpack(archive, prefix, dest):
                 continue
             rel = m.filename[len(lead):]
             out = os.path.join(tmp, *rel.split("/"))
-            if ".." in rel.split("/") or os.path.commonpath([os.path.realpath(out), root]) != root:
-                fail("%s: %s leaves the folder" % (archive, m.filename))
+            if ".." in rel.split("/") or os.path.commonpath([os.path.realpath(os.path.dirname(out)), root]) != root \
+                    or os.path.lexists(out):
+                fail("%s: %s leaves the folder, or is there twice" % (archive, m.filename))
             os.makedirs(os.path.dirname(out), exist_ok=True)
+            mode = m.external_attr >> 16
+            if (mode & 0o170000) == 0o120000:
+                target = z.read(m).decode("utf-8")
+                if not link_ok(rel, target):
+                    fail("%s: %s links outside the folder (%s)" % (archive, m.filename, target))
+                os.symlink(target, out)
+                n += 1
+                continue
             with z.open(m) as src, open(out, "wb") as f:
                 shutil.copyfileobj(src, f)
+            if mode & 0o111:
+                os.chmod(out, 0o755)
             n += 1
-    if not n:
-        fail("%s has nothing under %s" % (archive, prefix))
-    os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
-    os.replace(tmp, dest)
     return n
 
 
-def install(folder, tools, cache=CACHE, getter=get):
+STAMPS = ".tools"
+
+
+def stamp_of(folder, name):
+    """The SHA-256 of the archive the tool in folder was unpacked from (folder/.tools/<name>), or None"""
+    try:
+        with open(os.path.join(folder, STAMPS, name), encoding="utf-8") as f:
+            return f.read().split()[0]
+    except (OSError, IndexError):
+        return None
+
+
+def write_stamp(folder, tool):
+    os.makedirs(os.path.join(folder, STAMPS), exist_ok=True)
+    with open(os.path.join(folder, STAMPS, tool.name), "w", encoding="utf-8", newline="\n") as f:
+        f.write("%s %s %s\n" % (tool.sha256, tool.prefix, tool.dest))
+
+
+def install(folder, tools, cache=CACHE, getter=None):
+    """Each tool's archive unpacked at its dest under folder, its stamp beside (folder/.tools/<name>). A tool there with
+    another stamp (tools.lock changed) is unpacked again; one with none (an install made before the stamps) is kept"""
     for t in tools:
         dest = os.path.join(folder, *t.dest.split("/"))
-        if os.path.isdir(dest):
+        had = stamp_of(folder, t.name)
+        if os.path.isdir(dest) and had in (None, t.sha256):
             print("%-12s there already" % t.name)
             continue
+        if os.path.isdir(dest):
+            print("%-12s %s: tools.lock names another archive, unpacked again" % (t.name, t.version))
+            shutil.rmtree(dest)
         n = unpack(fetch(t, cache, getter), t.prefix, dest)
+        write_stamp(folder, t)
         print("%-12s %s: %d files into %s" % (t.name, t.version, n, t.dest))
 
 
@@ -221,6 +316,48 @@ def members(archive, prefix):
     lead = "" if prefix == "-" else prefix.rstrip("/") + "/"
     with zipfile.ZipFile(archive) as z:
         return {m.filename[len(lead):]: z.read(m) for m in z.infolist() if not m.is_dir() and m.filename.startswith(lead)}
+
+
+def pack(folder, out):
+    """folder as an archive under its own name (the tool's prefix): each file with its mode, 0755 when it is executable, else
+    0644, and each link as a link (relative, inside the folder; anything else stops). Sorted, fixed dates: the same files give
+    the same bytes"""
+    folder = os.path.abspath(folder)
+    top = os.path.basename(folder)
+    entries = []
+    for d, dirs, names in os.walk(folder):
+        for name in list(dirs):
+            if os.path.islink(os.path.join(d, name)):
+                dirs.remove(name)
+                names.append(name)
+        for name in names:
+            full = os.path.join(d, name)
+            rel = os.path.relpath(full, folder).replace(os.sep, "/")
+            if os.path.islink(full):
+                target = os.readlink(full)
+                if not link_ok(rel, target):
+                    fail("%s: %s links outside the folder (%s)" % (folder, rel, target))
+                entries.append((rel, 0o120777, target.encode("utf-8")))
+            elif os.path.isfile(full):
+                entries.append((rel, 0o100755 if os.access(full, os.X_OK) else 0o100644, full))
+            else:
+                fail("%s: %s is not a file" % (folder, rel))
+    if not entries:
+        fail("%s is empty" % folder)
+    with zipfile.ZipFile(out + ".new", "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
+        for rel, mode, data in sorted(entries):
+            info = zipfile.ZipInfo(top + "/" + rel, date_time=(2026, 1, 1, 0, 0, 0))
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.create_system = 3
+            info.external_attr = mode << 16
+            if not isinstance(data, bytes):
+                with open(data, "rb") as f:
+                    data = f.read()
+            z.writestr(info, data, compresslevel=6)
+    os.replace(out + ".new", out)
+    sha, size = sha256_file(out), os.path.getsize(out)
+    print("%s: %d files, %d bytes, sha256 %s (prefix %s)" % (out, len(entries), size, sha, top))
+    return sha, size
 
 
 # ---- assembling Hookshot's own archives ----
@@ -301,53 +438,74 @@ def assemble_profile(work, out):
     return result
 
 
-# ---- the "tools" release ----
+# ---- Hookshot's store: Forgejo's generic package registry ----
+# Each archive Hookshot keeps a copy of, or makes, is a file of a generic package of the MagicBeanDev organization (its
+# Packages tab): the package <name>-<system>, its version the tool's version, the file <sha256>-<name>.zip. A package
+# version's files never change (Forgejo refuses a second upload of a name, HTTP 409), and nothing prunes them: an older
+# version's tools stay downloadable. Anyone downloads them, with no account (the organization is public). Each system has its
+# own package because a tool's Windows and Linux builds have versions of their own (emsdk: Hookshot v2.1.0's, LLVM 23.1.5).
 
-def api(method, path, data=None, content_type=None):
-    base = os.environ.get("FORGEJO_UPLOAD_API") if data and content_type and content_type.startswith("multipart") else None
-    base = base or os.environ.get("FORGEJO_API") or SERVER + "/api/v1"
-    token = os.environ.get("RELEASE_TOKEN") or fail("RELEASE_TOKEN is needed (your token, with write access to MagicBeanDev/Hookshot)")
-    headers = {"Authorization": "token " + token, "User-Agent": "hookshot-tools", "Accept": "application/json"}
-    if content_type:
-        headers["Content-Type"] = content_type
-    req = urllib.request.Request(base.rstrip("/") + path, data=data, method=method, headers=headers)
+def file_name(tool):
+    return "%s-%s.zip" % (tool.sha256, tool.name)
+
+
+def package_url(tool, server=SERVER):
+    return "%s/api/packages/%s/generic/%s-%s/%s/%s" % (server, OWNER, tool.name, tool.system, tool.version, file_name(tool))
+
+
+def store_url(tool):
+    """The tool's copy in Hookshot's store: tools.lock's first URL"""
+    return package_url(tool)
+
+
+def in_store(url):
+    return url.startswith("%s/api/packages/%s/generic/" % (SERVER, OWNER))
+
+
+def exists(url, timeout=60):
+    """(there, size, sha256) of a file in the store, from the package API's list of its version's files (anonymous: the
+    organization is public; a HEAD through Cloudflare gives no size). (False, None, None) when it is not there"""
+    head = "%s/api/packages/%s/generic/" % (SERVER, OWNER)
+    package, version, name = url[len(head):].split("/")
+    req = urllib.request.Request("%s/api/v1/packages/%s/generic/%s/%s/files" % (SERVER, OWNER, package, version),
+                                 headers={"User-Agent": "hookshot-tools", "Accept": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=1200) as r:
-            text = r.read()
-    except urllib.error.HTTPError as e:
-        if e.code == 404 and method == "GET":
-            return None
-        fail("%s %s: HTTP %d %s" % (method, path, e.code, e.read().decode("utf-8", "replace")[:300]))
-    return json.loads(text) if text else None
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            files = json.load(r)
+    except (urllib.error.URLError, OSError, ValueError):
+        return False, None, None
+    for f in files if isinstance(files, list) else ():
+        if isinstance(f, dict) and f.get("name") == name:
+            return True, f.get("Size", f.get("size")), f.get("sha256")
+    return False, None, None
 
 
-def tools_release():
-    rel = api("GET", "/repos/%s/releases/tags/%s" % (REPO, TOOLS_TAG))
-    if rel:
-        return rel
-    body = ("The archives of tools.lock that Hookshot keeps a copy of or assembles itself, named <sha256>-<name>.zip. Not a "
-            "version of Hookshot: the launcher never offers it, and it is never pruned (docs/releases.md, tools.lock).")
-    return api("POST", "/repos/%s/releases" % REPO, json.dumps({
-        "tag_name": TOOLS_TAG, "target_commitish": "main", "name": "Build tools", "body": body, "draft": False,
-        "prerelease": True}).encode(), "application/json")
-
-
-def upload(path, name):
-    rel = tools_release()
-    if any(a["name"] == name for a in rel.get("assets") or []):
-        print("%s is in the tools release already" % name)
-        return MIRROR + name
+def store(path, tool):
+    """The archive at path, put in Hookshot's store as the tool's copy (PUT; a copy there already, 409, is kept when it is the
+    same size: its bytes cannot change). FORGEJO_UPLOAD_API: the server without Cloudflare in front (its 100 MB limit), as
+    <address>/api/v1. Returns the copy's URL"""
+    url = store_url(tool)
+    base = (os.environ.get("FORGEJO_UPLOAD_API") or "").rstrip("/")
+    put = package_url(tool, base[:-len("/api/v1")] if base.endswith("/api/v1") else SERVER)
+    token = os.environ.get("RELEASE_TOKEN") or fail("RELEASE_TOKEN is needed (your token, with write access to %s's packages)" % OWNER)
+    size = os.path.getsize(path)
     with open(path, "rb") as f:
-        data = f.read()
-    boundary = "hookshottools" + hashlib.sha256(name.encode()).hexdigest()[:16]
-    form = (('--%s\r\nContent-Disposition: form-data; name="attachment"; filename="%s"\r\nContent-Type: application/zip\r\n\r\n'
-             % (boundary, name)).encode() + data + ("\r\n--%s--\r\n" % boundary).encode())
-    got = api("POST", "/repos/%s/releases/%d/assets?name=%s" % (REPO, rel["id"], urllib.parse.quote(name)), form,
-              "multipart/form-data; boundary=" + boundary)
-    if got.get("size") != len(data):
-        fail("%s: uploaded %s bytes of %d" % (name, got.get("size"), len(data)))
-    print("uploaded %s" % name)
-    return MIRROR + name
+        req = urllib.request.Request(put, data=f, method="PUT", headers={
+            "Authorization": "token " + token, "User-Agent": "hookshot-tools", "Content-Type": "application/zip",
+            "Content-Length": str(size)})
+        try:
+            with urllib.request.urlopen(req, timeout=1800):
+                pass
+            print("uploaded %s" % url)
+        except urllib.error.HTTPError as e:
+            if e.code != 409:
+                fail("PUT %s: HTTP %d %s" % (url, e.code, e.read().decode("utf-8", "replace")[:300]))
+            there, got, sha = exists(url)
+            if not there or got != size or sha != tool.sha256:
+                fail("%s is in the package registry already with other bytes (%s bytes, SHA-256 %s): a new version, then"
+                     % (url, got, sha))
+            print("%s is in the package registry already" % url)
+    return url
 
 
 def tracked_files(*paths):
@@ -363,13 +521,16 @@ def main(argv=None):
     s.add_argument("--require", nargs="*")
     s = sub.add_parser("fetch")
     s.add_argument("name")
+    s.add_argument("--system", choices=SYSTEMS, default="windows-x64")
     s.add_argument("--cache", default=CACHE)
     s = sub.add_parser("install")
     s.add_argument("folder")
+    s.add_argument("--system", choices=SYSTEMS, default="windows-x64")
     s.add_argument("--cache", default=CACHE)
     s.add_argument("--only", nargs="*")
     s = sub.add_parser("mirror")
     s.add_argument("name")
+    s.add_argument("--system", choices=SYSTEMS, default="windows-x64")
     s.add_argument("--cache", default=CACHE)
     s = sub.add_parser("add")
     s.add_argument("name")
@@ -377,7 +538,10 @@ def main(argv=None):
     s.add_argument("archive")
     s.add_argument("--dest", required=True)
     s.add_argument("--prefix", default="-")
-    s.add_argument("--system", default="windows-x64")
+    s.add_argument("--system", choices=SYSTEMS, default="windows-x64")
+    s = sub.add_parser("pack")
+    s.add_argument("folder")
+    s.add_argument("--out", required=True)
     s = sub.add_parser("assemble")
     s.add_argument("what", choices=("python", "cpm", "third-party", "profile"))
     s.add_argument("--requirements")
@@ -391,29 +555,49 @@ def main(argv=None):
     tools = load(a.lock)
 
     if a.cmd == "check":
-        missing = [n for n in (REQUIRED if a.require == [] else a.require or ()) if n not in {t.name for t in tools}]
+        have = {(t.name, t.system) for t in tools}
+        if a.require == []:
+            missing = ["%s (%s)" % (n, s) for s in SYSTEMS for n in REQUIRED[s] if (n, s) not in have]
+        else:
+            missing = [n for n in a.require or () if n not in {t.name for t in tools}]
         for t in tools:
             print("%-12s %-22s %s %6d MB  %s" % (t.name, t.version, t.system, t.size >> 20, t.urls[0]))
         if missing:
-            print("error: the tools release is missing: %s (tools.lock has no line for them, and a Windows builder needs "
-                  "them); RELEASING.md, One-time setup" % ", ".join(missing), file=sys.stderr)
+            print("error: tools.lock is missing: %s (a builder needs them); RELEASING.md, One-time setup" % ", ".join(missing),
+                  file=sys.stderr)
             return 1
+        if a.require is not None:
+            # (each copy in Hookshot's store answers with its size: a line whose package was never uploaded fails here, not on
+            # every player's PC. Upstream fallbacks are not asked)
+            gone = []
+            for t in tools:
+                if in_store(t.urls[0]):
+                    there, size, sha = exists(t.urls[0])
+                    if not there or size != t.size or sha != t.sha256:
+                        gone.append("%s (%s): %s" % (t.name, t.system, "not there" if not there else
+                                                     "%s bytes, SHA-256 %s" % (size, sha)))
+            if gone:
+                print("error: not in Hookshot's store as tools.lock names them: %s; RELEASING.md, Bump a tool" % "; ".join(gone),
+                      file=sys.stderr)
+                return 1
     elif a.cmd == "fetch":
-        print(fetch(named(tools, a.name), a.cache))
+        print(fetch(named(tools, a.name, a.system), a.cache))
     elif a.cmd == "install":
-        install(a.folder, [t for t in tools if not a.only or t.name in a.only], a.cache)
+        install(a.folder, [t for t in of_system(tools, a.system) if not a.only or t.name in a.only], a.cache)
+    elif a.cmd == "pack":
+        pack(a.folder, a.out)
     elif a.cmd == "mirror":
-        t = named(tools, a.name)
-        name = "%s-%s.zip" % (t.sha256, t.name)
-        url = upload(fetch(t, a.cache), name)
+        t = named(tools, a.name, a.system)
+        url = store(fetch(t, a.cache), t)
         if t.urls[0] != url:
             t.urls = [url] + [u for u in t.urls if u != url]
             write_line(t, a.lock)
         print("%s: %s" % (t.name, " ".join(t.urls)))
     elif a.cmd == "add":
         sha, size = sha256_file(a.archive), os.path.getsize(a.archive)
-        url = upload(a.archive, "%s-%s.zip" % (sha, a.name))
-        write_line(Tool(a.name, a.version, a.system, sha, size, a.dest, a.prefix, [url]), a.lock)
+        t = Tool(a.name, a.version, a.system, sha, size, a.dest, a.prefix, [])
+        t.urls = [store(a.archive, t)]
+        write_line(t, a.lock)
         print("tools.lock: %s %s %s" % (a.name, a.version, sha))
     elif a.cmd == "assemble":
         if a.what == "python":

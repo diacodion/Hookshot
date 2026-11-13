@@ -305,8 +305,11 @@ class LinuxBuilderDlssTests(unittest.TestCase):
         self.assertIn('return "" if NGX_SDK else os.environ.get("HOOKSHOT_VK_PREBUILT", "")', build_py)
         self.assertIn('vk_prebuilt = prebuilt_renderer()', build_py)
         appimage = (ROOT / "scripts" / "linux" / "appimage.sh").read_text(encoding="utf-8")
-        for piece in ("cp scripts/ngx_sdk.py", "cp -a gpu/vk gpu/compat gpu/third_party", "third_party/imgui", "libstdc++.a"):
+        for piece in ("cp scripts/ngx_sdk.py", "cp -a gpu/vk gpu/compat gpu/third_party", "third_party/imgui"):
             self.assertIn(piece, appimage)
+        # (the static C++ runtime the back end links with DLSS: in the sysroot, tools.lock's, which deps.sh tools packs)
+        deps = (ROOT / "scripts" / "linux" / "deps.sh").read_text(encoding="utf-8")
+        self.assertIn("libstdc++.a", deps[deps.index("# ---- the sysroot"):deps.index("# ---- each tool's licenses")])
 
 
 if __name__ == "__main__":

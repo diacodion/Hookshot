@@ -2,6 +2,8 @@
 
 python -I -B tests/test_linux_update.py
 """
+import contextlib
+import importlib.util
 import io
 import os
 import shutil
@@ -855,9 +857,11 @@ class UpdateTests(unittest.TestCase):
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "the Linux sysroot copy loop")
     def test_sysroot_system_aliases_round_trip_as_library_bytes(self):
-        script = (ROOT / "scripts" / "linux" / "appimage.sh").read_text(encoding="utf-8")
+        # (the sysroot is made by deps.sh tools, then packed as tools.lock's archive: scripts/tools.py pack and unpack, the
+        # builder's first start and the launcher, carry it; the parts list below is the older path)
+        script = (ROOT / "scripts" / "linux" / "deps.sh").read_text(encoding="utf-8")
         start = script.index("for f in crt1.o ")
-        loop = script[start:script.index("\ndone", start) + len("\ndone")]
+        loop = script[start:script.index("\n    done", start) + len("\n    done")]
         with tempfile.TemporaryDirectory(prefix="hookshot-sysroot-") as tmp:
             root = Path(tmp)
             system = root / "system"
@@ -878,6 +882,14 @@ class UpdateTests(unittest.TestCase):
             dest = root / "unpacked"
             linux_update._unpack(archive.read_bytes(), str(dest), None)
             self.assertEqual((dest / "lib" / "x86_64-linux-gnu" / alias.name).read_bytes(), real.read_bytes())
+            spec = importlib.util.spec_from_file_location("tools", ROOT / "scripts" / "tools.py")
+            tools = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(tools)
+            with contextlib.redirect_stdout(io.StringIO()):
+                tools.pack(str(source), str(root / "sysroot.zip"))
+            tools.unpack(str(root / "sysroot.zip"), "sysroot", str(root / "tool"))
+            self.assertEqual(os.readlink(root / "tool" / "lib"), "usr/lib")   # (the one link: relative, as packed)
+            self.assertEqual((root / "tool" / "lib" / "x86_64-linux-gnu" / alias.name).read_bytes(), real.read_bytes())
             self.assertEqual(os.readlink(alias), str(real))
             self.assertEqual(real.read_bytes(), b"private library bytes")
 

@@ -30,7 +30,8 @@ It uses the compile's lookup order: CPM caches first, then `HOOKSHOT_*_HEADERS`,
 FFmpeg comes from `HOOKSHOT_FFMPEG` when it holds `lib/libavcodec.a`, otherwise from `pkg-config`. The C probe
 uses the selected compiler, lld and `HOOKSHOT_SYSROOT` if set. A prebuilt renderer does not need renderer headers
 unless an NGX SDK selects a source renderer instead; source builds still need clang++ for the native translator.
-The AppImage uses its bundled tools,
+The AppImage uses tools.lock's Linux tools (builder/linux/linux_tools.py sets `EMSDK`, `HOOKSHOT_SYSROOT`,
+`HOOKSHOT_FFMPEG`, `HOOKSHOT_SDL2` and `RX_CPM` to them),
 and `RX_TARGET=windows` keeps the Windows toolchain checks rather than requiring Linux development libraries.
 The button-prompt packages in `nx2/prompt_requirements.txt` remain optional; this check installs nothing.
 

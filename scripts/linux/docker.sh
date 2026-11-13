@@ -1,8 +1,11 @@
 #!/bin/bash
 # The Linux AppImage built in a container (scripts/linux/Dockerfile: Ubuntu 22.04, as CI), on any distribution:
 #
-#   scripts/linux/docker.sh            deps.sh, then appimage.sh -> build-linux/Hookshot-<version>-x86_64.AppImage
+#   scripts/linux/docker.sh            deps.sh, then appimage.sh -> build-linux/Hookshot-<version>-x86_64.AppImage (with
+#                                      tools.lock's build tools, downloaded into build-linux/tools)
 #   scripts/linux/docker.sh deps       deps.sh only
+#   scripts/linux/docker.sh tools      deps.sh tools: the Linux build tools made and packed for tools.lock (RELEASING.md,
+#                                      "Bump a tool")
 #   scripts/linux/docker.sh shell      a shell in the build environment
 #   scripts/linux/docker.sh <command>  any other command, run in the checkout
 #
@@ -19,6 +22,7 @@ IMAGE=${HOOKSHOT_IMAGE:-hookshot-linux-build}
 case "${1:-}" in
     "")    CMD=(bash -c 'scripts/linux/deps.sh && scripts/linux/appimage.sh') ;;
     deps)  CMD=(scripts/linux/deps.sh) ;;
+    tools) CMD=(scripts/linux/deps.sh tools) ;;
     shell) CMD=(bash) ;;
     *)     CMD=("$@") ;;
 esac
