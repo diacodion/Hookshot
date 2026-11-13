@@ -240,8 +240,8 @@ The first release of each product only needs its first number (Hookshot `v3.0.0`
 git-cliff writes them at release time from the commit titles since the previous tag, with the repository's `cliff.toml`.
 For a stable, that is since the previous stable, so its notes cover its release candidates. The headings are Features,
 Fixes, Performance, Reverted, Documentation, Code, Build and Tests; `ci` and `chore` are left out. The notes go on the
-release page only: nothing is committed back to `main`, and there is no changelog file to keep up. Hookshot's
-`CHANGELOG.md` in Hookshot is history.
+release page only: nothing is committed back to `main`, and there is no changelog file to keep up (Hookshot's is in
+NotRexed/Hookshot).
 
 `release.py publish` puts a header above the notes (`release_page`), so a player who lands on a release page downloads the
 right thing:
