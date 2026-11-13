@@ -4781,7 +4781,7 @@ void clear_after_draws(VkCommandBuffer cmd) {
 /// chain: it is given no mask, so nothing is copied for it
 void reactive_scene_draw(VkCommandBuffer cmd, const Program& p, const NvnState& s, const Targets& at) {
     if (!reactive::wanted()) return;
-    if (!at.n || !at.color[0] || !at.depth || at.color_format[0] != VK_FORMAT_B10G11R11_UFLOAT_PACK32) return;
+    if (!at.n || !at.color[0] || !at.depth || !temporal_scene_format(at.color_format[0])) return;
     const uint64_t now = texture_frame_no();
     struct Seen { uint64_t frame; uint32_t w, h; };
     static thread_local Seen seen{~0ull, 0, 0};
@@ -6504,7 +6504,7 @@ static void dlss_trace_draw(const NvnState& s, const Program& p, const DrawArgs&
 /// binding 3: 3 x 4 matrices, a whole number of them) and the object's origin in its buffer 4 (binding 1, at 0x40)
 static void skin_check(const NvnState& s, const Program& p, const DrawArgs& d, const Targets& at) {
     if (d.mesh || !d.indexed || d.indirect || d.instances != 1 || !at.n || !at.color[0] || !at.depth ||
-        !temporal_scene_size(at.width, at.height) || at.color_format[0] != VK_FORMAT_B10G11R11_UFLOAT_PACK32 || s.nvattr < 7 ||
+        !temporal_scene_size(at.width, at.height) || !temporal_scene_format(at.color_format[0]) || s.nvattr < 7 ||
         !temporal_wanted())
         return;
     const auto attr = [&](int i) { return *reinterpret_cast<const nvn_va_st*>(&s.vattr[i]); };
@@ -7898,7 +7898,12 @@ bool temporal_stand_in(VkCommandBuffer cmd, const NvnState& s, const Program& p)
     uint32_t level = 0;
     const uint32_t out_handle = handle_of(s, st, od, 0);
     if (out_handle) texture_view_of(out_handle, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Storage, image_format(od.format), &out, &level);
-    const bool done = temporal_upscale(cmd, p.key, gameplay_network(p.key), in, dw().imgs[0].imageView, out, dw().imgs[ntex].imageView, level);
+    VkImageView in_view = dw().imgs[0].imageView, out_view = dw().imgs[ntex].imageView;
+    if (in && out && temporal_colour_pair(in->format, out->format) && out->format == VK_FORMAT_R16G16B16A16_SFLOAT) {
+        in_view = texture_view_of(in_handle, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Sample, VK_FORMAT_R16G16B16A16_SFLOAT);
+        out_view = texture_view_of(out_handle, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Storage, VK_FORMAT_R16G16B16A16_SFLOAT);
+    }
+    const bool done = temporal_upscale(cmd, p.key, gameplay_network(p.key), in, in_view, out, out_view, level);
     // (its actor motion may have drawn with a pipeline, viewport and descriptors of its own: the next draw sets all of its again)
     last_dyn_valid = false, last_desc_valid = false, last_vb_valid = false, last_pipeline = VK_NULL_HANDLE;
     vertex_set.on = false, last_ib.on = false;
@@ -7914,13 +7919,15 @@ static bool temporal_rejected_network(VkCommandBuffer cmd, uint64_t key, Texture
     end_pass(cmd);
     VkFormat in_format = VK_FORMAT_UNDEFINED, out_format = VK_FORMAT_UNDEFINED;
     const VkImageView in_view = texture_view(src, in, nullptr, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Sample, &in_format);
+    const bool rgba_pair = temporal_colour_pair(src->format, dst->format) && dst->format == VK_FORMAT_R16G16B16A16_SFLOAT;
     const VkImageView out_view = texture_view(dst, out, nullptr, VK_IMAGE_VIEW_TYPE_2D, ViewUse::Storage, &out_format,
-                                              VK_FORMAT_B10G11R11_UFLOAT_PACK32);
+                                              rgba_pair ? VK_FORMAT_R16G16B16A16_SFLOAT : VK_FORMAT_B10G11R11_UFLOAT_PACK32);
     // (the gameplay networks' own formats: their input is the square root of the scene colour, which the fixed shares' networks
     // sample as RGB9E5 from the B10G11R11 image it is kept in (shaders/taau_upscale.comp), the 3/4 one as B10G11R11. Decoded,
     // both are what the temporal upscaler's prep pass takes. The movies' (RGBA8) are not the scene)
-    if (!in_view || !out_view || out_format != VK_FORMAT_B10G11R11_UFLOAT_PACK32 ||
-        (in_format != VK_FORMAT_B10G11R11_UFLOAT_PACK32 && in_format != VK_FORMAT_E5B9G9R9_UFLOAT_PACK32))
+    const bool packed_pair = out_format == VK_FORMAT_B10G11R11_UFLOAT_PACK32 &&
+                             (in_format == VK_FORMAT_B10G11R11_UFLOAT_PACK32 || in_format == VK_FORMAT_E5B9G9R9_UFLOAT_PACK32);
+    if (!in_view || !out_view || (!packed_pair && !temporal_colour_pair(in_format, out_format)))
         return false;
     // (FSR 3.1 first, as fsr3_stand_in comes before temporal_stand_in: its upscale, or its frame interpolation's inputs while
     // another upscaler draws. Without it, on a card that leaves these networks out, FSR 3.1's own Render resolution steps
