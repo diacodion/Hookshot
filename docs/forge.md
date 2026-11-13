@@ -66,6 +66,7 @@ python -I scripts/forge.py pr edit 12 [--title T] [--body-file F]   the title or
 python -I scripts/forge.py pr update 12 [--body-file F] --comment "what changed and why"
 python -I scripts/forge.py pr comment 12 ("text" | --body-file F)
 python -I scripts/forge.py pr status 12                          WIP or ready, the check, the checklist, reviews, comments
+python -I scripts/forge.py pr review 12 (--approve | --comment | --request-changes) [--body-file F] [--at PATH:LINE TEXT]...
 ```
 
 - `pr ready` runs the PR description check (`scripts/check_pr_description.py`, the same one the `PR description`
@@ -82,6 +83,31 @@ python -I scripts/forge.py pr status 12                          WIP or ready, t
 - `pr edit` and `pr update` warn when a PR marked ready no longer passes the check: `pr wip` it if it needs more work.
 - Take your PR out of WIP yourself (`pr ready`) as soon as it is complete: a WIP PR isn't reviewed, so it waits until
   you do. Forgejo shows a WIP PR as not mergeable, whether or not it needs a rebase.
+
+## Reviewing a pull request
+
+```
+python -I scripts/forge.py pr checkout 12                         read it: jj diff -r pr/12, jj file show -r pr/12 <path>
+python -I scripts/forge.py pr review 12 --request-changes --body-file review.md \
+    --at gpu/vk/vk_draw.cpp:3598 "This runs 64 lookups per draw: ..." \
+    --at docs/old.md:-12 "Why remove this?"
+python -I scripts/forge.py pr review 12 --comment --body-file review.md --inline comments.json
+python -I scripts/forge.py pr review 12 --approve [--body "Looks right."]
+```
+
+One review: the verdict (`--approve`, `--comment` or `--request-changes`), a summary, and comments on lines of the
+diff, which Forgejo shows beside those lines. `--at PATH:LINE TEXT` (repeatable) puts one on line LINE of the PR's
+version of the file, `PATH:-LINE` on a line the PR removes (main's numbering). `--inline F` takes many from a JSON
+file:
+
+```json
+[{"path": "gpu/vk/vk_draw.cpp", "line": 3598, "body": "..."},
+ {"path": "docs/old.md", "old_line": 12, "body": "..."}]
+```
+
+A line outside the diff's hunks is refused before anything is posted, since the comment would land on no line. The
+review is tied to the PR's head commit, so a later push marks its comments outdated. A work-in-progress PR can be
+commented on, not approved: it isn't measured yet.
 
 ## Other commands
 

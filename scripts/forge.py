@@ -13,6 +13,8 @@ Standard library only (Windows and Linux), so any agent can use it; people may p
     python -I scripts/forge.py pr edit N [--title T] [--body TEXT | --body-file F]
     python -I scripts/forge.py pr update N [--body TEXT | --body-file F] (--comment TEXT | --comment-file F)
     python -I scripts/forge.py pr comment N (TEXT | --body-file F)
+    python -I scripts/forge.py pr review N (--approve | --comment | --request-changes) [--body TEXT | --body-file F]
+                                  [--inline F.json] [--at PATH:LINE TEXT]...   a review, with comments on lines of the diff
     python -I scripts/forge.py pr status N                          WIP or ready, the checklist, reviews, last comments
     python -I scripts/forge.py pr list [--mine] [--state open|closed|all]
     python -I scripts/forge.py pr view N [--comments]
@@ -44,8 +46,14 @@ the branch's head). pr ready takes WIP: off after the same check as the PR descr
 ticked; the Flags note only warns), and refuses when it fails
 (--force goes on with a warning); pr wip puts it back. The description is the PR as it is now, the comments its
 history: pr update edits the description and posts a comment saying what changed in one step.
+
+pr review posts one review: the verdict, a summary and comments on lines of the diff, each on the line of the PR's
+version of the file (PATH:LINE), or of main's for a line the PR removes (PATH:-LINE; "old_line" in --inline's JSON,
+a list of {"path", "line", "body"}). A line outside the diff's hunks is refused before anything is posted, since
+Forgejo would put the comment on no line. A work-in-progress PR can be commented on, not approved.
 """
 import argparse
+import json
 import os
 import re
 import shlex
@@ -352,6 +360,107 @@ def open_or_refuse(pr):
         raise ForgeError("#%d is %s" % (pr["number"], "merged" if pr.get("merged") else pr.get("state")))
 
 
+# --- reviews: a verdict, a summary and comments on lines of the diff ----------------------------------------------
+
+REVIEW_EVENTS = {"approve": "APPROVED", "comment": "COMMENT", "request_changes": "REQUEST_CHANGES"}
+
+
+def diff_lines(diff):
+    """{path: (new lines, old lines)} a comment can sit on: the lines of the diff's hunks, context included"""
+    def name(line, prefix):
+        n = line[4:].split("\t")[0]
+        return None if n == "/dev/null" else n[2:] if n.startswith(prefix) else n
+
+    files, new, old, path, before, hunk = {}, 0, 0, None, None, False
+    for line in diff.splitlines():
+        if line.startswith("diff --git "):
+            path, before, hunk = None, None, False
+        elif not hunk and line.startswith("--- "):
+            before = name(line, "a/")
+        elif not hunk and line.startswith("+++ "):
+            path = name(line, "b/") or before   # (a deleted file keeps its old name: comments go on its old lines)
+            if path:
+                files.setdefault(path, (set(), set()))
+        elif line.startswith("@@ ") and path:
+            m = re.match(r"@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@", line)
+            if m:
+                old, new, hunk = int(m.group(1)), int(m.group(2)), True
+        elif path and hunk and line[:1] in (" ", "+", "-"):
+            lines_new, lines_old = files[path]
+            if line[0] in (" ", "+"):
+                lines_new.add(new)
+                new += 1
+            if line[0] in (" ", "-"):
+                lines_old.add(old)
+                old += 1
+    return files
+
+
+def inline_comments(args):
+    """The review's line comments, from --inline (a JSON list) and --at, as [{path, line or old_line, body}]"""
+    found = []
+    if args.inline:
+        with open(args.inline, encoding="utf-8") as f:
+            try:
+                found = json.load(f)
+            except ValueError as e:
+                raise ForgeError("%s: not JSON (%s)" % (args.inline, e))
+        if not isinstance(found, list) or not all(isinstance(c, dict) for c in found):
+            raise ForgeError("%s: want a list of {\"path\", \"line\" (or \"old_line\"), \"body\"}" % args.inline)
+    for where, text in args.at or []:
+        path, _, line = where.rpartition(":")
+        old = line.startswith("-")
+        if not path or not line.lstrip("-").isdigit():
+            raise ForgeError("--at %s: want PATH:LINE (PATH:-LINE for a removed line)" % where)
+        found.append({"path": path, ("old_line" if old else "line"): int(line.lstrip("-")), "body": text})
+    return found
+
+
+def check_inline(comments, diff):
+    """Each comment as the API takes it ({path, new_position | old_position, body}); refuses one off the diff"""
+    lines = diff_lines(diff) if diff is not None else None
+    out, wrong = [], []
+    for c in comments:
+        path, body = c.get("path"), c.get("body")
+        new, old = c.get("line"), c.get("old_line")
+        if not isinstance(path, str) or not isinstance(body, str) or not body.strip() or (new is None) == (old is None):
+            raise ForgeError("an inline comment needs a path, a body and one of line / old_line: %r" % (c,))
+        number = new if new is not None else old
+        if not isinstance(number, int) or isinstance(number, bool) or number < 1:
+            raise ForgeError("an inline comment's line is a number from 1: %r" % (c,))
+        if lines is not None:
+            if path not in lines:
+                wrong.append("%s is not in the diff" % path)
+            elif number not in lines[path][0 if new is not None else 1]:
+                wrong.append("%s:%s%d is not a line of the diff's hunks" % (path, "" if new is not None else "-", number))
+        out.append({"path": path, "body": body, "new_position": new or 0, "old_position": old or 0})
+    if wrong:
+        raise ForgeError("inline comments off the diff (they would land on no line):\n  " + "\n  ".join(wrong))
+    return out
+
+
+def cmd_pr_review(args):
+    pr = get_pr(args.number)
+    open_or_refuse(pr)
+    event = REVIEW_EVENTS[args.event]
+    if event == "APPROVED" and desc.is_draft(pr["title"], pr.get("draft")):
+        raise ForgeError("#%d is work in progress: comment on it (--comment), approve it once it is marked ready"
+                         % pr["number"])
+    body = text_arg(args)
+    comments = inline_comments(args)
+    if event != "APPROVED" and not body.strip() and not comments:
+        raise ForgeError("the review is empty: give a summary (--body or --body-file) or inline comments")
+    diff = pr_diff(pr["number"]) if comments else None
+    if comments and diff is None:
+        print("forge.py: the inline comments' lines are not checked", file=sys.stderr)
+    review = {"event": event, "body": body, "comments": check_inline(comments, diff)}
+    if (pr.get("head") or {}).get("sha"):
+        review["commit_id"] = pr["head"]["sha"]   # (the commit read: a later push marks the comments outdated)
+    r = api("POST", "/repos/%s/pulls/%d/reviews" % (REPO, pr["number"]), review)
+    print("%s, %d inline comment%s: %s" % (event.lower().replace("_", " "), len(comments),
+                                          "" if len(comments) == 1 else "s", (r or {}).get("html_url") or pr["html_url"]))
+
+
 def label_id(name):
     page = 1
     while True:
@@ -490,7 +599,7 @@ def cmd_pr_status(args):
 
 def cmd_pr(args):
     commands = {"ready": cmd_pr_ready, "wip": cmd_pr_wip, "edit": cmd_pr_edit, "update": cmd_pr_update,
-                "status": cmd_pr_status}
+                "status": cmd_pr_status, "review": cmd_pr_review}
     if args.action in commands:
         return commands[args.action](args)
     if args.action == "create":
@@ -651,6 +760,20 @@ def main(argv=None):
     s = pr.add_parser("comment", help="post a comment")
     s.add_argument("number", type=int)
     body_args(s, text=True, what="the comment")
+    s = pr.add_parser("review", help="post a review: approve, comment or request changes, with comments on lines",
+                      description="Posts one review of the pull request: the verdict, a summary (--body or --body-file) "
+                      "and inline comments, each on a line of the diff: --at PATH:LINE TEXT (the line in the PR's "
+                      "version of the file; PATH:-LINE for a line the PR removes), or --inline F, a JSON list of "
+                      "{\"path\", \"line\" (or \"old_line\"), \"body\"}. Lines outside the diff's hunks are refused "
+                      "before anything is posted. A work-in-progress PR can be commented on, not approved.")
+    s.add_argument("number", type=int)
+    g = s.add_mutually_exclusive_group(required=True)
+    g.add_argument("--approve", dest="event", action="store_const", const="approve")
+    g.add_argument("--comment", dest="event", action="store_const", const="comment")
+    g.add_argument("--request-changes", dest="event", action="store_const", const="request_changes")
+    body_args(s, what="the review's summary")
+    s.add_argument("--inline", metavar="F", help="the inline comments, a JSON list (UTF-8)")
+    s.add_argument("--at", nargs=2, action="append", metavar=("PATH:LINE", "TEXT"), help="an inline comment (repeatable)")
     s = pr.add_parser("status", help="WIP or ready, the description check, the checklist, mergeable, reviews, comments")
     s.add_argument("number", type=int)
     s.add_argument("--last", type=int, default=3, metavar="N", help="the last N comments (default 3)")

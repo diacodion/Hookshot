@@ -6,7 +6,9 @@ refuses an incomplete description (--force goes on with a warning), prints the c
 'needs measurements' label off; pr wip puts WIP: back (and the label, when asked); pr
 edit keeps the WIP state; pr update edits the description and comments in one step, or only comments; pr comment takes
 --body-file; the fork and the PR's head use the login Forgejo has now, not the one saved at sign-in (an
-account can be renamed); pr status shows the state, the check, the checklist, the reviews and the last comments.
+account can be renamed); pr status shows the state, the check, the checklist, the reviews and the last comments; pr
+review posts one review (approve, comment or request changes) with its inline comments on lines of the diff, refusing
+a line outside the diff's hunks before posting anything, and an approval of a work-in-progress PR.
 
     python -I -B tests/test_forge_pr.py
 """
@@ -85,6 +87,9 @@ class Forgejo:
                 pr["draft"] = self.draft(pr["title"])
             return dict(pr)
         if parts[2:] == ["reviews"]:
+            if method == "POST":
+                self.reviews.setdefault(number, []).append(dict(body, user={"login": "alice"}, state=body["event"]))
+                return {"html_url": pr["html_url"] + "#issuecomment-%d" % (100 + len(self.reviews[number]))}
             return self.reviews.get(number, [])
         if parts[2:] == ["comments"]:
             if method == "POST":
@@ -332,6 +337,94 @@ class PR(unittest.TestCase):
         self.assertEqual(self.run_forge("pr", "comment", "5", "Second.")[0], 0)
         self.assertEqual([c["body"] for c in self.forgejo.comments[5]], ["Tested: fixed.\n", "Second."])
         self.assertIn("empty", self.run_forge("pr", "comment", "5")[2])
+
+    # --- review ---
+
+    REVIEW_DIFF = """diff --git a/gpu/vk/a.cpp b/gpu/vk/a.cpp
+index 1111111..2222222 100644
+--- a/gpu/vk/a.cpp
++++ b/gpu/vk/a.cpp
+@@ -10,4 +10,5 @@ void f() {
+ int a;
+--- removed, though it reads like a header
++++ added, though it reads like a header
++int c;
+ int d;
+@@ -40,2 +41,2 @@
+-old();
++new_();
+diff --git a/docs/new.md b/docs/new.md
+new file mode 100644
+--- /dev/null
++++ b/docs/new.md
+@@ -0,0 +1,2 @@
++# New
++text
+diff --git a/old.txt b/old.txt
+deleted file mode 100644
+--- a/old.txt
++++ /dev/null
+@@ -1,2 +0,0 @@
+-gone
+-too
+"""
+
+    def review_pr(self, title="fix: x"):
+        self.forgejo.add(5, title, FILLED)["head"]["sha"] = "abc123" + "0" * 34
+        self.forgejo.diffs[5] = self.REVIEW_DIFF
+
+    def test_diff_lines(self):
+        lines = forge.diff_lines(self.REVIEW_DIFF)
+        self.assertEqual(lines["gpu/vk/a.cpp"], ({10, 11, 12, 13, 41}, {10, 11, 12, 40}))
+        self.assertEqual(lines["docs/new.md"], ({1, 2}, set()))
+        self.assertEqual(lines["old.txt"], (set(), {1, 2}))
+
+    def test_review_approve_with_line_comments(self):
+        self.review_pr()
+        inline = self.file('[{"path": "docs/new.md", "line": 2, "body": "typo"},'
+                           ' {"path": "gpu/vk/a.cpp", "old_line": 40, "body": "why remove it?"}]', "inline.json")
+        code, out, err = self.run_forge("pr", "review", "5", "--approve", "--body", "Looks right.", "--inline", inline,
+                                        "--at", "gpu/vk/a.cpp:12", "c is never read", "--at", "old.txt:-2", "fine")
+        self.assertEqual(code, 0, err)
+        self.assertIn("approved, 4 inline comments: https://git.notrexed.dev/Hookshot/Hookshot/pulls/5#issuecomment-101", out)
+        (method, path, body), = self.forgejo.writes()
+        self.assertEqual((method, path), ("POST", "/repos/MagicBeanDev/Hookshot/pulls/5/reviews"))
+        self.assertEqual((body["event"], body["body"], body["commit_id"]), ("APPROVED", "Looks right.", "abc123" + "0" * 34))
+        self.assertEqual(body["comments"], [
+            {"path": "docs/new.md", "body": "typo", "new_position": 2, "old_position": 0},
+            {"path": "gpu/vk/a.cpp", "body": "why remove it?", "new_position": 0, "old_position": 40},
+            {"path": "gpu/vk/a.cpp", "body": "c is never read", "new_position": 12, "old_position": 0},
+            {"path": "old.txt", "body": "fine", "new_position": 0, "old_position": 2}])
+
+    def test_review_refuses_lines_off_the_diff(self):
+        self.review_pr()
+        for at in (["gpu/vk/a.cpp:30", "x"], ["gpu/vk/a.cpp:-41", "x"], ["README.md:1", "x"]):
+            code, _, err = self.run_forge("pr", "review", "5", "--comment", "--at", *at)
+            self.assertEqual(code, 1)
+            self.assertIn("off the diff", err)
+        for bad in (["--at", "gpu/vk/a.cpp", "x"], ["--at", "a.cpp:x", "x"], ["--at", "gpu/vk/a.cpp:12", " "],
+                    ["--inline", self.file('{"path": "a"}', "bad.json")], ["--inline", self.file("not json", "bad2.json")],
+                    ["--inline", self.file('[{"path": "docs/new.md", "line": 1, "old_line": 1, "body": "x"}]', "both.json")]):
+            self.assertEqual(self.run_forge("pr", "review", "5", "--comment", *bad)[0], 1, bad)
+        self.assertEqual(self.forgejo.writes(), [])
+
+    def test_review_wip_empty_and_closed(self):
+        self.review_pr("WIP: fix: x")
+        code, _, err = self.run_forge("pr", "review", "5", "--approve")
+        self.assertEqual(code, 1)
+        self.assertIn("work in progress", err)
+        self.assertIn("empty", self.run_forge("pr", "review", "5", "--request-changes")[2])
+        self.assertEqual(self.forgejo.writes(), [])
+        code, out, _ = self.run_forge("pr", "review", "5", "--request-changes", "--at", "gpu/vk/a.cpp:41", "breaks Linux")
+        self.assertEqual(code, 0)
+        self.assertIn("request changes, 1 inline comment:", out)
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            forge.main(["pr", "review", "5", "--body", "no verdict"])
+        self.forgejo.prs[5].update(title="fix: x", draft=False, state="closed")
+        self.assertIn("#5 is closed", self.run_forge("pr", "review", "5", "--approve")[2])
+        self.forgejo.prs[5]["state"] = "open"
+        self.assertEqual(self.run_forge("pr", "review", "5", "--approve")[0], 0)   # (an approval may say nothing more)
+        self.assertEqual([r["event"] for r in self.forgejo.reviews[5]], ["REQUEST_CHANGES", "APPROVED"])
 
     # --- status ---
 
