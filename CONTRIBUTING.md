@@ -32,11 +32,16 @@ Five minutes, then a first build.
 1. **Clone:**
 
    ```
-   git clone https://git.notrexed.dev/Hookshot/Hookshot.git
+   git clone --depth 1 https://git.notrexed.dev/Hookshot/Hookshot.git
    cd Hookshot
    ```
 
-   (jj users: `jj git clone --colocate https://git.notrexed.dev/Hookshot/Hookshot.git`.)
+   (jj users: `jj git clone --colocate --depth 1 https://git.notrexed.dev/Hookshot/Hookshot.git`.)
+
+   `--depth 1` fetches the newest commit only, not the whole history: about half the download, and half the work for
+   git.magicbean.dev. `git pull`, branches and pull requests work as usual. What needs the history: `git log` and
+   `git blame` past your clone, a version name from the tags (a shallow build calls itself by its commit, `2331f46`),
+   and cutting a release (`scripts/release.py`). For those, `git fetch --unshallow --tags` once.
 
 2. **Sign in:**
 
