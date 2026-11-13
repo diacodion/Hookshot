@@ -121,12 +121,19 @@ The game culls by occlusion: its z-prepass draws each candidate object's bounds 
 report, reads the reports back on the CPU a frame or two later, and leaves out the objects whose count was 0. The
 replay writes every report as 4096 ("visible") as it is recorded and gives each depth-only draw from a reset to its
 report a Vulkan occlusion query; as each recording begins, it reads every waiting report's queries at once (no wait)
-and writes the sum over the reports whose queries have all ended. A count not known yet, or not counted (a run with a
-draw that writes colour, a draw left out, a run of more than 256 draws), stays "visible": a late count costs culling,
-never an object. `RX_VK_OCC_QUERIES=0` turns this off (every report reads 4096, as before), as does setting
-`RX_VK_OCC_FIXED=<n>` (every report reads n); `RX_VK_OCC_QUERIES=2` counts the runs with colour draws too (a query
-around a real draw cost ~0.9 ms of GPU time a frame in the Market on an RTX 3090, for a few more objects left out).
-`RX_VK_OCC_LOG` (set) logs every ~5,000 reports how many read 0, how late they were written and what the reading cost;
+and writes the sum over the reports whose queries have all ended. A count not known for sure stays "visible": a late
+or unknown count costs culling, a wrong 0 would hide an object in view. So a report stays 4096 when its run has a draw
+that writes colour or more than 256 draws, when one of its draws did not draw (it returned before its draw command,
+its vertex input could not all be bound, or the mesh fallback split it into task batches: its query is never begun),
+when another queue's queries came in the middle of its run (the queries are numbered from one counter for all the
+game's queues), and when the slot was reported into again before the count came. Work held back at an event wait has
+its reports written as 4096 at once, so the game never reads an older count there before the replay gets to it.
+`RX_VK_OCC_QUERIES=0` turns this off (every report reads 4096, as before), as does setting `RX_VK_OCC_FIXED=<n>`
+(every report reads n, whatever `RX_VK_OCC_QUERIES` says) or `RX_VK_ASYNC=1` (a replay running behind the game);
+`RX_VK_OCC_QUERIES=2` counts the runs with colour draws too (a query around a real draw cost ~0.9 ms of GPU time a
+frame in the Market on an RTX 3090, for a few more objects left out).
+`RX_VK_OCC_LOG` (set) logs every ~5,000 reports how many read 0, how many were left visible and why, how late they
+were written and what the reading cost;
 `RX_VK_OCC_DRY` (set, a test) makes and reads the queries but leaves the reports at 4096, to time the queries alone.
 `HOOKSHOT_OCCLUSION_OFF=1` makes the game itself skip its occlusion queries (`nx2/oot_occlusion.py`).
 
