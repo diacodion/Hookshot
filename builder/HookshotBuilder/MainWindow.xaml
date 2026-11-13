@@ -192,7 +192,7 @@
               <CheckBox x:Name="PrepareTick" Style="{StaticResource Tick}" Content="Prepare shaders now"
                         IsChecked="True" Margin="0,12,0,0"
                         ToolTip="Prepares the game's shaders at the end of the build, a few minutes (longer on some GPUs). Unticked, the game prepares them at its first start, behind a black window."/>
-              <!-- (make_game.py --compile-shaders: what that preparation builds, and every one the game runs later. ShaderStep.cs) -->
+              <!-- (make_game.py's compile-shaders option: what that preparation builds, and every one the game runs later. ShaderStep.cs) -->
               <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
                 <TextBlock x:Name="CompileLabel" Style="{StaticResource Label}" Text="COMPILE SHADERS" VerticalAlignment="Center" Margin="0,0,12,0"/>
                 <ComboBox x:Name="CompileBox" Width="170" Style="{StaticResource Choice}" IsEditable="False" SelectedIndex="1"
