@@ -247,7 +247,8 @@ NotRexed/Hookshot).
 right thing:
 
 - **The launcher's releases** start with big download links to that release's own files: *Download for Windows* (the
-  installer), *Download for Linux* (the AppImage), and a small link to the portable zip.
+  installer), *Download for Linux* (the AppImage), and a small link to the portable zip, all through git-cdn.magicbean.dev
+  (the same paths as git.magicbean.dev, from Cloudflare's edge).
 - **Hookshot's releases** start with "To play, get the Hookshot Launcher": the same big links, to the newest launcher of
   the **same channel** (an rc to the launcher's rc, a nightly to its nightly, a stable to its stable) through the links
   below, then "Don't download the files below": they are the builders the launcher installs.

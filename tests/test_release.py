@@ -247,7 +247,7 @@ class ReleasePage(unittest.TestCase):
             with self.subTest(tag):
                 page = self.page(tag, "launcher", self.LAUNCHER)
                 head, notes = page.split("\n---\n", 1)
-                base = "https://git.notrexed.dev/Hookshot/HookshotLauncher/releases/download/%s/LongshotLauncher-%s" % (tag, tag)
+                base = "https://git-cdn.magicbean.dev/MagicBeanDev/LongshotLauncher/releases/download/%s/LongshotLauncher-%s" % (tag, tag)
                 self.assertEqual(head.strip().split("\n\n")[:4], [
                     "# ⬇️ Download Hookshot Launcher",
                     "### [🪟 &nbsp;Download for Windows](%s-windows-x64-setup.exe)" % base,
@@ -411,7 +411,7 @@ class Publish(unittest.TestCase):
         run("--product", "launcher", "publish", "v1.0.0-rc.1", "--target", "abc", "--notes", notes, f)
         body = FakeForgejo.releases[0]["body"]
         self.assertTrue(body.startswith("# ⬇️ Download Hookshot Launcher\n"))
-        self.assertIn("### [🪟 &nbsp;Download for Windows](https://git.magicbean.dev/MagicBeanDev/Test/releases/download/"
+        self.assertIn("### [🪟 &nbsp;Download for Windows](https://git-cdn.magicbean.dev/MagicBeanDev/Test/releases/download/"
                       "v1.0.0-rc.1/LongshotLauncher-v1.0.0-rc.1-windows-x64-setup.exe)", body)
         self.assertIn(release.CHANNEL_SAYS["rc"], body)
 
