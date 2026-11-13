@@ -84,14 +84,16 @@ def patch_life(source):
     end = source.find("\n}", start)
     if end < 0 or source[start:end].count(LIFE_CAS) != 2:
         return None
-    # x19 is the actor. Confirm its type and life pointer before protecting this write.
-    guard = ("    if ((uint32_t)c->x[12] < (uint32_t)c->x[11] && hos_oot_hearts_enabled() &&\n"
+    if "hos_oot_damage(" in source[start:end]:
+        return source
+    # x19 is the actor. Confirm its type and life pointer before scaling this write.
+    guard = ("    if ((uint32_t)c->x[12] < (uint32_t)c->x[11] &&\n"
              "        hos_oot_is_player(c, c->x[19]) &&\n"
              "        c->x[13] == recomp_load64(c,c->x[19] + 7184) + 8)\n"
-             "        c->x[12] = c->x[11];\n")
+             "        c->x[12] = hos_oot_damage((uint32_t)c->x[11], (uint32_t)c->x[12]);\n")
     body = source[start:end].replace(LIFE_CAS, guard + LIFE_CAS)
     return (source[:start] + body + source[end:]).replace(
-        '#include "a64.h"\n', '#include "a64.h"\nextern int hos_oot_hearts_enabled(void);\n'
+        '#include "a64.h"\n', '#include "a64.h"\nextern uint32_t hos_oot_damage(uint32_t old, uint32_t next);\n'
         'extern int hos_oot_is_player(Ctx *c, uint64_t actor);\n', 1)
 
 

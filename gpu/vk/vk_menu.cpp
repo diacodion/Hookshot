@@ -732,6 +732,10 @@ const char* tx_text_size(int v) {
     if ((unsigned)v >= sizeof t / sizeof t[0]) return t[0];
     return t[v];
 }
+const char* tx_damage_taken(int v) {
+    static const char* const names[] = {"Half", "Normal", "Double", "Quadruple"};
+    return names[v >= 0 && v < 4 ? v : 1];
+}
 const char* tx_fov(int v) { return v == 100 ? "100% (original)" : tx_percent(v); }
 const char* tx_prompts(int v) {
     static const char* t[HOS_PROMPT_N + 1] = {"Auto", "Switch", "Xbox", "PlayStation 4", "PlayStation 5", "Steam Deck",
@@ -1340,9 +1344,13 @@ Row rows[] = {
     // developer's rows
     {TAB_DEBUG, "Debug tools", &opts.debug_tools, 0, 1, 1, tx_onoff,
      "Testing tools: no-clip flight, a free camera, teleport, Link's age, the inventory, the clock, heart protection and "
-     "movement speed. Off puts flight, the free camera and heart protection away and Link back to his own speed.", nullptr, false, true},
+     "movement speed. Off puts flight, the free camera and heart protection away and Link back to his own speed and damage.", nullptr, false, true},
     {TAB_DEBUG, "Heart protection", nullptr, 0, 0, 0, nullptr,
      "Protects Link's hearts. Hits can still knock him back.", nullptr, false, true, 0},
+    {TAB_DEBUG, "Damage taken", &opts.damage_taken, 0, 3, 1, tx_damage_taken,
+     "How much health Link loses from a hit. Normal is unchanged. Half rounds up to the next quarter heart. "
+     "Changes apply at once; healing is unchanged. Heart protection takes priority. Debug tools Off makes it Normal "
+     "until they are on again.", nullptr, false, true},
     {TAB_DEBUG, "No-clip flight", nullptr, 0, 0, 0, nullptr,
      "Enable double-tap Jump for takeoff and landing. Hold Jump to climb or L to descend.", nullptr, false, true, 1},
     {TAB_DEBUG, "Mark position", nullptr, 0, 0, 0, nullptr,
@@ -1647,7 +1655,7 @@ int ask_sel = 0;   // (the restart question's choice: 0 Later, 1 Restart now)
 /// and menu_tick brings back one past the end
 bool row_shown(int i) {
     const int* v = rows[i].value;
-    return (rows[i].cheat < 0 || cheats_on()) && (v != &opts.reflex || reflex_available()) &&
+    return ((rows[i].cheat < 0 && v != &opts.damage_taken) || cheats_on()) && (v != &opts.reflex || reflex_available()) &&
            (v != &opts.antilag || antilag_available()) &&
            (v != &opts.dlss || ur::upscaler_shown(upscalers_available())) &&
            (v != &opts.dlss_model || ur::model_shown(dlss_why() == DLSS_OK)) &&
@@ -2763,8 +2771,9 @@ std::string restart_line(ui::Ctx& c, float px, float width) {
 /// (hookshot) The Debug tab's order: the tools' rows by their group (Row::cheat), Up and Down walking them so; Inventory item
 /// and Change quantity are not shown (the Inventory page edits every amount)
 struct DebugGroup { const char* title; int from, to; };   // (debug_tools_order[from, to))
-constexpr int debug_tools_order[] = {0, 1, 11, 9, 10, 8, 2, 3, 7, 4};
-constexpr DebugGroup debug_groups[] = {{"Player", 0, 5}, {"Travel", 5, 8}, {"Camera & world", 8, 10}};
+// (-1 is the saved Damage taken option, not a cheat action: beside Heart protection in Player)
+constexpr int debug_tools_order[] = {0, -1, 1, 11, 9, 10, 8, 2, 3, 7, 4};
+constexpr DebugGroup debug_groups[] = {{"Player", 0, 6}, {"Travel", 6, 9}, {"Camera & world", 9, 11}};
 constexpr int kDebugGroups = sizeof debug_groups / sizeof debug_groups[0];
 constexpr int kDebugTools = sizeof debug_tools_order / sizeof debug_tools_order[0];
 /// The Debug tab's rows as shown (its row numbers, tab_row_to_global's): the switch, the tools in debug_tools_order while they
@@ -2776,8 +2785,10 @@ int debug_rows(int* out, int* dev, int* dev_head) {
     for (int k = 0; k < count; ++k)
         if (rows[tab_row_to_global(TAB_DEBUG, k)].value == &opts.debug_tools) out[n++] = k;
     for (int t = 0; t < kDebugTools; ++t)
-        for (int k = 0; k < count; ++k)
-            if (rows[tab_row_to_global(TAB_DEBUG, k)].cheat == debug_tools_order[t]) out[n++] = k;
+        for (int k = 0; k < count; ++k) {
+            const Row& r = rows[tab_row_to_global(TAB_DEBUG, k)];
+            if (debug_tools_order[t] < 0 ? r.value == &opts.damage_taken : r.cheat == debug_tools_order[t]) out[n++] = k;
+        }
     *dev = n;
     for (int k = 0; k < count; ++k) {
         const Row& r = rows[tab_row_to_global(TAB_DEBUG, k)];
@@ -2811,7 +2822,7 @@ void draw_debug_rows(ui::Ctx& c, float cx0, float cx1, float top, float bottom, 
         const float pad = (tight ? 36 : 64) * s;
         if (r.cheat == 9 && age_shown(9))
             return 2 * std::max(ui::size_of(c.f.strong, px, "Kid").x, ui::size_of(c.f.strong, px, "Adult").x) + pad;
-        if (r.value && r.hi - r.lo != r.step) {   // (a Developer row of more than two values, Robust buffers: its widest, arrows)
+        if (r.value && r.hi - r.lo != r.step) {   // (a row of more than two values: its widest, arrows)
             float w = 0;
             for (int v = r.lo; v <= r.hi; v += r.step) w = std::max(w, ui::size_of(c.f.strong, px, r.text(v)).x);
             return w + (tight ? 56 : 68) * s;
@@ -2882,7 +2893,7 @@ void draw_debug_rows(ui::Ctx& c, float cx0, float cx1, float top, float bottom, 
         const float width = in_tools ? cell_w[vcol[i]] : std::max(need(r, false), cell_w[two ? 1 : 0]);
         const ImVec2 va(x1 - width, y), vb(x1, y + rh);
         name_cell(c, ImVec2(x0, y), ImVec2(va.x, y + rh), r.name, selected, restart_changed(r));   // (boxed, as on the other tabs)
-        if (r.value && r.hi - r.lo != r.step) {   // (Robust buffers: Auto, Off, On, with arrows as on the other tabs)
+        if (r.value && r.hi - r.lo != r.step) {   // (a choice with arrows, as on the other tabs)
             const bool fixed = row_fixed(r.value);
             choice_cell(c, va, vb, r.text(*r.value), selected, !fixed, !fixed, fixed);
         } else if (r.value) {   // (Debug tools and the Developer rows: values of the options, Off and On)
@@ -4228,6 +4239,7 @@ int menu_heart_protection() {
 int menu_player_flight() { return cheats_on() ? player_flight.load(std::memory_order_relaxed) : -1; }
 int menu_free_camera() { return cheats_on() ? free_camera.load(std::memory_order_relaxed) : 0; }
 int menu_link_speed() { return cheats_on() ? link_speeds[std::clamp(link_speed.load(std::memory_order_relaxed), 0, kLinkSpeeds - 1)] : 100; }
+int menu_damage_taken() { return cheats_on() ? opts.damage_taken : 1; }   // (Normal while the tools are off; the choice is kept)
 int menu_take_cheat_action() { return cheat_action.exchange(0, std::memory_order_relaxed); }
 
 void menu_note_present_sizes(uint32_t picture_w, uint32_t picture_h, uint32_t window_w, uint32_t window_h) {
