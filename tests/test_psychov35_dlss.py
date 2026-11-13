@@ -55,7 +55,8 @@ bool scene_tonemap_on() { return tone; }
 int env_switch(const char* n) { const char* e=std::getenv(n); return e && *e ? std::atoi(e) : -1; }
 unsigned logs=0;
 std::string route;
-void logf(const char*, const char* value, unsigned, unsigned, unsigned) { ++logs; route=value; }
+std::string engine_name;
+void logf(const char*, const char* engine, const char* value, unsigned, unsigned, unsigned) { ++logs; engine_name=engine; route=value; }
 /* GATE */
 /* PAIR */
 struct S { bool psycho_last=false; unsigned history_input=122; unsigned long long last_frame=30; };
@@ -74,16 +75,20 @@ int main(int argc, char**) {
     for (int t=0;t<2;++t) {
       tone=t;
       for (int f=0;f<256;++f) {
-        const bool expected=f==122 || (enabled && tone && ur::is_dlss(mode) && f==97);
+        const bool expected=f==122 || (enabled && tone && ur::takes_psychov35(mode) && f==97);
         assert(temporal_scene_format(f)==expected);
         for (int output=0;output<256;++output) {
           const bool correct=(f==122 && output==122) ||
-              (enabled && tone && ur::is_dlss(mode) && f==97 && output==97);
+              (enabled && tone && ur::takes_psychov35(mode) && f==97 && output==97);
           assert(temporal_colour_pair(f,output)==correct);
         }
       }
     }
   }
+  // DLSS/DLAA and FSR 4 / its native AA take it; FSR 3.1 (own packed inputs), the game's network and Off never do
+  assert(ur::takes_psychov35(ur::DLSS) && ur::takes_psychov35(ur::DLAA) && ur::takes_psychov35(ur::FSR4) &&
+         ur::takes_psychov35(ur::FSR4_AA));
+  assert(!ur::takes_psychov35(ur::GAME) && !ur::takes_psychov35(ur::FSR3) && !ur::takes_psychov35(ur::OFF));
   S s;
   s.history_input=0; // First Vanilla evaluation resets history without a Psycho/HDR log.
   transition(s,false); assert(s.last_frame==0 && logs==0);
@@ -96,7 +101,9 @@ int main(int argc, char**) {
   assert(route=="RGBA16F linear");
   s.last_frame=90; transition(s,true,97); assert(s.last_frame==90);
   transition(s,true,122); assert(s.last_frame==0 && s.history_input==122);
-  assert(route=="packed");
+  assert(route=="packed" && engine_name=="DLSS");
+  mode=ur::FSR4_AA; s.last_frame=95; transition(s,true,97);
+  assert(s.last_frame==0 && route=="RGBA16F linear" && engine_name=="FSR 4");
 }
 '''.replace('/* GATE */', gate).replace('/* PAIR */', pair).replace('/* SWITCH */', switch)
     # All three scene consumers agree: camera, animated characters, reactive mask.
@@ -108,6 +115,7 @@ int main(int argc, char**) {
     assert '!temporal_scene_format(in->format)' in upscale
     assert '!temporal_colour_pair(in->format, out->format)' in upscale
     assert 'psycho && (!engine.e->hdr || !engine.e->hdr())' in upscale
+    assert 'ur::takes_psychov35(mode)' in upscale and 'ur::takes_psychov35(temporal_mode())' in gate
     assert upscale.index('PsychoV35 waits') < upscale.index('engine.e->evaluate(cmd, f)')
     assert 'prep_hdr_data{16384.0f, VK_TRUE}' in chain
     assert 'out_hdr_square = VK_FALSE' in chain
@@ -158,7 +166,7 @@ int main(int argc, char**) {
             env = os.environ.copy()
             env['RX_VK_PSYCHOV35_DLSS'] = value
             subprocess.run([str(exe), *(['enabled'] if value=='1' else [])], env=env, check=True)
-    print('PsychoV35 DLSS: 3,670,016 input/output combinations, scene gate, history and RGBA SPIR-V checks passed')
+    print('PsychoV35 DLSS and FSR 4: 3,670,016 input/output combinations, scene gate, history and RGBA SPIR-V checks passed')
 
 if __name__ == '__main__':
     main()

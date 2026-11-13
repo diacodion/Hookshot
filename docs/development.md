@@ -130,10 +130,11 @@ around a real draw cost ~0.9 ms of GPU time a frame in the Market on an RTX 3090
 `RX_VK_OCC_DRY` (set, a test) makes and reads the queries but leaves the reports at 4096, to time the queries alone.
 `HOOKSHOT_OCCLUSION_OFF=1` makes the game itself skip its occlusion queries (`nx2/oot_occlusion.py`).
 
-`RX_VK_PSYCHOV35_DLSS=1` enables the experimental RGBA16F scene path for DLSS/DLAA with Native HDR and PsychoV35.
-The successful upscale supplies NVIDIA frame generation with depth, camera and actor motion as usual. It requires
-the native-HDR DLSS feature (`RX_VK_DLSS_HDR=0` prevents this path). FSR and TAAU are not enabled by this switch.
-See [the format and history rules](temporal-history.md#psychov35-with-dlssdlaa-opt-in) for validation and shader regeneration.
+`RX_VK_PSYCHOV35_DLSS=1` enables the experimental RGBA16F scene path for DLSS/DLAA and AMD FSR 4 (and its Native AA)
+with Native HDR and PsychoV35. The successful upscale supplies NVIDIA frame generation with depth, camera and actor
+motion as usual. It requires the engine's native-HDR context: DLSS's HDR feature (`RX_VK_DLSS_HDR=0` prevents this
+path) or FSR 4's HDR context (`RX_VK_FSR4_HDR=0` prevents it). FSR 3.1 and TAAU are not enabled by this switch.
+See [the format and history rules](temporal-history.md#psychov35-with-dlssdlaa-and-fsr-4-opt-in) for validation and shader regeneration.
 
 ### Running a test
 
