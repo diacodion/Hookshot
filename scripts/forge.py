@@ -546,6 +546,23 @@ def cmd_pr_update(args):
     print(post_comment(pr["number"], comment))
 
 
+def mergeable_note(pr, wip):
+    """Forgejo says a work-in-progress PR is not mergeable whatever its base: only a ready one's answer means a rebase"""
+    if pr.get("mergeable"):
+        return "yes"
+    if not wip:
+        return "no (rebase onto main)"
+    try:
+        main = api("GET", "/repos/%s/branches/main" % REPO)["commit"]["id"]
+    except (ForgeError, KeyError, TypeError):
+        main = None
+    base = pr.get("merge_base") or ""
+    return "not while it is work in progress (Forgejo merges no WIP PR); %s" % (
+        "it is on main's head, no rebase needed" if main and base == main
+        else "main has moved past its base: rebase if it conflicts" if main and base
+        else "whether it needs a rebase shows once it is ready")
+
+
 def cmd_pr_status(args):
     pr = get_pr(args.number)
     body = pr.get("body") or ""
@@ -579,7 +596,7 @@ def cmd_pr_status(args):
     items = desc.boxes(lists.get("If applicable", ""))
     print("Checklist, If applicable: %d kept, %d ticked" % (len(items), sum(t for t, _ in items)))
     if pr["state"] == "open":
-        print("Mergeable: %s" % ("yes" if pr.get("mergeable") else "no (rebase onto main)"))
+        print("Mergeable: %s" % mergeable_note(pr, wip))
     labels = [l["name"] for l in pr.get("labels") or []]
     print("Labels: %s" % (", ".join(labels) or "none"))
     latest = {}

@@ -6,7 +6,8 @@ refuses an incomplete description (--force goes on with a warning), prints the c
 'needs measurements' label off; pr wip puts WIP: back (and the label, when asked); pr
 edit keeps the WIP state; pr update edits the description and comments in one step, or only comments; pr comment takes
 --body-file; the fork and the PR's head use the login Forgejo has now, not the one saved at sign-in (an
-account can be renamed); pr status shows the state, the check, the checklist, the reviews and the last comments; pr
+account can be renamed); pr status shows the state, the check, the checklist, the reviews and the last comments (and
+for a work-in-progress PR, which Forgejo never calls mergeable, whether main has moved past its base); pr
 review posts one review (approve, comment or request changes) with its inline comments on lines of the diff, refusing
 a line outside the diff's hunks before posting anything, and an approval of a work-in-progress PR.
 
@@ -47,6 +48,7 @@ class Forgejo:
         self.labels = [{"id": 7, "name": "testing wanted"}, {"id": 9, "name": "needs measurements"}]
         self.reviews, self.diffs = {}, {}
         self.wip_prefixes = ("WIP:", "[WIP]")
+        self.main_head = "7afe6ae1" + "2" * 32
 
     def add(self, number, title, body, labels=()):
         self.prs[number] = {"number": number, "title": title, "body": body, "state": "open", "merged": False,
@@ -75,6 +77,8 @@ class Forgejo:
             pr = self.add(len(self.prs) + 1, body["title"], body["body"])
             pr["head"]["sha"], pr["merge_base"] = "992a2420" + "1" * 32, "7afe6ae1" + "2" * 32
             return dict(pr)
+        if parts == ["branches", "main"]:
+            return {"name": "main", "commit": {"id": self.main_head}}
         if parts[:2] == ["git", "commits"]:
             return {"commit": {"committer": {"date": "2026-11-10T12:00:00Z"}}}
         if parts[0] == "labels":
@@ -447,6 +451,18 @@ deleted file mode 100644
         out = self.run_forge("pr", "status", "6")[1]
         for want in ("ready for review", "Description: complete", "For everyone: 10 of 10 ticked", "Reviews: none"):
             self.assertIn(want, out)
+
+    def test_status_mergeable_of_a_wip_pr(self):
+        # (Forgejo answers not mergeable for any WIP PR: a rebase is named only where one can be needed)
+        head = self.forgejo.main_head
+        for title, merge_base, want in (("fix: x", head, "Mergeable: no (rebase onto main)"),
+                                        ("WIP: fix: x", head, "work in progress (Forgejo merges no WIP PR); it is on "
+                                                              "main's head, no rebase needed"),
+                                        ("WIP: fix: x", "0" * 40, "main has moved past its base: rebase if it conflicts"),
+                                        ("WIP: fix: x", None, "whether it needs a rebase shows once it is ready")):
+            pr = self.forgejo.add(7, title, TEMPLATE)
+            pr.update(mergeable=False, merge_base=merge_base)
+            self.assertIn(want, self.run_forge("pr", "status", "7")[1], title)
 
     def test_view_shows_wip(self):
         self.forgejo.add(5, "[wip] fix: x", FILLED)
