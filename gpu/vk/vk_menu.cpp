@@ -3067,12 +3067,11 @@ void draw_options(ui::Ctx& c) {
         hits.add(x, 0, x + tw[i], hh, menu_hit::kTab, i);
         x += tw[i];
     }
-    {   // (which build, at the banner's left, so a report can say it without opening the log; the release alone when the whole
-        // line would run into the tabs)
-        std::string ver = std::string("Hookshot ") + HOOKSHOT_VERSION;
+    {   // (which build, at the banner's left, so a report can say it without opening the log: as players see it, version_text,
+        // "Hookshot v3.0.0-rc.1" or "Hookshot Nightly 46 · 434712bb"; the log and the bug report keep the whole name)
+        std::string ver = std::string("Hookshot ") + version_text(HOOKSHOT_VERSION);
         const float room = (c.w - total) * 0.5f - 60 * s - c.safe, px = 15 * s;
         const auto width = [&](float p) { return ui::size_of(c.f.body, p, ver.c_str()).x; };
-        if (width(px) > room && ver.find(" (") != std::string::npos) ver.resize(ver.find(" ("));
         // (still too long, as a source build's "v2.0.11-821-g7b81752-dirty" since the Audio tab: at Small and Medium smaller
         // until it fits, on half-point steps, 10 points at the least; at Large, the size for a TV across the room, at its size
         // or not at all, as before)
