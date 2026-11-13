@@ -158,9 +158,14 @@ Settled scenes, uncapped, 2048x1152, `scripts/macos/scene.py`, 2026-11-12 (Kokir
 | Kokiri Forest, standing (with its distant trees) | ~2440 | 29.8 | 33.5 / 35.1 / 36.0 ms |
 | Market, at the gate | ~2930 | 34.4 | 29.0 / 31.3 / 32.5 ms |
 | Kakariko Village, at the gate | ~2600 | 34.0 | 29.3 / 30.8 / 31.6 ms |
+| Zora's River, at the entrance | ~1820 | 24.7 | 39.7 / 44.5 / 45.3 ms |
+| Lost Woods, at the entrance | ~1415 | 34.9 | 28.6 / 30.7 / 31.5 ms |
+| Death Mountain Trail, at the entrance | ~865 | 33.4 | 29.7 / 33.6 / 36.5 ms |
+| Kokiri Forest in a window (1108x720, V-Sync Auto) | ~2320 | 30.1 | 33.1 / 34.8 / 35.8 ms |
 
-A first visit to an area compiles its pipelines: the Market left ~200 draws a frame out for ~3 minutes, Hyrule Field some
-for over 6. One machine only: no other Apple GPU has been measured, so these say nothing of a smaller Mac.
+A first visit to an area compiles its pipelines: before the two fixes above the Market left ~200 draws a frame out for ~3
+minutes, Hyrule Field some for over 6; after them Lost Woods, Death Mountain Trail and Zora's River settled in 28-62 s of
+play, no compile over 2.6 s. Zora's River is the slowest place found (its GPU time line 35 ms). One machine only: no other Apple GPU has been measured, so these say nothing of a smaller Mac.
 
 ### Native mesh shaders (MoltenVK PR #2842): not yet
 
