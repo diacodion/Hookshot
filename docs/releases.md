@@ -36,7 +36,7 @@ P-256 signature of `SHA256SUMS`'s exact bytes, by the release key. A release's f
 
 Release files are Forgejo attachments: `[attachment] MAX_SIZE` (2048 MB on git.magicbean.dev now) caps each file, and
 `[repository.release] ALLOWED_TYPES` must stay empty (every type) for `.AppImage`, `.exe`, `.lock` and `SHA256SUMS`. The
-site is behind Cloudflare, which refuses uploads over 100 MB: CI uploads to `FORGEJO_UPLOAD_API`, the instance's address
+site is behind Cloudflare, which refuses uploads over 100 MB: CI uploads to the organization variable `RELEASE_UPLOAD_API` (`FORGEJO_UPLOAD_API` to `release.py`), the instance's address
 without Cloudflare in front, when it is set (RELEASING.md, One-time setup). Downloads are not limited.
 
 CI makes each release with the job's own token (`forgejo.token`, given to `release.py` as `RELEASE_TOKEN`), with no

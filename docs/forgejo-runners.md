@@ -38,5 +38,5 @@ the URLs changed. `actions/cache` needs the runner's cache server (on by default
 
 The release workflows upload the builders (hundreds of MB) to the release. git.magicbean.dev is behind Cloudflare, which
 cuts a request body at 100 MB, so a runner on the server's own network should upload to the Forgejo it can reach
-directly: set the organization variable `FORGEJO_UPLOAD_API` to that address's API (e.g. `http://forgejo:3000/api/v1`).
+directly: set the organization variable `RELEASE_UPLOAD_API` to that address's API (e.g. `http://magicbean-git:3000/api/v1`; a variable can't start with `FORGEJO_`).
 RELEASING.md, One-time setup, has the rest (the attachment limits in `app.ini`).
