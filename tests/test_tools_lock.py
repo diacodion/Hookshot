@@ -56,9 +56,11 @@ class Lock(unittest.TestCase):
             else:
                 self.assertRegex(t.dest, r"^usr/(lib|share)/hookshot/[a-z0-9]+$", t.name)
                 self.assertEqual(t.prefix, t.name, t.name)   # (scripts/tools.py pack: the folder's own name)
-            # (the forge's copy first, where it came from as the fallback: never a repository we do not control alone)
-            self.assertEqual(t.urls[0], tools.store_url(t), "%s: its copy in Hookshot's store is not its first URL" % t.name)
-            self.assertTrue(all(not tools.in_store(u) for u in t.urls[1:]), t.name)   # (the fallbacks: where it came from)
+            # (the forge's copy first, from Cloudflare's edge and then from the forge itself, where it came from as the
+            # fallback: never a repository we do not control alone)
+            self.assertEqual(t.urls[:2], tools.store_urls(t), "%s: its copies in Hookshot's store are not its first URLs" % t.name)
+            self.assertTrue(t.urls[0].startswith(tools.CDN + "/api/packages/"), t.name)
+            self.assertTrue(all(not tools.in_store(u) and not u.startswith(tools.CDN) for u in t.urls[2:]), t.name)
         self.assertEqual(tools.named(lock, "llvm-mingw").prefix, "llvm-mingw-20261104-ucrt-x86_64")
         # (every tool the Linux builder needs is in the lock: the AppImage carries none, builder/linux/linux_tools.py)
         self.assertEqual(sorted(t.name for t in tools.of_system(lock, "linux-x64")), sorted(tools.REQUIRED["linux-x64"]))
@@ -196,14 +198,22 @@ class Lock(unittest.TestCase):
         # (a line's copy in the store must answer, with its size; upstream links are not asked)
         t = tools.parse("tool zlib 1 linux-x64 %s 10 usr/lib/hookshot/zlib zlib https://x/z" % ("b" * 64))[0]
         with open(lock, "a") as f:
-            f.write("tool zlib 1 linux-x64 %s 10 usr/lib/hookshot/zlib zlib %s\n" % ("b" * 64, tools.store_url(t)))
+            f.write("tool zlib 1 linux-x64 %s 10 usr/lib/hookshot/zlib zlib %s\n" % ("b" * 64, " ".join(tools.store_urls(t))))
         asked = []
         for answer, rc in (((True, 10, "b" * 64), 0), ((False, None, None), 1), ((True, 9, "b" * 64), 1), ((True, 10, "c" * 64), 1)):
             with mock.patch.object(tools, "exists", lambda u, answer=answer: asked.append(u) or answer), \
                     contextlib.redirect_stderr(io.StringIO()) as err:
                 self.assertEqual(tools.main(["--lock", str(lock), "check", "--require"]), rc, answer)
             self.assertEqual(rc == 1, "zlib (linux-x64)" in err.getvalue())
-        self.assertEqual(asked, [tools.store_url(t)] * 4)
+        self.assertEqual(asked, [tools.store_url(t)] * 4)   # (the store's own address: the edge's copy is the same file)
+        # (a line with the store's copy but not the edge's first fails: every player would download it from the forge)
+        good = lock.read_text()
+        lock.write_text(good.replace(" ".join(tools.store_urls(t)), tools.store_url(t)))
+        with mock.patch.object(tools, "exists", lambda u: (True, 10, "b" * 64)), \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(tools.main(["--lock", str(lock), "check", "--require"]), 1)
+        self.assertIn("zlib (linux-x64): its first URLs are not", err.getvalue())
+        lock.write_text(good)
         # (the play profile is optional: a release is made without one, and the game built without it)
         self.assertNotIn("profile", tools.REQUIRED["windows-x64"] + tools.REQUIRED["linux-x64"])
         self.assertIn("work/hot_order.txt", [n for n in ("work/" + f for f in tools.PROFILE)])   # (assemble profile stays)

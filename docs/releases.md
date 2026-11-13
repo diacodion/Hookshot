@@ -110,7 +110,7 @@ They are not in the release: `tools.lock` names them.
 
 ```
 tool <name> <version> <system> <sha256> <size> <dest> <prefix> <url> [<url> ...]
-tool llvm-mingw 20261104 windows-x64 5521…40f 191037046 HookshotBuilder/tools/llvm-mingw llvm-mingw-20261104-ucrt-x86_64 https://git.magicbean.dev/api/packages/MagicBeanDev/generic/llvm-mingw-windows-x64/20261104/5521…-llvm-mingw.zip https://github.com/mstorsjo/…
+tool llvm-mingw 20261104 windows-x64 5521…40f 191037046 HookshotBuilder/tools/llvm-mingw llvm-mingw-20261104-ucrt-x86_64 https://git-cdn.magicbean.dev/api/packages/…-llvm-mingw.zip https://git.magicbean.dev/api/packages/…-llvm-mingw.zip https://github.com/mstorsjo/…
 ```
 
 - **Installing.** The Windows builder's setup (`builder/setup/setup.c`), the Linux AppImage (`builder/linux/linux_tools.py`)
@@ -125,7 +125,9 @@ tool llvm-mingw 20261104 windows-x64 5521…40f 191037046 HookshotBuilder/tools/
   package** of the MagicBeanDev organization (its *Packages* tab): the package `<name>-<system>` (`emsdk-windows-x64`,
   `emsdk-linux-x64`: a tool's Windows and Linux builds have versions of their own), its version the tool's, the file
   `<sha256>-<name>.zip`, at `https://git.magicbean.dev/api/packages/MagicBeanDev/generic/<name>-<system>/<version>/<file>`.
-  Anyone downloads them with no account. A package version's files never change (Forgejo refuses a second upload of a
+  Forgejo keeps packages in Cloudflare R2, and `git-cdn.magicbean.dev` serves the same paths from Cloudflare's edge
+  (cached), so a tool's first URL is its `git-cdn.magicbean.dev` link and its second the same file on git.magicbean.dev
+  (`scripts/tools.py check --require` holds both, in that order). Anyone downloads them with no account. A package version's files never change (Forgejo refuses a second upload of a
   name), and nothing prunes them, so an older version's tools stay downloadable. Where an archive came from (upstream for
   llvm-mingw, NotRexed/Hookshot's `builder-parts` release for those taken from Hookshot) is its fallback URL, so no install
   depends on a repository we do not control alone. An archive Hookshot makes itself (the CPM cache with dav1d, the

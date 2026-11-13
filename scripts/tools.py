@@ -48,6 +48,8 @@ LOCK = os.path.join(ROOT, "tools.lock")
 CACHE = os.path.join(ROOT, "build-tools-cache")
 REPO = "MagicBeanDev/Hookshot"
 SERVER = "https://git.magicbean.dev"
+# (the same files from Cloudflare's edge: git-cdn serves git.magicbean.dev's package paths from its R2 store, cached)
+CDN = "https://git-cdn.magicbean.dev"
 OWNER = REPO.split("/")[0]
 SYSTEMS = ("windows-x64", "linux-x64")
 # (the tools each builder needs: the release workflow refuses a lock without one of them. The Linux builder's AppImage carries
@@ -454,8 +456,18 @@ def package_url(tool, server=SERVER):
 
 
 def store_url(tool):
-    """The tool's copy in Hookshot's store: tools.lock's first URL"""
+    """The tool's copy in Hookshot's store, as the package API names it (where it is uploaded and checked)"""
     return package_url(tool)
+
+
+def store_urls(tool):
+    """tools.lock's first URLs for a tool in Hookshot's store: the edge's copy, then the store's own address"""
+    return [package_url(tool, CDN), package_url(tool)]
+
+
+def store_of(t):
+    """The store address among a line's URLs, or None (a tool only upstream has)"""
+    return next((u for u in t.urls if in_store(u)), None)
 
 
 def in_store(url):
@@ -571,8 +583,12 @@ def main(argv=None):
             # every player's PC. Upstream fallbacks are not asked)
             gone = []
             for t in tools:
-                if in_store(t.urls[0]):
-                    there, size, sha = exists(t.urls[0])
+                url = store_of(t)
+                if url:
+                    if t.urls[:2] != store_urls(t):
+                        gone.append("%s (%s): its first URLs are not %s" % (t.name, t.system, " ".join(store_urls(t))))
+                        continue
+                    there, size, sha = exists(url)
                     if not there or size != t.size or sha != t.sha256:
                         gone.append("%s (%s): %s" % (t.name, t.system, "not there" if not there else
                                                      "%s bytes, SHA-256 %s" % (size, sha)))
@@ -588,15 +604,17 @@ def main(argv=None):
         pack(a.folder, a.out)
     elif a.cmd == "mirror":
         t = named(tools, a.name, a.system)
-        url = store(fetch(t, a.cache), t)
-        if t.urls[0] != url:
-            t.urls = [url] + [u for u in t.urls if u != url]
+        store(fetch(t, a.cache), t)
+        first = store_urls(t)
+        if t.urls[:2] != first:
+            t.urls = first + [u for u in t.urls if u not in first]
             write_line(t, a.lock)
         print("%s: %s" % (t.name, " ".join(t.urls)))
     elif a.cmd == "add":
         sha, size = sha256_file(a.archive), os.path.getsize(a.archive)
         t = Tool(a.name, a.version, a.system, sha, size, a.dest, a.prefix, [])
-        t.urls = [store(a.archive, t)]
+        store(a.archive, t)
+        t.urls = store_urls(t)
         write_line(t, a.lock)
         print("tools.lock: %s %s %s" % (a.name, a.version, sha))
     elif a.cmd == "assemble":
