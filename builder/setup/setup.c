@@ -4,7 +4,8 @@
    The zip holds this setup, HookshotBuilder\ (the builder and Hookshot's sources), tools.lock and VERSION: the builder is
    copied into %LOCALAPPDATA%\HookshotBuilder\versions\<version>, and each tool of tools.lock (`tool <name> <version> <system>
    <sha256> <size> <dest> <prefix> <url> [<url>]`) is downloaded from the first URL that answers, checked by its SHA-256,
-   and its <prefix> folder unpacked as <dest>. A tool an installed version has is moved over, not downloaded again.
+   and its <prefix> folder unpacked as <dest> (merged, file by file, into a <dest> the builder's zip has already: place_tool).
+   A tool an installed version has is moved over, not downloaded again.
    Tools are unpacked with Windows' own tar.exe. Files fetched by a program carry no "downloaded from the internet" mark,
    and the download itself holds no scripts, which is what antivirus programs' machine-learning guesses
    (Trojan:Script/...!ml) fired on.
@@ -427,6 +428,35 @@ static int publish_install(const wchar_t *staged, const wchar_t *final, int port
     return 1;
 }
 
+/* A tool's unpacked <prefix> folder (from), checked by its SHA-256 before it was unpacked, made <dest> (to) in the staged
+   install. A <dest> the builder's own zip already has (HookshotBuilder\tools\third_party: the repository's sources, among which
+   the third-party tool's prebuilt files go, a64-kit\lift\a64emit.dll beside a64emit.cpp) gets the tool's files merged in, file
+   by file: a file both have is refused, never replaced, and so is a link on either side. A refusal can leave half of the files
+   moved, but only in versions\<tag>.part, which is published once complete and removed by the next run: never a partial
+   install. 0 when the tool cannot be placed. */
+static int place_tool(const wchar_t *from, const wchar_t *to) {
+    const DWORD attributes = GetFileAttributesW(from), there = GetFileAttributesW(to);
+    if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_REPARSE_POINT)) return 0;
+    if (there == INVALID_FILE_ATTRIBUTES) return MoveFileW(from, to) != 0;   /* (nothing there: moved whole, as before) */
+    if (!(attributes & FILE_ATTRIBUTE_DIRECTORY) || !(there & FILE_ATTRIBUTE_DIRECTORY) || (there & FILE_ATTRIBUTE_REPARSE_POINT))
+        return 0;   /* (a file where the other side has one, or a file and a folder: the tool would replace the builder's) */
+    wchar_t pattern[MAX_PATH];
+    if (!hb_home_join(pattern, MAX_PATH, from, L"*")) return 0;
+    WIN32_FIND_DATAW entry;
+    HANDLE find = FindFirstFileW(pattern, &entry);
+    if (find == INVALID_HANDLE_VALUE) return GetLastError() == ERROR_FILE_NOT_FOUND;
+    int ok = 1;
+    do {
+        if (!wcscmp(entry.cFileName, L".") || !wcscmp(entry.cFileName, L"..")) continue;
+        wchar_t source[MAX_PATH], target[MAX_PATH];
+        if (!hb_home_join(source, MAX_PATH, from, entry.cFileName) || !hb_home_join(target, MAX_PATH, to, entry.cFileName) ||
+            !place_tool(source, target)) { ok = 0; break; }
+    } while (FindNextFileW(find, &entry));
+    if (ok && GetLastError() != ERROR_NO_MORE_FILES) ok = 0;
+    FindClose(find);
+    return ok;
+}
+
 static int reuse_part(const wchar_t *versions, const char *tag, const Part *p, const wchar_t *install) {
     wchar_t rel[MAX_PATH], cur[MAX_PATH], list[MAX_PATH], from[MAX_PATH], to[MAX_PATH], parent[MAX_PATH];
     char was[128];
@@ -445,6 +475,10 @@ static int reuse_part(const wchar_t *versions, const char *tag, const Part *p, c
     if (!strstr(buf, p->sha)) return 0;
     home_path(from, L"%ls\\%hs\\%ls", versions, was, rel);
     home_path(to, L"%ls\\%ls", install, rel);
+    /* (a folder the staged install has already, the builder zip's tools\third_party: the installed version's holds that
+       version's sources as well as the tool's files, so it is never moved or copied onto it, and a failed copy's cleanup below
+       never removes it. The tool comes from its checked archive instead, place_tool) */
+    if (GetFileAttributesW(to) != INVALID_FILE_ATTRIBUTES) return 0;
     if (GetFileAttributesW(from) == INVALID_FILE_ATTRIBUTES) return 0;
     wcscpy(parent, to);
     wchar_t *slash = wcsrchr(parent, L'\\');
@@ -786,7 +820,9 @@ static DWORD WINAPI work(LPVOID unused) {
                 wcscpy(parent, final_tool);
                 wchar_t *cut = wcsrchr(parent, L'\\');
                 if (cut) *cut = 0, mkdirs(parent);
-                if (!MoveFileW(from, final_tool)) fail(L"Could not set up tool %d of %d (%ls: no %ls in its archive?).", i + 1, nparts, wdest, wf);
+                if (!place_tool(from, final_tool))
+                    fail(L"Could not set up tool %d of %d (%ls: no %ls in its archive, or a file the builder has already?).", i + 1, nparts,
+                         wdest, wf);
                 rmtree(dest);
             } else if (strcmp(p->from, "-") && strcmp(p->to, "-")) {   /* (llvm-mingw-<version>-ucrt-x86_64 -> llvm-mingw) */
                 wchar_t from[MAX_PATH], to[MAX_PATH], wf[260], wt[260];

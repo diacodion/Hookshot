@@ -116,8 +116,11 @@ tool llvm-mingw 20261104 windows-x64 5521…40f 191037046 HookshotBuilder/tools/
 - **Installing.** The Windows builder's setup (`builder/setup/setup.c`), the Linux AppImage (`builder/linux/linux_tools.py`)
   and the launcher (`Core/ToolsLock.cs`, `Toolchains`) download each tool of their system from the first URL that answers
   with the right bytes. They check its size and SHA-256 and unpack the archive's
-  `<prefix>` folder as `<dest>` in the install. A tool another installed version has, with the same SHA-256 and unpacked
-  the same way, is taken from it and not downloaded again. `scripts/tools.py install` does the same, for CI and developers.
+  `<prefix>` folder as `<dest>` in the install. A `<dest>` the builder already has (the Windows zip's
+  `HookshotBuilder/tools/third_party`, the sources the `third-party` tool's prebuilt files go among) gets the tool's files
+  merged in, file by file; a file both have is refused, never replaced. A tool another installed version has, with the
+  same SHA-256 and unpacked the same way, is taken from it and not downloaded again (the Windows setup excepts a merged
+  tool: it comes from its archive each time). `scripts/tools.py install` does the same, for CI and developers.
 - **Where the archives are: Packages.** Every tool is downloaded first from Hookshot's copy, a file of a **generic
   package** of the MagicBeanDev organization (its *Packages* tab): the package `<name>-<system>` (`emsdk-windows-x64`,
   `emsdk-linux-x64`: a tool's Windows and Linux builds have versions of their own), its version the tool's, the file

@@ -68,7 +68,6 @@ CHANNELS = ("stable", "rc", "nightly")
 # (git-cliff for the notes, Linux x86-64, pinned: its release page gives the SHA-256)
 GIT_CLIFF = ("2.14.2", "24f397c733add5390fdceee3a2088588ab0d5f944ce00d34cb7029b888cf2db4",
              "https://github.com/orhun/git-cliff/releases/download/v2.14.2/git-cliff-2.14.2-x86_64-unknown-linux-gnu.tar.gz")
-TOOLS_TAG = "tools"   # (Hookshot's long-lived release of tool archives, named by their SHA-256: scripts/tools.py; never a version)
 SUMS, SIG = "SHA256SUMS", "SHA256SUMS.sig"
 STABLE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
 VERSION = re.compile(r"^v(\d+)\.(\d+)\.(\d+)(?:-rc\.(\d+))?$")
@@ -107,7 +106,7 @@ def is_version(tag, first_major):
 
 def channel_of(tag, first_major):
     """the channel a version is made for: nightly, rc (a release candidate) or stable; None when it is no version of the
-    product (a git describe name, dev, a 2.x number, the tools release)"""
+    product (a git describe name, dev, a 2.x number; the build tools are generic packages, not releases: tools.lock)"""
     if NIGHTLY.match(tag or ""):
         return "nightly"
     if not is_version(tag, first_major):
@@ -465,7 +464,7 @@ def publish(tag, target, notes_file, files, product):
 
 def prune(keep, product):
     """The published nightlies past the newest keep, and the drafts of nightlies older than the newest published one (left
-    by failed runs), with their tags; never a stable, a release candidate or the tools release"""
+    by failed runs), with their tags; never a stable or a release candidate (the build tools are packages, not releases)"""
     repo = repo_of(product)
     count = lambda r: int(NIGHTLY.match(r["tag_name"]).group(1))
     nightlies = sorted((r for r in releases(repo) if NIGHTLY.match(r["tag_name"])), key=count, reverse=True)
