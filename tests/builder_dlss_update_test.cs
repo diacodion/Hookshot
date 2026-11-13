@@ -7,7 +7,6 @@ sealed class Step { public void Done() { } public void Small(string value) { } }
 // Only the UI and the build launcher are spies: UpdateBuild, settings and shader arguments are production code.
 sealed class Window
 {
-    object? download = new();
     readonly Dictionary<string, Step> rows = new() { ["download"] = new Step() };
     public static string SettingsPath = "";
     public bool prepareNow = true;
@@ -15,7 +14,9 @@ sealed class Window
     public List<string>? Args;
     void Run(Tools tools, List<string> args, bool keepRows, bool dlss, bool fsr = false)
     {
-        if (!keepRows || download != null) throw new Exception("Update setup changed.");
+        // (keepRows: the update keeps the window's rows. The builder's own download, which UpdateBuild used to clear, went
+        // with its self-update in #161)
+        if (!keepRows) throw new Exception("Update setup changed.");
         Dlss = dlss;
         Fsr = fsr;
         Args = args;
