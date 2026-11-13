@@ -15,6 +15,7 @@ import shutil
 import signal
 import socket
 import subprocess
+import json
 import sys
 import threading
 import time
@@ -521,6 +522,7 @@ class Builder(tk.Tk):
         self.status = tk.StringVar()
         self.kind = tk.StringVar(value=self.cfg.get("kind", "nup"))
         self.nup = tk.StringVar(value=self.cfg.get("nup", ""))
+        self.save_choice = tk.StringVar(value="")   # (Bring in a save: "" a new game, else "<program>|<profile>")
         self.romfs = tk.StringVar(value=self.cfg.get("romfs", ""))
         self.exefs = tk.StringVar(value=self.cfg.get("exefs", ""))
         self.out = tk.StringVar(value=self.cfg.get("out", os.path.expanduser("~/Games/Hookshot")))
@@ -880,8 +882,16 @@ class Builder(tk.Tk):
         else:
             self.path_row(paths, 0, "romfs", self.romfs, lambda: self.pick_dir(self.romfs))
             self.path_row(paths, 1, "exefs", self.exefs, lambda: self.pick_dir(self.exefs))
-        ttk.Label(f, textvariable=self.check_text, style="Small.TLabel", wraplength=px(800)).grid(
-            row=6, column=0, columnspan=3, sticky="w", pady=(px(6), 0))
+        under = ttk.Frame(f)
+        under.grid(row=6, column=0, columnspan=3, sticky="we")
+        under.columnconfigure(0, weight=1)
+        ttk.Label(under, textvariable=self.check_text, style="Small.TLabel", wraplength=px(800)).grid(
+            row=0, column=0, sticky="w", pady=(px(6), 0))
+        if not hasattr(self, "found_saves"):
+            self.find_saves()
+        if self.found_saves:
+            self.save_rows(under).grid(row=1, column=0, sticky="we")
+        self.form_page = self.page
 
         self.section(f, "Install the game to", 7, top=18)
         self.section(f, "Game language", 7, column=2, top=18)
@@ -980,6 +990,84 @@ class Builder(tk.Tk):
             self.bind_all(sequence, wheel)
         canvas.bind("<Destroy>", lambda e: [self.unbind_all(s) for s in ("<MouseWheel>", "<Button-4>", "<Button-5>")])
         return body, done
+
+    def saves_tool(self, *args):
+        """scripts/oot_saves.py with these arguments and --json: its answer, or {"error": why}"""
+        try:
+            out = subprocess.run([sys.executable, "-I", os.path.join(ROOT, "scripts", "oot_saves.py")] + list(args) + ["--json"],
+                                 capture_output=True, text=True, timeout=120).stdout.strip().splitlines()
+            return json.loads(out[-1]) if out and out[-1].startswith("{") else {"error": "the save tool gave no answer"}
+        except (OSError, ValueError, subprocess.SubprocessError) as e:
+            return {"error": str(e)}
+
+    def find_saves(self):
+        """The saves on this PC a build can start from (an emulator's or another port's), found once in the background;
+        the form is drawn again when they are known"""
+        def look():
+            doc = self.saves_tool("list")
+            found = []
+            for source in doc.get("sources", []):
+                programs = [n for n in source["display"].split(" / ") if n != "NX2navi"]
+                # (emulators that share one save folder, Eden's forks: one row, its programs said under it; one port unnamed)
+                shown = ("another PC port" if source["name"] == "nx2navi" else "your emulator's save" if len(programs) > 1
+                         else programs[0])
+                who = "%s and %s keep their saves here · " % (", ".join(programs[:-1]), programs[-1]) if len(programs) > 1 else ""
+                for save in source["saves"]:
+                    slots = ["%s, saved %s" % (x["slot"].replace("slot_", "Slot "), x["saved"].replace("T", " ")[:16]) if x["saved"]
+                             else x["slot"].replace("slot_", "Slot ") for x in save["slots"]]
+                    found.append({"name": source["name"], "shown": shown, "profile": save["profile"], "path": save["path"],
+                                  "about": who + " · ".join(slots), "waiting": bool(save.get("pending"))})
+            self.found_saves = found
+
+        def wait():   # (Tk is the main thread's alone: the form is drawn again from here, not from the thread)
+            if worker.is_alive():
+                self.after(150, wait)
+            elif self.found_saves and self.on_form():
+                self.show_form()
+        self.found_saves = []
+        worker = threading.Thread(target=look, daemon=True)
+        worker.start()
+        self.after(150, wait)
+
+    def on_form(self):
+        """the form is the page shown (a redraw then cannot take the place of a build or the launcher)"""
+        return self.page is not None and self.page is getattr(self, "form_page", None) and bool(self.page.winfo_exists())
+
+    def save_rows(self, parent):
+        """Bring in a save: Start a new game, then each save found; one of them is copied into the game folder after the build"""
+        px = self.px
+        box = ttk.Frame(parent)
+        self.section(box, "Bring in a save", 0, top=18)
+        card = ttk.Frame(box, style="Card.TFrame", padding=px(5))
+        card.grid(row=1, column=0, sticky="we")
+        box.columnconfigure(0, weight=1)
+        card.columnconfigure(0, weight=1)
+        ttk.Radiobutton(card, text="Start a new game", value="", variable=self.save_choice, style="Row.TRadiobutton",
+                        cursor="hand2").grid(row=0, column=0, sticky="we")
+        for i, save in enumerate(self.found_saves):
+            tk.Frame(card, height=max(1, px(1)), background=GLASS_LINE).grid(row=2 * i + 1, column=0, sticky="we", padx=px(12))
+            text = "Continue from %s\n%s" % (save["shown"], save["about"])
+            if save["waiting"]:
+                text += "\nStart that game and quit it from its menu once first: it still has a save waiting."
+            b = ttk.Radiobutton(card, text=text, value="%s|%s" % (save["name"], save["profile"]), variable=self.save_choice,
+                                style="Row.TRadiobutton", cursor="hand2")
+            b.grid(row=2 * i + 2, column=0, sticky="we")
+            if save["waiting"]:
+                b.state(["disabled"])
+        return box
+
+    def bring_in_save(self):
+        """After a build: the chosen save copied into Hookshot's save folder (its own save backed up first). What to say"""
+        choice = self.save_choice.get()
+        if not choice:
+            return ""
+        name, profile = choice.split("|", 1)
+        shown = next((x["shown"] for x in self.found_saves if x["name"] == name and x["profile"] == profile), name)
+        doc = self.saves_tool("import", name, "--profile", profile)
+        if "error" in doc:
+            return "your save from %s was not brought in: %s" % (shown, doc["error"])
+        self.save_choice.set("")   # (once: a later update keeps the game's own save)
+        return "your save from %s is in the game (%d slot(s))" % (shown, len(doc["slots"]))
 
     def share_row(self, parent, folder, wrap=None):
         """Save my pipeline list (share_pipeline_list), and under it what it did"""
@@ -1503,6 +1591,9 @@ class Builder(tk.Tk):
                 text += " · the shaders are prepared at its first start"
             elif self.shaders_later:
                 text += " · the shaders were not prepared: each is built when the game first draws it"
+            said = self.bring_in_save()
+            if said:
+                text += " · " + said
             self.stage_text.set(text)
             self.bar.configure(value=1.0)
             try:

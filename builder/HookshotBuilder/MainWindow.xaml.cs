@@ -116,6 +116,7 @@ public partial class MainWindow : Window
         if (wait > 0) await Task.Delay(wait);
         ApplySettings();
         FillDumps();
+        FillSaves();
         filesReady = true;
         ShowMain();
         if (Environment.GetEnvironmentVariable("HOOKSHOT_UI_PREVIEW") is { Length: > 0 } preview) { Preview(preview); return; }
@@ -1247,6 +1248,55 @@ public partial class MainWindow : Window
         if (Finder.ShortcutError != null) AddLog("shortcut not made: " + Finder.ShortcutError);
         ShowPage(ReadyPage);
         _ = FreeAfterBuild();
+        _ = BringInSave();
+    }
+
+    // ================= Bring in a save (Saves.cs) =================
+
+    FoundSave? chosenSave;   // (none: a new game)
+
+    /// The form's save rows: Start a new game, then each save found on this PC. The section stays hidden when there is none
+    async void FillSaves()
+    {
+        if (Tools.Find() is not { } tools) return;
+        var found = await Task.Run(() => Saves.Find(tools));
+        SaveList.Children.Clear();
+        if (found.Count == 0) return;
+        RadioButton Row(UIElement content, FoundSave? save, bool on)
+        {
+            var row = new RadioButton { Style = (Style)FindResource("DumpRow"), GroupName = "Saves", Content = content, IsChecked = on };
+            row.Checked += (_, _) => chosenSave = save;
+            return row;
+        }
+        SaveList.Children.Add(Row(new TextBlock { Text = "Start a new game", FontWeight = FontWeights.SemiBold }, null, true));
+        foreach (var s in found)
+        {
+            SaveList.Children.Add(new Border { Height = 1, Background = (Brush)FindResource("GlassLine") });
+            var texts = new StackPanel();
+            texts.Children.Add(new TextBlock { Text = $"Continue from {s.Shown}", FontWeight = FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis });
+            texts.Children.Add(new TextBlock { Text = s.Slots, Style = (Style)FindResource("Faint"), TextTrimming = TextTrimming.CharacterEllipsis });
+            if (s.Waiting)
+                texts.Children.Add(new TextBlock { Text = "Start that game and quit it from its menu once first: it still has a save waiting.",
+                                                   Style = (Style)FindResource("Faint"), Foreground = (Brush)FindResource("Warn"), TextWrapping = TextWrapping.Wrap });
+            var row = Row(texts, s, false);
+            row.ToolTip = s.Path;
+            row.IsEnabled = !s.Waiting;
+            SaveList.Children.Add(row);
+        }
+        SaveSection.Visibility = Visibility.Visible;
+    }
+
+    /// After a build: the chosen save copied into the new game folder (its own save backed up first), said under the title
+    async Task BringInSave()
+    {
+        SaveNote.Visibility = Visibility.Collapsed;
+        if (updating || chosenSave is not { } save || Tools.Find() is not { } tools) return;
+        var (ok, text) = await Task.Run(() => Saves.Import(tools, save, finished));
+        AddLog(text);
+        SaveNote.Text = text;
+        SaveNote.Foreground = (Brush)FindResource(ok ? "Go" : "Warn");
+        SaveNote.Visibility = Visibility.Visible;
+        if (ok) chosenSave = null;   // (once: an update of this folder later keeps the game's own save)
     }
 
     // (issue: 5 GB and more left in %LOCALAPPDATA% and never said. Said here, with the way to let it go)
