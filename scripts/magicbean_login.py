@@ -54,7 +54,7 @@ def config_dir():
 def write_private(path, value):
     """Written whole to a file only the user can read, then moved over the old one."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + ".tmp"
+    tmp = "%s.%d.tmp" % (path, os.getpid())
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         json.dump(value, f, indent=2)
@@ -107,13 +107,50 @@ def forge_tokens(form):
             "expires_at": time.time() + int(r.get("expires_in") or 3600)}
 
 
+class _SessionLock:
+    """Only one process renews the sign-in at a time: Forgejo takes each refresh token once, so two renewals at the
+    same moment (git's credential helper and forge.py, two agents) used to leave the second with "token was already
+    used" and the sign-in lost. The second waits here, then finds the token the first saved."""
+
+    def __enter__(self):
+        os.makedirs(config_dir(), exist_ok=True)
+        self.f = open(forge_path() + ".lock", "a+b")
+        if os.name == "nt":
+            import msvcrt
+            self.f.seek(0)
+            while True:
+                try:
+                    msvcrt.locking(self.f.fileno(), msvcrt.LK_LOCK, 1)
+                    break
+                except OSError:   # (LK_LOCK gives up after about 10 s: keep waiting)
+                    pass
+        else:
+            import fcntl
+            fcntl.flock(self.f, fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *exc):
+        if os.name == "nt":
+            import msvcrt
+            self.f.seek(0)
+            msvcrt.locking(self.f.fileno(), msvcrt.LK_UNLCK, 1)
+        self.f.close()
+
+
 def forge_session():
     """The saved git sign-in with an access token good for at least a minute (renewed with the refresh token, which
     Forgejo replaces each time), or None."""
     state = forge_load()
     if not state:
         return None
-    if state["expires_at"] - 60 < time.time():
+    if state["expires_at"] - 60 >= time.time():
+        return state
+    with _SessionLock():
+        state = forge_load()   # (read again under the lock: another process may have renewed it meanwhile)
+        if not state:
+            return None
+        if state["expires_at"] - 60 >= time.time():
+            return state
         if not state.get("refresh_token"):
             return None
         try:
@@ -127,10 +164,11 @@ def forge_session():
 
 def forge_expire():
     """The saved token was refused: the next use renews it first."""
-    state = forge_load()
-    if state:
-        state["expires_at"] = 0
-        write_private(forge_path(), state)
+    with _SessionLock():
+        state = forge_load()
+        if state:
+            state["expires_at"] = 0
+            write_private(forge_path(), state)
 
 
 # --- the browser trip ----------------------------------------------------------------------------------------------
