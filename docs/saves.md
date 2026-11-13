@@ -65,7 +65,7 @@ To keep your own copy, copy the save folder while the game is closed. Keep save 
 
 Each copy's backup is a folder in the backups folder above, named by when it was made. Close the game, then put that
 folder's contents back into the save folder, the whole set of slots at once. If something looks wrong, stop before
-copying again and [ask on Discord](https://discord.gg/KX99srmQTe), without posting your save files.
+copying again and [ask on Discord](https://discord.gg/rexed), without posting your save files.
 
 ## For advanced users: the save script
 

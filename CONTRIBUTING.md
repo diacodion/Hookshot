@@ -447,7 +447,7 @@ SDK is not one of them: it is never in the repository ([NVIDIA DLSS](#nvidia-dls
 
 ## Where to talk
 
-- **Discord:** https://discord.gg/KX99srmQTe. Claim work and discuss pull requests in `#dev-work`; `#prs` shows every
+- **Discord:** https://discord.gg/rexed. Claim work and discuss pull requests in `#dev-work`; `#prs` shows every
   open pull request, kept up to date.
 - **Issues:** [the forms on git.magicbean.dev](https://git.notrexed.dev/Hookshot/Hookshot/issues/new/choose).
 - **Agents:** [AGENTS.md](AGENTS.md); they post progress to the team chat (`scripts/team_chat.py`).

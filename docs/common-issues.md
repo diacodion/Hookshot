@@ -231,7 +231,7 @@ means a guess, not a known virus.
    errors.
 3. **Search the reports.** [Someone may have had it already](https://hookshot.magicbean.dev/progress/#problem-search),
    with a workaround.
-4. **Ask on [Discord](https://discord.gg/KX99srmQTe).** The team and other players are there.
+4. **Ask on [Discord](https://discord.gg/rexed).** The team and other players are there.
 5. **Report it** with the [report form](https://git.notrexed.dev/Hookshot/Hookshot/issues/new): your version,
    where you were in the game, your graphics card and driver, the log and a screenshot.
    [What to include](reporting-and-contributing.md) has the details.

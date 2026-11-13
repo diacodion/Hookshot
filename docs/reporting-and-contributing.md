@@ -2,7 +2,7 @@
 
 ## Not sure it's a bug?
 
-[Ask on Discord](https://discord.gg/KX99srmQTe) first: the team and other players are there, and someone may know the
+[Ask on Discord](https://discord.gg/rexed) first: the team and other players are there, and someone may know the
 fix already. Check [common problems](common-issues.md) and [search the reports](https://git.notrexed.dev/Hookshot/Hookshot/issues)
 too.
 
@@ -21,7 +21,7 @@ your user name taken out. Never attach game files, keys or saves.
 ## Help with testing
 
 Fixes often need checking on hardware the developer doesn't have: another graphics card, Linux, a Steam Deck. The team
-posts test requests on [Discord](https://discord.gg/KX99srmQTe); pick one up, play the change, and say what you saw,
+posts test requests on [Discord](https://discord.gg/rexed); pick one up, play the change, and say what you saw,
 including what didn't work. The [testing guide](https://git.notrexed.dev/Hookshot/Hookshot/src/branch/main/docs/test-requests.md)
 explains how.
 
