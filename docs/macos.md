@@ -81,6 +81,13 @@ compute stages only. What had to change for it, each found in play:
   A hundred draws a frame made Metal refuse the command buffer: "Insufficient Memory
   (kIOGPUCommandBufferCallbackErrorOutOfMemory)", which MoltenVK reports as a lost device. An indirect draw's count is
   not known when it is bound: 16 KB of indices are bound for it.
+- **8-bit indices made 16-bit by the replay** (`widen_u8_indices`, `RX_VK_U8_TO_U16=0` to leave them to MoltenVK).
+  Metal has no 8-bit indices: MoltenVK converts them with a compute dispatch before each such draw, which ends the Metal
+  render pass and starts it again, its targets stored and loaded (a Metal System Trace of Kokiri Forest: ~75 such
+  restarts a frame, ~1.7 ms of GPU work and the idle around it). The replay writes the 16-bit indices into the
+  recording's stream instead, as it does for quads; an indirect draw's count is not known when it is recorded, so those
+  stay MoltenVK's. Alternating runs, 2026-11-13: Kokiri Forest 29.7 -> 30.6 fps (p95 35.2 -> 34.3 ms), the Market
+  34.2 -> 35.3, the same picture.
 - **No `VkPipelineCache` file** (`pcache_init`, `RX_VK_PCACHE_LOAD=1` to try it). With the file of an earlier run
   loaded, the first compute pipeline of gameplay never came back from Metal's compiler (likely the compiles below that
   never finished, asked for in the draw).
@@ -159,6 +166,18 @@ pair a command buffer: MoltenVK samples them at encoder boundaries) counts that 
 command buffer collapse, so `RX_VK_PASS_TIMING` has nothing to show. Not the bottleneck, measured in alternating runs:
 the replay's wait for the exposure meter's late pages (~10 ms a frame on the game's main thread; `RX_VK_CAPTURE_WAIT=0`
 31.2/31.1 fps against 31.6/31.0) and the submission's part size (`RX_VK_CHUNK` 60: 30.6/30.9, 120: 30.8/30.8, 300: 29.2/29.3).
+
+**Where it goes (2026-11-13, before the 8-bit indices above).** The frame is the GPU's: the game's main thread waits for
+it once a frame (the capture's wait, or with `RX_VK_CAPTURE_WAIT=0` the game's own `nvnSyncWait`, the same time), and a
+`HOS_CHAIN` walk (`scripts/chain.py`; it works on the Mac) puts no CPU thread's own work on the path at length. Its
+command buffers, matched with their commits: 563 of the 581 ms the GPU waited for one (of 5.1 s) were before MoltenVK had
+begun encoding it (a buffer encodes in 57 us at the median), so that idle is the work coming late, not MoltenVK. The mesh
+fallback, from traces with and without `RX_VK_NO_MESH=1` (43 fps without its geometry, an upper bound): ~3.8 ms a frame of
+compute dispatches (63 fallback draws; ~1 ms of it the records' writes, ~2.8 ms the programs themselves), ~4 ms of
+fragment work (its geometry, and ~64 more render passes), ~1.5 ms more idle. Not worth it, measured: resetting a draw's
+records header in the draw before's compute work (no fills and barrier of its own; 29.84 fps against 29.78 in 4+4 runs);
+MoltenVK's `MVK_CONFIG_PREFILL_METAL_COMMAND_BUFFERS=1` breaks the picture (black frames, no GPU timestamps); a trylock
+spin before Darwin's rwlock waits (`vc_lock`'s waits halved, the fps the same).
 
 Settled scenes, uncapped, 2048x1152, `scripts/macos/scene.py`, 2026-11-12 (Kokiri Forest was 30.9 fps without its trees):
 

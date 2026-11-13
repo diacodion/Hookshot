@@ -35,8 +35,11 @@ def main():
         raise SystemExit("a vertex set remembers an empty size as empty")
     if "gpu_bind_stamp() == vstamp" not in draw:
         raise SystemExit("a vertex set is remembered across a mirror")
-    if draw.count("bind_index(") != 3:
+    # (quads, indirect, 8-bit indices made 16-bit (macos: Metal has none), direct)
+    if draw.count("bind_index(") != 4:
         raise SystemExit("an indexed draw binds its index buffer on its own")
+    if "widen_u8_indices(" not in draw or "u8_indices_widened()" not in draw:
+        raise SystemExit("8-bit indices are no longer made 16-bit on MoltenVK (each such draw restarts Metal's render pass)")
     bound = block(source, "void bind_index(")
     if bound.index("index_bind_same(") > bound.index("vkCmdBindIndexBuffer("):
         raise SystemExit("an index buffer is bound before checking it is already bound")
@@ -47,13 +50,23 @@ def main():
         raise SystemExit("a new command buffer keeps the vertex set and index buffer of the last one")
     verts = block(source, "bool vertex_set_same(")
     index = block(source, "bool index_bind_same(")
+    widen = block(source, "void widen_u8_indices(")
     fixture = f'''#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #define CHECK(x) do {{ if (!(x)) {{ std::fprintf(stderr, "FAIL:%d %s\\n", __LINE__, #x); std::exit(1); }} }} while (0)
 {verts}
 {index}
+{widen}
 int main() {{
+    {{   // (8-bit indices as 16-bit: 0xFF is the restart index only with restart on)
+        const uint8_t in[4] = {{0, 7, 0xFE, 0xFF}};
+        uint16_t out[4];
+        widen_u8_indices(in, out, 4, false);
+        CHECK(out[0] == 0 && out[1] == 7 && out[2] == 0xFE && out[3] == 0xFF);
+        widen_u8_indices(in, out, 4, true);
+        CHECK(out[0] == 0 && out[1] == 7 && out[2] == 0xFE && out[3] == 0xFFFF);
+    }}
     uint64_t addr[16]{{}}, size[16]{{}}, caddr[16]{{}}, csize[16]{{}};
     uint32_t stride[16]{{}}, cstride[16]{{}};
     addr[0] = 0x1000; size[0] = 64; stride[0] = 12;

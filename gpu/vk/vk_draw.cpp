@@ -6415,6 +6415,18 @@ bool vertex_set_same(uint64_t stamp, const uint64_t* addr, const uint64_t* size,
     }
     return true;
 }
+/// 8-bit indices as 16-bit ones; with primitive restart on, 8-bit's restart index (0xFF) becomes 16-bit's (0xFFFF)
+void widen_u8_indices(const uint8_t* in, uint16_t* out, uint64_t n, bool restart) {
+    for (uint64_t i = 0; i < n; i++) out[i] = restart && in[i] == 0xFF ? 0xFFFF : in[i];
+}
+/// (macos) 8-bit indices made 16-bit by the replay (draw): on MoltenVK, unless RX_VK_U8_TO_U16=0 (and =1 tries it elsewhere)
+bool u8_indices_widened() {
+    static const bool on = [] {
+        const char* e = getenv("RX_VK_U8_TO_U16");
+        return e ? atoi(e) != 0 : dev.driver_id == VK_DRIVER_ID_MOLTENVK;
+    }();
+    return on;
+}
 /// The index buffer already bound on this command buffer (a new recording is not)
 bool index_bind_same(uint64_t buffer, uint64_t offset, uint32_t type, uint64_t cached_buffer, uint64_t cached_offset,
                      uint32_t cached_type, int on) {
@@ -7406,6 +7418,25 @@ void draw(VkCommandBuffer cmd, NvnState& s, const DrawArgs& d) {
             if (cnt) vkCmdDrawIndirectCount(cmd, args.buffer, args.offset, cnt.buffer, cnt.offset, std::max(d.max, 1), ind_stride);
             else vkCmdDrawIndirect(cmd, args.buffer, args.offset, std::max(d.max, 1), ind_stride);
         }
+    } else if (d.indexed && d.itype == 0 && u8_indices_widened()) {
+        // (macos) 8-bit indices made 16-bit here, into the recording's stream, as the quads above (u8_indices_widened). Metal has
+        // no 8-bit indices: MoltenVK converts them with a compute dispatch before each such draw, which ends the Metal render pass
+        // and starts it again, its targets stored and loaded (~75 a frame in Kokiri Forest: 29.7 -> 30.6 fps). The restart index
+        // of a strip or fan, 0xFF, becomes 16-bit's 0xFFFF. An indirect draw's count is not known here: MoltenVK's, as before
+        const uint64_t n = (uint64_t)std::max(d.count, 1);
+        if (n > (1u << 24)) SKIP_HERE();
+        static thread_local std::vector<uint8_t> raw;
+        raw.resize(n);
+        if (!memory_read_as_submitted(d.ibuf, raw.data(), n)) SKIP_HERE();
+        const uint64_t at16 = stream_alloc(n * 2, 16);
+        if (at16 == UINT64_MAX) SKIP_HERE();
+        uint16_t* out = reinterpret_cast<uint16_t*>(cur->mapped + at16);
+        const bool restart = s.restart && topo != VK_PRIMITIVE_TOPOLOGY_POINT_LIST && topo != VK_PRIMITIVE_TOPOLOGY_LINE_LIST &&
+                             topo != VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST && topo != VK_PRIMITIVE_TOPOLOGY_PATCH_LIST;
+        widen_u8_indices(raw.data(), out, n, restart);
+        bind_index(cmd, cur->stream, at16, VK_INDEX_TYPE_UINT16);
+        FINE_SCOPE(FT_DRAWCALL);
+        vkCmdDrawIndexed(cmd, (uint32_t)d.count, (uint32_t)std::max(1, d.instances), 0, d.base_vertex, (uint32_t)d.base_instance);
     } else if (d.indexed) {
         const uint32_t unit = d.itype == 0 ? 1 : d.itype == 1 ? 2 : 4;
         BufferRef ib;
