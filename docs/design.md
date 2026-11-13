@@ -248,7 +248,11 @@ dump, the runtime made game-neutral, the stage-1 tools checked on MKW's dump as 
   `GuardFragmentOutputs` keeps float colour outputs finite (RX_VK_NAN_GUARD=0: off). Where the NaN comes from is not known.
 - Discards: a nested early return after a demote wrote its colours (`structured_control_flow.cpp`, from Lichii). That was the box
   around Link (`1e26755d`, the per-character shadow projector, drawn as a box that discards outside) and most of the milky look.
-- The OoT fog (0.25) and exposure (0.65) factors are still needed: with them off the fog is far too thick. Fog's cause is open.
+- Fog and exposure come from the game's own values: no OoT factor scales them. The fog (0.25) and exposure (0.65) factors, from
+  Orchid's workaround, were off from 11-07 and removed in Hookshot #2042 (`RX_VK_OOT`, `RX_VK_OOT_EXPOSURE`, `RX_VK_OOT_FOG`,
+  `RX_VK_OOT_VISUAL` are now only logged as doing nothing, `removed_switch_notes()` in `host/hos_main.c`): they had been tuned
+  against bugs since fixed. The ground fog that vanished when the camera looked down was the game's early texel writes being
+  dropped (Hookshot #638).
 - Fps is CPU-bound: RX_VK_NO_WRITEBACK cut GPU time from 10 to 3.6 ms and left fps alone. HOS_PIN_BY_CORE 35 fps, HOS_SPIN_US=200
   slower, narrow barriers no change, RX_VK_WAIT_GPU no help.
 - Tools: RX_VK_FRAMELOG + scripts/framelog.py (every frame shown), RX_VK_PROBE=2 (the passes at speed), RX_VK_SLOW_LOG, HOS_WATCH.
