@@ -1458,16 +1458,21 @@ void auto_profile() {
     mi.cbSize = sizeof mi;
     DEVMODEW dm{};
     dm.dmSize = sizeof dm;
-    if (main_window && GetMonitorInfoW(MonitorFromWindow(main_window, MONITOR_DEFAULTTOPRIMARY), &mi) &&
-        EnumDisplaySettingsW(mi.szDevice, ENUM_CURRENT_SETTINGS, &dm))
+    // (no window, the Builder's shader preparation and a headless start: the primary monitor, MonitorFromWindow(NULL, ...).
+    // A 0x0 screen made a fingerprint no options file had, so such a run chose Auto again for no screen and wrote it over
+    // the player's settings: issue 165)
+    if (GetMonitorInfoW(MonitorFromWindow(main_window, MONITOR_DEFAULTTOPRIMARY), &mi) &&
+        EnumDisplaySettingsW(mi.szDevice, ENUM_CURRENT_SETTINGS, &dm)) {
         hw.screen_w = (int)dm.dmPelsWidth, hw.screen_h = (int)dm.dmPelsHeight;
+        if (!main_window && dm.dmDisplayFrequency > 1) hw.refresh_hz = (int)dm.dmDisplayFrequency;   // (as display_refresh_mhz)
+    }
 #else
     const long pages = sysconf(_SC_PHYS_PAGES), page = sysconf(_SC_PAGE_SIZE);
     if (pages > 0 && page > 0) hw.ram_mb = (uint32_t)(((uint64_t)pages * (uint64_t)page) >> 20);
     const MkwVkWindow* w = (const MkwVkWindow*)main_window;
     if (w && w->version >= 3 && w->desktop_size) w->desktop_size(w->window, &hw.screen_w, &hw.screen_h);
 #endif
-    hw.refresh_hz = (display_refresh_mhz() + 500) / 1000;
+    if (main_window || !hw.refresh_hz) hw.refresh_hz = (display_refresh_mhz() + 500) / 1000;
     menu_auto_for_gpu(p, hw);
 }
 
