@@ -9,11 +9,6 @@
    Tools are unpacked with Windows' own tar.exe. Files fetched by a program carry no "downloaded from the internet" mark,
    and the download itself holds no scripts, which is what antivirus programs' machine-learning guesses
    (Trojan:Script/...!ml) fired on.
-
-   HOOKSHOT_SETUP_LIST=<url> installs a list of the older form instead, for development:
-       tag <tag>
-       part <sha256> <bytes> <folder under the install> <top folder in the zip to rename, or -> <new name, or -> <url>
-       run <the builder, relative to the install>
    Build: clang -O2 -mwindows -municode setup.c setup_rc.o -lwinhttp -lbcrypt -lcomctl32 -lshell32 -lole32 -o HookshotBuilder-Setup.exe */
 #define WIN32_LEAN_AND_MEAN
 #ifndef UNICODE
@@ -40,7 +35,7 @@ static wchar_t g_status[512];
 static volatile LONG g_percent = -1;
 static DWORD g_http_status;   /* (the last answer: 0 when the server was not reached) */
 static wchar_t g_cmdline[2048];
-static wchar_t g_app[MAX_PATH];   /* (HookshotBuilder\ beside this setup, the builder its zip carries; empty with HOOKSHOT_SETUP_LIST) */
+static wchar_t g_app[MAX_PATH];   /* (HookshotBuilder\ beside this setup, the builder its zip carries) */
 static HbHome g_home;
 static int g_home_ok;
 /* (RecompLauncher) --cli <make_game.py's options>: no window, the builder's lines on this process's stdout and stderr, its exit code
@@ -59,8 +54,7 @@ static void say_error(const wchar_t *msg) {
 typedef struct {
     char sha[65];
     unsigned long long size;
-    char dest[260], from[260], to[260], url[1024], url2[1024];
-    int tool;   /* (a tools.lock line: from is the archive's prefix, unpacked as dest) */
+    char dest[260], from[260], url[1024], url2[1024];   /* (a tools.lock line: from is the archive's prefix, unpacked as dest) */
 } Part;
 /* the next non-empty line of a text, cut in place (its \r or \n made 0); *next moves past it. NULL at the end
    (strtok's work without its hidden state) */
@@ -362,26 +356,10 @@ static void write_small(const wchar_t *path, const char *text) {
     CloseHandle(f);
 }
 
-/* A part that unpacks into a folder of its own (the tools the builder ships: Python, emsdk, the CPM packages, third_party,
-   wgpu-native, llvm-mingw): that folder, relative to a version's folder, in rel (0: the part has none, e.g. the builder's own code).
-   Named from its download (HookshotBuilder-<name>-<sha>.zip) or, for llvm-mingw, from its dest and rename. */
+/* The folder a tool of tools.lock unpacks into (the tools the builder ships: Python, emsdk, the CPM packages, third_party,
+   wgpu-native, llvm-mingw), relative to a version's folder, in rel: its dest */
 static int part_folder(const Part *p, wchar_t *rel, int n) {
-    if (p->tool) {   /* (a tool of tools.lock: its folder is its dest) */
-        swprintf(rel, n, L"%hs", p->dest);
-    } else if (strcmp(p->to, "-") && strcmp(p->dest, ".")) {   /* (llvm-mingw: dest HookshotBuilder/tools, renamed to llvm-mingw) */
-        swprintf(rel, n, L"%hs\\%hs", p->dest, p->to);
-    } else {
-        const char *b = strrchr(p->url, '/');
-        b = b ? b + 1 : p->url;
-        static const char *const own[] = {"python", "emsdk", "cpm", "third_party", "wgpu-native"};
-        int found = 0;
-        for (int i = 0; i < 5 && !found; i++) {
-            char want[64];
-            snprintf(want, sizeof want, "HookshotBuilder-%s-", own[i]);
-            if (!strncmp(b, want, strlen(want))) swprintf(rel, n, L"HookshotBuilder\\tools\\%hs", own[i]), found = 1;
-        }
-        if (!found) return 0;
-    }
+    swprintf(rel, n, L"%hs", p->dest);
     for (wchar_t *q = rel; *q; q++) if (*q == L'/') *q = L'\\';
     return 1;
 }
@@ -591,15 +569,6 @@ static int builder_ready(const wchar_t *exe) {
 
 #define LAUNCHER_DOWNLOAD L"https://hookshot.magicbean.dev/download"
 
-/* The list to install: HOOKSHOT_SETUP_LIST=<url>, NULL when none was given (then the list beside this setup, if any) */
-static const char *manifest_url(void) {
-    static char u[1024];
-    const char *e = getenv("HOOKSHOT_SETUP_LIST");
-    if (!e || !*e || strlen(e) >= sizeof u) return NULL;
-    snprintf(u, sizeof u, "%s", e);
-    return u;
-}
-
 static DWORD WINAPI work(LPVOID unused) {
     (void)unused;
     /* (--repair, from the builder's Repair button: every part checked again and the version unpacked anew, after the builder that
@@ -619,9 +588,8 @@ static DWORD WINAPI work(LPVOID unused) {
 
     status(L"Reading the parts list...");
     Mem man = {0};
-    /* (no URL given: the list beside this setup, as the RecompLauncher zip carries it; nothing is looked up on a server) */
-    int beside = 0;
-    if (!manifest_url()) {
+    /* (the list beside this setup, as the zip carries it; nothing is looked up on a server) */
+    {
         wchar_t list[MAX_PATH];
         GetModuleFileNameW(NULL, list, MAX_PATH);
         wchar_t *slash = wcsrchr(list, L'\\');
@@ -645,30 +613,10 @@ static DWORD WINAPI work(LPVOID unused) {
         mem_sink(&man, head, (DWORD)strlen(head));
         wcscpy(slash + 1, L"HookshotBuilder");
         wcscpy(g_app, list);
-        beside = 1;
     }
-    /* (tried again on a server error or no answer: 8 tries over ~3 minutes) */
+    /* (a tool's download is tried again on a server error or no answer: 8 tries over ~3 minutes) */
     static const int waits[] = {3, 6, 12, 20, 30, 45, 60};
     enum { TRIES = 8 };
-    int ok = beside;
-    for (int attempt = 0; attempt < TRIES && !ok; attempt++) {
-        if (attempt) {
-            status(L"The server didn't answer (%lu). Trying again in %d s...", g_http_status, waits[attempt - 1]);
-            Sleep(waits[attempt - 1] * 1000);
-            status(L"Reading the parts list...");
-        }
-        free(man.p);
-        man = (Mem){0};
-        g_http_status = 0;
-        ok = http_get(manifest_url(), mem_sink, &man, 0, NULL) && man.p;
-        if (!ok && !retryable(g_http_status)) break;   /* (404 and the like: trying again changes nothing) */
-    }
-    if (!ok)
-        fail(g_http_status == 404
-                 ? L"The parts list was not found. Get the Hookshot Launcher: " LAUNCHER_DOWNLOAD
-             : g_http_status ? L"The download server is failing right now (an error 500 or above, tried 8 times over 3 minutes). "
-                               L"Try again in a few minutes, or later today."
-                             : L"Could not reach the server to get the Hookshot Builder. Check your internet connection and try again.");
 
     char tag[128] = "", run[260] = "";
     Part parts[MAX_PARTS];
@@ -676,17 +624,13 @@ static DWORD WINAPI work(LPVOID unused) {
     for (char *next = man.p, *line; (line = next_line(&next)) != NULL;) {
         if (!strncmp(line, "tag ", 4)) sscanf(line + 4, "%127s", tag);
         else if (!strncmp(line, "run ", 4)) sscanf(line + 4, "%259s", run);
-        else if (!strncmp(line, "part ", 5) && nparts < MAX_PARTS) {
-            Part *p = &parts[nparts];
-            memset(p, 0, sizeof *p);
-            if (sscanf(line + 5, "%64s %llu %259s %259s %259s %1023s", p->sha, &p->size, p->dest, p->from, p->to, p->url) == 6) nparts++;
-        } else if (!strncmp(line, "tool ", 5) && nparts < MAX_PARTS) {   /* (tools.lock: name version system sha size dest prefix urls) */
+        else if (!strncmp(line, "tool ", 5) && nparts < MAX_PARTS) {   /* (tools.lock: name version system sha size dest prefix urls) */
             Part *p = &parts[nparts];
             char name[64], version[64], system[32];
             memset(p, 0, sizeof *p);
             const int got = sscanf(line + 5, "%63s %63s %31s %64s %llu %259s %259s %1023s %1023s", name, version, system, p->sha,
                                    &p->size, p->dest, p->from, p->url, p->url2);
-            if (got >= 8 && !strcmp(system, "windows-x64")) strcpy(p->to, "-"), p->tool = 1, nparts++;
+            if (got >= 8 && !strcmp(system, "windows-x64")) nparts++;
         }
     }
     if (!tag[0] || !run[0] || !nparts) fail(L"The release's setup list could not be read. Try again later.");
@@ -696,8 +640,7 @@ static DWORD WINAPI work(LPVOID unused) {
             const Part *p = &parts[i];
             bad = strlen(p->sha) != 64 || strspn(p->sha, "0123456789abcdef") != 64 || _strnicmp(p->url, "https://", 8) ||
                   (p->url2[0] && _strnicmp(p->url2, "https://", 8)) ||
-                  (strcmp(p->dest, ".") && !list_name_ok(p->dest, 1)) || (strcmp(p->from, "-") && !list_name_ok(p->from, p->tool)) ||
-                  (strcmp(p->to, "-") && !list_name_ok(p->to, 0)) || (p->tool && !strcmp(p->dest, "."));
+                  !list_name_ok(p->dest, 1) || (strcmp(p->from, "-") && !list_name_ok(p->from, 1));
         }
         if (bad) fail(L"The release's setup list has a name this setup does not accept. Try again later.");
     }
@@ -716,7 +659,7 @@ static DWORD WINAPI work(LPVOID unused) {
         rmtree(install);
         if (!g_home.portable) rmtree(final_dir);
         mkdirs(install);
-        if (g_app[0]) {   /* (the builder the zip carries, beside this setup) */
+        {   /* (the builder the zip carries, beside this setup) */
             wchar_t app[MAX_PATH];
             status(L"Copying the Hookshot Builder...");
             home_path(app, L"%ls\\HookshotBuilder", install);
@@ -777,13 +720,11 @@ static DWORD WINAPI work(LPVOID unused) {
             status(L"Unpacking part %d of %d...", i + 1, nparts);
             wchar_t dest[MAX_PATH], wdest[260], tarcmd[2 * MAX_PATH + 64], sys[MAX_PATH], final_tool[MAX_PATH];
             w(p->dest, wdest, 260);
-            if (p->tool) {   /* (a tool: unpacked aside, then its prefix folder moved in as dest) */
-                home_path(final_tool, L"%ls\\%ls", install, wdest);
-                for (wchar_t *q = final_tool; *q; q++) if (*q == L'/') *q = L'\\';
-                home_path(dest, L"%ls\\.tool-%d", install, i);
-                rmtree(dest);
-            } else if (!strcmp(p->dest, ".")) wcscpy(dest, install);
-            else home_path(dest, L"%ls\\%ls", install, wdest);
+            /* (a tool: unpacked aside, then its prefix folder moved in as dest) */
+            home_path(final_tool, L"%ls\\%ls", install, wdest);
+            for (wchar_t *q = final_tool; *q; q++) if (*q == L'/') *q = L'\\';
+            home_path(dest, L"%ls\\.tool-%d", install, i);
+            rmtree(dest);
             for (wchar_t *q = dest; *q; q++) if (*q == L'/') *q = L'\\';
             mkdirs(dest);
             GetSystemDirectoryW(sys, MAX_PATH);
@@ -811,7 +752,7 @@ static DWORD WINAPI work(LPVOID unused) {
                 /* Keep both paths; the displayed excerpt uses only the space left in fail()'s 1024-wide message. */
                 fail(L"%ls%.*ls", heading, (int)(1023 - wcslen(heading)), detail);
             }
-            if (p->tool) {
+            {   /* (the tool's prefix folder, moved in as dest) */
                 wchar_t from[MAX_PATH], wf[260], parent[MAX_PATH];
                 w(p->from, wf, 260);
                 if (strcmp(p->from, "-")) home_path(from, L"%ls\\%ls", dest, wf);
@@ -824,13 +765,6 @@ static DWORD WINAPI work(LPVOID unused) {
                     fail(L"Could not set up tool %d of %d (%ls: no %ls in its archive, or a file the builder has already?).", i + 1, nparts,
                          wdest, wf);
                 rmtree(dest);
-            } else if (strcmp(p->from, "-") && strcmp(p->to, "-")) {   /* (llvm-mingw-<version>-ucrt-x86_64 -> llvm-mingw) */
-                wchar_t from[MAX_PATH], to[MAX_PATH], wf[260], wt[260];
-                w(p->from, wf, 260), w(p->to, wt, 260);
-                home_path(from, L"%ls\\%ls", dest, wf);
-                home_path(to, L"%ls\\%ls", dest, wt);
-                if (GetFileAttributesW(to) == INVALID_FILE_ATTRIBUTES && !MoveFileW(from, to))
-                    fail(L"Could not set up part %d of %d (renaming %ls).", i + 1, nparts, wf);
             }
         }
         wchar_t staged_exe[MAX_PATH];

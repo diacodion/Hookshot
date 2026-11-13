@@ -184,18 +184,13 @@ class WarningTests(unittest.TestCase):
 
 
 class BuilderTests(unittest.TestCase):
-    """The three builders ask before a build on a hard drive, and their "Build" goes on when the player says so"""
+    """The two builders ask before a build on a hard drive, and their "Build" goes on when the player says so"""
 
     def test_the_windows_builder_asks(self):
         source = (ROOT / "builder" / "HookshotBuilder" / "MainWindow.xaml.cs").read_text(encoding="utf-8")
         self.assertIn("HardDriveWarning()", source)
         self.assertIn("Disk.Spinning", source)
         self.assertIn("MessageBoxButton.OKCancel", source)
-
-    def test_the_python_builder_asks(self):
-        source = (ROOT / "builder" / "py" / "hookshot_builder" / "window.py").read_text(encoding="utf-8")
-        self.assertIn("hard_drive_warning()", source)
-        self.assertIn("core.spinning", source)
 
     def test_the_linux_builder_asks(self):
         source = (ROOT / "builder" / "linux" / "hookshot_builder.py").read_text(encoding="utf-8")

@@ -21,8 +21,6 @@ ORDER = [
 # (the code that used to ask GitHub for a release or install a newer builder, and must not now)
 SOURCES = [
     "builder/linux/linux_update.py", "builder/linux/hookshot_builder.py", "builder/linux/AppRun", "builder/linux/hookshot-folder",
-    "builder/py/hookshot_builder/__init__.py", "builder/py/hookshot_builder/updater.py",
-    "builder/py/hookshot_builder/setup_parts.py", "builder/py/hookshot_builder/window.py", "builder/py/hookshot_builder_start.py",
     "builder/HookshotBuilder/Updater.cs", "builder/HookshotBuilder/MainWindow.xaml.cs", "builder/setup/setup.c", "host/hos_main.c",
 ]
 

@@ -1,6 +1,5 @@
 """The Linux builder's versions and its game folder launcher: which button a game folder gets, the version these tools are,
-the folder launcher starting the builder that made the game (or the game), and the packaging of the parts a Hookshot Launcher
-parts list names (scripts/linux/make_parts.py, for HOOKSHOT_LAUNCHER_PARTS).
+the folder launcher starting the builder that made the game (or the game), and the sysroot packed as tools.lock's archive.
 
 python -I -B tests/test_linux_update.py
 """
@@ -15,7 +14,6 @@ import sys
 import tempfile
 import unittest
 from types import SimpleNamespace
-import zipfile
 from pathlib import Path
 
 # (Linux only)
@@ -24,14 +22,11 @@ RUN_ALL_SKIP = {"windows": "the Linux builder's versions and folder launcher, PO
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "builder" / "linux"))
 sys.path.insert(0, str(ROOT / "nx2"))
-sys.path.insert(0, str(ROOT / "scripts" / "linux"))
 import linux_update  # noqa: E402
-import make_parts  # noqa: E402
-from part_links import SYSROOT_PART  # noqa: E402
 
 
 def appdir(path):
-    """A tiny AppDir: one file in each part, plus the launcher script an install copies to AppRun."""
+    """A tiny AppDir: one file in each tool's folder, plus the builder's AppRun."""
     tools = path / "usr" / "share" / "hookshot"
     (tools / "builder" / "linux").mkdir(parents=True)
     shutil.copyfile(ROOT / "builder" / "linux" / "AppRun", tools / "builder" / "linux" / "AppRun")
@@ -169,19 +164,10 @@ class VersionTests(unittest.TestCase):
             self.assertEqual(ran.returncode, 0, ran.stderr)
             self.assertEqual(ran.stdout.strip(), "game")
 
-    def test_packaging_refuses_a_sysroot_link_outside_its_root(self):
-        with tempfile.TemporaryDirectory(prefix="hookshot-sysroot-") as tmp:
-            root = Path(tmp)
-            source = root / SYSROOT_PART
-            source.mkdir(parents=True)
-            (source / "bad").symlink_to("/../outside")
-            with self.assertRaises(ValueError):
-                make_parts.write_zip(str(root / "part.zip"), str(root), SYSROOT_PART, None)
-
     @unittest.skipUnless(sys.platform.startswith("linux"), "the Linux sysroot copy loop")
     def test_sysroot_system_aliases_round_trip_as_library_bytes(self):
         # (the sysroot is made by deps.sh tools, then packed as tools.lock's archive: scripts/tools.py pack and unpack, the
-        # builder's first start and the launcher, carry it; the parts list below is the older path)
+        # builder's first start and the launcher, carry it)
         script = (ROOT / "scripts" / "linux" / "deps.sh").read_text(encoding="utf-8")
         start = script.index("for f in crt1.o ")
         loop = script[start:script.index("\n    done", start) + len("\n    done")]
@@ -200,10 +186,6 @@ class VersionTests(unittest.TestCase):
             subprocess.run(["bash", "-euo", "pipefail", "-c", loop], env=env, check=True)
             copied = source / "usr" / "lib" / "x86_64-linux-gnu" / alias.name
             self.assertFalse(copied.is_symlink(), "the sysroot must carry the alias's bytes, not an absolute target")
-            archive = root / "part.zip"
-            make_parts.write_zip(str(archive), str(root), "sysroot", None)
-            with zipfile.ZipFile(archive) as zipped:   # (lib is a link to usr/lib: the file is under usr/lib)
-                self.assertEqual(zipped.read("usr/lib/x86_64-linux-gnu/" + alias.name), real.read_bytes())
             spec = importlib.util.spec_from_file_location("tools", ROOT / "scripts" / "tools.py")
             tools = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(tools)

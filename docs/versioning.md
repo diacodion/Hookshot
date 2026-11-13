@@ -32,7 +32,7 @@ switches, the files a build writes into a game folder (`hookshot_options.ini`, `
 
 ## Choosing the next version
 
-There are no release pull requests and no release-please: a maintainer pushes a tag, and CI does the rest
+There are no release pull requests: a maintainer pushes a tag, and CI does the rest
 ([RELEASING.md](../RELEASING.md)). Pull requests are squash-merged and their titles are
 [Conventional Commits](https://www.conventionalcommits.org/) (`.forgejo/workflows/ci.yml`,
 [CONTRIBUTING.md](../CONTRIBUTING.md#pull-request-titles)), so the commits on `main` say what changed, and CI

@@ -196,7 +196,6 @@ There is no installer program: the launcher installs itself (the launcher's READ
   portable zip, in place beside its `portable` file; the file keeps its name.
 
 `HOOKSHOT_LAUNCHER_TRUST=<public key .pem>` trusts one more key, to try a release signed with a test key.
-`HOOKSHOT_LAUNCHER_PARTS=<list>` builds from a local parts list with no release at all (development).
 
 ## CI
 

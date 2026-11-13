@@ -178,9 +178,8 @@ static int run(int argc, wchar_t **argv) {
         Part part;
         memset(&part, 0, sizeof part);
         wcstombs(part.sha, argv[5], sizeof part.sha - 1);
-        strcpy(part.dest, "HookshotBuilder/tools/third_party"), strcpy(part.from, "third_party"), strcpy(part.to, "-");
+        strcpy(part.dest, "HookshotBuilder/tools/third_party"), strcpy(part.from, "third_party");
         strcpy(part.url, "https://invalid.example/third-party.zip");
-        part.tool = 1;
         g_home.portable = _wtoi(argv[4]);
         return reuse_part(argv[2], "v-new", &part, argv[3]) == _wtoi(argv[6]) ? 0 : 22;
     }

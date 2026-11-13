@@ -25,8 +25,7 @@ one). `build-windows.yml` makes the Windows builder's zip on Linux: the setup wi
 and version with that llvm-mingw's `windres`; the WPF builder with `dotnet publish -r win-x64 -p:EnableWindowsTargeting=true`
 (self-contained, as before). `scripts/check_windows_files.py` checks what it made as Windows files and starts the setup
 and the builder under Wine. The Windows Vulkan back end (also with DLSS, `vulkan-dlss.yml`) is built with `RX_TARGET=windows`.
-What only a Windows PC can check is in RELEASING.md, *Needs a Windows tester*. The MSI source (`builder/msi/`, WiX) is
-not built by CI and not part of a release.
+What only a Windows PC can check is in RELEASING.md, *Needs a Windows tester*.
 
 ## Register a runner
 
