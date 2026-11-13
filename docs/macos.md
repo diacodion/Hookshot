@@ -180,7 +180,7 @@ or missing grass), so the compute fallback stays. What is known:
 - **Metal refuses four to eight of the ~50 mesh pipelines in Kokiri Forest**: "Threadgroup memory size (35868..42908) exceeds the
   maximum threadgroup memory allowed (32768)", the foliage's G-buffer passes (8-9 outputs; SPIRV-Cross stages a mesh's outputs
   in threadgroup memory). Their draws take the compute fallback one program at a time (`mesh_native_refused`).
-- **That per-program fallback was itself wrong until b27b89b0**: on a driver with mesh shaders its compute translations took
+- **That per-program fallback was itself wrong until f532e95a**: on a driver with mesh shaders its compute translations took
   the task and mesh stages' one-lane paths (every lane read as lane 0), and the grass's refused colour pass drew nothing. Fixed:
   `profile_pinned` gives them compute's subgroups. With every program sent to the fallback one by one, the PR's MoltenVK now
   matches Homebrew's picture. The bisects before that fix (which named 879fe82e and 8a8304ed) were confounded by it.
