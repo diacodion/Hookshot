@@ -345,6 +345,72 @@ what you test.
 **Never use it for numbers:** no fps or frame-time measurements, build timings, hitch or stutter checks, profiles,
 and no release or player build. Build those with the defaults.
 
+#### Testing a change against a base
+
+A full build of a new game folder is more than an hour on some PCs, most of it the shader preparation, which starts
+cold in a new folder. `scripts/dev_packs.py` builds the game once as a **base**, then builds a change as a **pack**
+of what differs from the base (the game, the renderer, files the build generates) and runs it from a copy of the
+base. It calls `make_game.py` and `build.py` as they are, with the defaults, and changes nothing in what players
+build.
+
+**A base, a pack and a runtime never leave your PC.** They are built from the game: a pack holds the built modules,
+with the lifted game linked in, and files generated from the game; a runtime is a whole game folder. Never attach,
+upload or send them to a tester or the chat ([CONTRIBUTING.md](../CONTRIBUTING.md#the-rule-with-no-exceptions)).
+What you share is the branch; a tester builds their own.
+
+```
+python -I scripts/dev_packs.py base ../base-main --romfs <romfs> --exefs <exefs> [--seed <an older game folder>]
+python -I scripts/dev_packs.py pack ../base-main my-fix --tree <the change's checkout>
+python -I scripts/dev_packs.py rt   ../base-main ../rt-my-fix my-fix
+```
+
+- **`base`** builds a checkout at the commit to compare against (with `HOOKSHOT_KEEP_BUILD_FILES=1`).
+  `--seed` copies an older game folder's shader caches first, as an update keeps them: the caches are stamped
+  by the shader translator, so the prepare redoes only what changed instead of starting cold.
+  `--predict-s N` stops building the whole game's predicted pipelines after N seconds (`RX_VK_PREDICT_S`); the
+  rest are built in play when first drawn, so warm the base for the scenes you test (below). For development
+  only, never for a player's build: 0, the default, builds them all.
+- **`pack`** needs a checkout whose history contains the base's commit (rebase it first). Its commits, its
+  uncommitted changes and its untracked files all count.
+  - **How it builds:** a change to renderer files alone (`gpu/vk/`, `imgui`, FidelityFX) that the game is not
+    built from builds the renderer alone (`RX_VK_ONLY`, no lift: seconds to minutes). Any other change builds the
+    game with `make_game.py` (`HOOKSHOT_NO_PREPARE=1`), both modules and the game folder. The renderer files the
+    game is built from are found in the checkout: what `host/` includes from `gpu/`, what `build.py` adds to the
+    game's dependencies, and what those include.
+  - **What it keeps:** a module when one of the objects it is linked from differs from the base's (its link list,
+    `objs.rsp` / `vk_objs.rsp`). Bytes can't tell: both modules hold the version, a fingerprint of every source
+    (`nx2/version.py`), which changes the code around it, so the object holding it (`hos_main.c`, `vk_menu.cpp`)
+    counts only when its own source or a header changed. When the change takes the game build, both modules are kept
+    when something reaches them besides
+    their objects: the build's own scripts (`make_game.py`, `build.py` and what it imports, such as `toolchain.py`:
+    flags, link options, the hot order, the Windows manifest), a data file under `nx2/` that is not the translator's, or a non-C file under
+    `host/`, `gpu/` or `third_party/`; a renderer-only change (a shader, say) builds and keeps the renderer alone.
+    It also keeps every other file of the built game folder that differs from
+    the base's (the shader seed, the shipped pipeline list, the button prompts). A file the base's own build made
+    (`base` records them) that the change's build no longer makes is removed from the runtime; saves, settings, logs,
+    the preparation's markers and every cache are never touched, and an adopted base records none.
+  - **Prepare:** the runtime prepares again when the shader translator (`gpu/vk/{eden,sirit,compat}/`,
+    `vk_shader.cpp`, `vk_bank.cpp`, `vk_state.h`, `vk_api.h`: what `build.py` stamps the shader caches with) or the
+    shader seed changed; `--prepare` / `--no-prepare` decide instead.
+    A base prepares once its outputs are recorded, as `make_game.py` does: `HOOKSHOT_NO_PREPARE` (set and not `0`)
+    skips it, and a preparation that fails (no usable Vulkan, a driver that stopped responding) keeps the base, with
+    the reason in `base.json`'s `not_prepared`, and leaves the work to its first start.
+  - **Where:** game packs share one work folder per base (`<base>/game-work`). The lift key holds that folder's
+    path, so the first game pack translates the game once and the later ones skip the lift while the translator,
+    the HLE functions and the hot list stay the same; the base's compiled objects are linked in. Build one pack at
+    a time.
+- **`rt`** makes a game folder to run: the base's, with `romfs` hard-linked (it is never written), the other files
+  copied (the game writes its caches), and the packs' files over them. Two packs that bring the same file are
+  refused (merge the branches and build one pack); a pack built on another base is refused too, so the game and
+  the renderer always come from one base (`MKWVK_API_VERSION`).
+- **`warm`** plays a runtime with no pack once per `--run` command (`{runtime}` in it is the runtime's folder; the command
+  is split as a POSIX shell would, so on Windows write its paths with forward slashes, `C:/Games/...`),
+  copies the caches play made or grew (pipelines, play files, programs) back into the base's game folder, and
+  deletes the runtime, so every later runtime starts warm for those scenes. Only cache files are copied.
+- **One job at a time per base:** `base`, `pack`, `rt` and `warm` hold `<base>/dev_packs.busy` while they run.
+
+For numbers, compare the runtime with one made by `rt` from no pack: same base, same caches, one difference.
+
 ### Build times
 
 A player's first build of **nightly-56-e7ed2f7a**, measured on **2026-11-13** on Linux: a Ryzen 9 7900X (12 cores,

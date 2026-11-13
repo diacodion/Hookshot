@@ -52,6 +52,9 @@ What CONTRIBUTING.md doesn't spell out, and agents trip on:
   (no `CP_ACP`; `tests/test_utf8_paths.py`).
 - **No CI, and no game in the checks.** Forgejo runs no checks yet: run `python -I -B tests/run_all.py` yourself
   and say so in the PR. The checks run without a dump; a run in the game is yours to do locally and report.
+- **Test a change against a base, not in a new full build**: `scripts/dev_packs.py`, [Testing a change against a
+  base](docs/development.md#testing-a-change-against-a-base). Agents sharing a PC share one base and agree before
+  moving it; it is for development and A/B runs only. Bases, packs and runtimes are built from the game: never send them.
 
 ## Open the pull request
 
