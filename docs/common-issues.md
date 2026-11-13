@@ -40,7 +40,9 @@ download is genuine.
 
 ### The build is very slow, or runs out of space
 
-1. **Expect 10 to 45 minutes.** A hard drive works, but builds are much slower than on an SSD.
+1. **Expect about 15 minutes on a 12-core desktop, and longer on a slower PC.** Most of the time is compiling and
+   preparing shaders, which use every CPU thread, so a 6-core PC can take twice as long or more (an estimate, not a
+   measurement). A hard drive works, but builds are much slower than on an SSD.
 2. **Free about 60 GB** before building. The build's own files (about 4 GB) are deleted once the game is ready.
 
 [Search build reports](https://hookshot.magicbean.dev/progress/#problem-search?q=build)

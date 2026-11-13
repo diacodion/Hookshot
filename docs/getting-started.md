@@ -20,8 +20,8 @@ SteamOS, the AppImage has to be made runnable first). Every channel, and the fil
 
 ## 3. Build and play
 
-Point the launcher at your game and press **Build**: it takes 10 to 45 minutes. Then press **Play**. The first start
-prepares the game's shaders, so it's slower than the next ones.
+Point the launcher at your game and press **Build**: it takes about 15 minutes on a 12-core desktop, and longer on a
+slower PC. Then press **Play**. The first start prepares the game's shaders, so it's slower than the next ones.
 
 See [the in-game menu](../README.md#in-game-menu) for settings and controls. If something goes wrong, start with
 [Common problems](common-issues.md) and [the README's troubleshooting](../README.md#if-something-goes-wrong).

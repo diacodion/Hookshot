@@ -227,7 +227,7 @@
             <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
             <ProgressBar x:Name="SpaceBar" Style="{StaticResource Bar}" Foreground="{StaticResource Go}" Width="160" VerticalAlignment="Center"/>
             <TextBlock x:Name="SpaceText" Grid.Column="1" Style="{StaticResource Note}" FontSize="12" Margin="10,0,0,0" VerticalAlignment="Center"/>
-            <TextBlock x:Name="AboutText" Grid.Column="2" Style="{StaticResource Faint}" Text="About 45 min" Margin="0,0,14,0" VerticalAlignment="Center"/>
+            <TextBlock x:Name="AboutText" Grid.Column="2" Style="{StaticResource Faint}" Text="About 15–30 min" Margin="0,0,14,0" VerticalAlignment="Center"/>
             <Button x:Name="BuildButton" Grid.Column="3" Style="{StaticResource Primary}" Content="Build the game" IsEnabled="False" Click="StartBuild"/>
           </Grid>
         </Grid>

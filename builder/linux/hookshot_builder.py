@@ -912,7 +912,7 @@ class Builder(tk.Tk):
         self.space_bar = ttk.Progressbar(foot, maximum=1.0, length=px(160), style="Go.Horizontal.TProgressbar")
         self.space_bar.grid(row=0, column=0)
         ttk.Label(foot, textvariable=self.space_text, style="Small.TLabel").grid(row=0, column=1, sticky="w", padx=(px(10), 0))
-        self.about_label = ttk.Label(foot, text="About 45 min", style="Faint.TLabel")
+        self.about_label = ttk.Label(foot, text="About 15–30 min", style="Faint.TLabel")
         self.about_label.grid(row=0, column=2, padx=(px(14), px(14)))
         self.build_button = ttk.Button(foot, text="Build the game", command=self.build, style="Primary.TButton", cursor="hand2")
         self.build_button.grid(row=0, column=3)
@@ -1038,7 +1038,7 @@ class Builder(tk.Tk):
         about = getattr(self, "about_label", None)   # (Windows: the time only for a build)
         try:
             if about is not None and about.winfo_exists():
-                about.configure(text="About 45 min" if self.mode == "build" else "")
+                about.configure(text="About 15–30 min" if self.mode == "build" else "")
         except tk.TclError:
             pass
         target = self.tools

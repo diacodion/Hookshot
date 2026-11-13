@@ -323,6 +323,63 @@ what you test.
 **Never use it for numbers:** no fps or frame-time measurements, build timings, hitch or stutter checks, profiles,
 and no release or player build. Build those with the defaults.
 
+### Build times
+
+A player's first build of **nightly-56-e7ed2f7a**, measured on **2026-11-13** on Linux: a Ryzen 9 7900X (12 cores,
+24 threads), 30 GB of memory, an RTX 3090 (driver 620.70.06) and an NVMe SSD, with a fast connection. It ran the
+Builder's own command line: 24 jobs (the default), Compile shaders Most, no DLSS. The times come from the build's log.
+
+| Step | Run 1 | Run 2 |
+|---|---|---|
+| Download the AppImage (100 MB) and check its signed `SHA256SUMS` | 3 s | 4 s |
+| Unpack it and install its build tools (160 MB) | 6 s | 7 s |
+| Read the game files | 64 s | 89 s |
+| Translate the game to C (the lift) | 56 s | 58 s |
+| Compile (274 files, all at `-O1`) and link | 5 min 11 s | 4 min 59 s |
+| Finish the game folder (shader list, button prompts) | 67 s | 65 s |
+| Prepare shaders, Most | 5 min 0 s (programs 133 s, pipelines 167 s) | 5 min 22 s (programs 124 s, pipelines 198 s) |
+| **In all** | **13 min 30 s** | **14 min 7 s** |
+
+- **Two clean runs, one after the other.** Run 2's read was slower because other work was running on the PC while
+  it read the game files.
+- **Run 2 is a player's first build:** it started with an empty NVIDIA shader cache. Run 1 started with a warm one,
+  which saved about 20 s of the shader preparation.
+- **Memory:** about 14-15 GB above what was already in use, at its peak during the compile.
+- **No hot pieces.** A release ships no hot list and no play profile (its `tools.lock` has no `profile` line), so
+  every lifted file is built at `-O1`. A checkout with `work/hot_funcs.txt` also builds the eight hot pieces at `-O2`,
+  which takes longer ([above](#a-faster-build-for-development)).
+- **Slower PCs:** the compile and the shader preparation use every CPU thread, so a 6-core PC can take twice as long or
+  more. That is an estimate, not a measurement.
+
+These numbers are quoted in the README ("Install and play", and the preparation's 292 s and 415 s under "Compile
+shaders"), [getting started](getting-started.md), [common problems](common-issues.md),
+[CONTRIBUTING.md](../CONTRIBUTING.md) ("Building") and the [design notes](design.md) (S2, and the findings of
+2026-11-06). Change them all together.
+
+**Measure them again** after a change to the lift, the compile flags, the shader preparation or the toolchain
+(`tools.lock`), and before each release candidate. Build the way a player does, in new folders, so nothing is reused:
+
+```sh
+export XDG_DATA_HOME=$PWD/data XDG_CACHE_HOME=$PWD/cache    # no tools, work folder or objects from earlier builds
+export __GL_SHADER_DISK_CACHE_PATH=$PWD/nvcache             # an empty NVIDIA shader cache (mkdir it first)
+B=https://git.notrexed.dev/Hookshot/Hookshot/releases/download/<tag>
+curl -fLO $B/SHA256SUMS -fLO $B/SHA256SUMS.sig -fLO $B/Hookshot-<tag>-x86_64.AppImage
+python -I scripts/release.py verify SHA256SUMS              # then sha256sum -c for the AppImage's line
+chmod +x Hookshot-<tag>-x86_64.AppImage && ./Hookshot-<tag>-x86_64.AppImage --appimage-extract
+cd squashfs-root/usr/share/hookshot
+../../../AppRun --cli --nup <your .nup> --out <new folder> --language en-US --compile-shaders most 2>&1 \
+    | ts -s '%.s' | tee build.log
+```
+
+`AppRun --cli` installs the build tools first, then runs `make_game.py`. To read the log:
+
+- **Build tools:** from the start to the `@@stage read` line.
+- **Read, lift, compile and finish:** the `where the time went:` table that ends the build.
+- **Shader preparation:** from `@@stage shaders` to `@@done`. Its `prepared <n> shader programs ... in <s> s` line
+  gives the programs' share.
+
+On Windows the Builder runs the same `make_game.py`. Note the date, the nightly and the PC with the numbers.
+
 ## The pipeline state list
 
 Every release ships a list of pipelines, merged from the sources in `assets/pipeline_states/`:

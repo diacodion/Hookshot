@@ -437,7 +437,7 @@ public partial class MainWindow : Window
                 rows["lift"].Begin(); rows["lift"].Done();
                 rows["compile"].Begin(); rows["compile"].Small("31 of 58 files");
                 SetProgress(0.54);
-                BuildNote.Text = "About 19 minutes left · your PC stays usable";
+                BuildNote.Text = "About 6 minutes left · your PC stays usable";
                 break;
             case "ready":
                 finished = OutPath.Text;
@@ -888,12 +888,14 @@ public partial class MainWindow : Window
     };
     static readonly Dictionary<string, (double From, double Size)> WithShaders = new()
     {
-        ["download"] = (0, 0.04), ["read"] = (0.04, 0.04), ["lift"] = (0.08, 0.14), ["compile"] = (0.22, 0.68), ["finish"] = (0.90, 0.02),
-        [ShaderStep.Id] = (0.92, 0.08),   // (hookshot --prepare-shaders: minutes on some GPUs, the first start's wait moved here)
+        // (each step's share of a player's first build, measured: docs/development.md, "Build times". The shaders are about a
+        // third of it on Most, more on some GPUs)
+        ["download"] = (0, 0.02), ["read"] = (0.02, 0.09), ["lift"] = (0.11, 0.07), ["compile"] = (0.18, 0.37), ["finish"] = (0.55, 0.08),
+        [ShaderStep.Id] = (0.63, 0.37),   // (hookshot --prepare-shaders: minutes on some GPUs, the first start's wait moved here)
     };
     static readonly Dictionary<string, (double From, double Size)> WithoutShaders = new()
     {
-        ["download"] = (0, 0.04), ["read"] = (0.04, 0.04), ["lift"] = (0.08, 0.14), ["compile"] = (0.22, 0.74), ["finish"] = (0.96, 0.04),
+        ["download"] = (0, 0.02), ["read"] = (0.02, 0.15), ["lift"] = (0.17, 0.11), ["compile"] = (0.28, 0.59), ["finish"] = (0.87, 0.13),
     };
     Dictionary<string, (double From, double Size)> Weight = WithoutShaders;
     // (this build prepares the shaders: the tick for a build, the saved choice for an update. The game's @@stage shaders came, and
@@ -1092,7 +1094,7 @@ public partial class MainWindow : Window
             BuildNote.Text = $"Compiling {Clock(compileClock.Elapsed)} · {left}{tail}";
             return;
         }
-        BuildNote.Text = (updating ? "Working…" : "Usually about 45 minutes") + tail;
+        BuildNote.Text = (updating ? "Working…" : "Usually 15 to 30 minutes") + tail;
     }
 
     static string Clock(TimeSpan t) => $"{(int)t.TotalMinutes}:{t.Seconds:00}";

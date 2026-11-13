@@ -83,7 +83,7 @@ def no_throttle(handle=None):
 
 
 PREPARE = False   # (--prepare) say() prints RecompLauncher's "progress <0..1> <text>" lines instead of the builder app's @@ lines
-STAGE_SPAN = {"read": (0.0, 0.05), "lift": (0.05, 0.25), "compile": (0.25, 0.95), "finish": (0.95, 1.0)}   # (a share of the whole each stage takes)
+STAGE_SPAN = {"read": (0.0, 0.15), "lift": (0.15, 0.26), "compile": (0.26, 0.87), "finish": (0.87, 1.0)}   # (a share of the whole each stage takes: docs/development.md, Build times)
 _stage = {"span": (0.0, 1.0), "text": ""}
 
 

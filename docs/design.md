@@ -195,6 +195,8 @@ dump, the runtime made game-neutral, the stage-1 tools checked on MKW's dump as 
 - **S2:** the standalone lift: 294,450 functions in 57 chunks (1.4 GB of C), 485 HLE functions, 243 OS imports
   stubbed, 22 sdk NVN functions routed to `host/nvn2.c`.
   The build links (`hookshot.exe`, 426 MB; ~25 min for a full build with 4 jobs, a few minutes after a relift).
+  On 2026-11-13 a player's build of nightly-56 compiled in about 5 minutes with 24 jobs, and took 13.5 to 14 minutes in all
+  ([build times](development.md#build-times)).
 - **S3 done (2026-11-04, boot13).** The title screen renders at 60 fps: black for ~23 s (~1,400 presents) while it
   loads, then the logo, smoke and the menu (New Game / Options / ZELDA NOTES Setting), through the Vulkan back end.
   It runs the 150 s out with no crash. What it took, in boot order:
@@ -261,7 +263,8 @@ dump, the runtime made game-neutral, the stage-1 tools checked on MKW's dump as 
 
 ## 11. Findings, 2026-11-06, day
 
-- Builds: `nx2/split_hot.py` puts code_hot.c in eight files that compile side by side, 79 minutes to about 6. `RX_PGO=gen` counts branches
+- Builds: `nx2/split_hot.py` puts code_hot.c in eight files that compile side by side, 79 minutes to about 6
+  (a release ships no hot list, so a player's build has no hot pieces: every lifted file is built at `-O1`). `RX_PGO=gen` counts branches
   (host/pgo_rt.c writes LLVM raw format 11, the toolchain has no compiler-rt profile library), `HOS_PGO=<path>` with `<path>.reset` and
   `<path>.dump` files drives a run, `nx2/pgo_pieces.py` fits the merged profile to the pieces, `RX_PGO=<file>` uses it. `RX_VK_ONLY=1`: the renderer alone.
 - Dark frames, open: lit surfaces come out black for one frame, geometry and depth intact. 5% with `RX_VK_FRAMEGEN=0`, 2.9% with the menu's Off, about 0.1% at 4x.
@@ -276,7 +279,8 @@ dump, the runtime made game-neutral, the stage-1 tools checked on MKW's dump as 
   repeat with a delay that keeps ~45 fps. The MKW session's mirror page skip fired 0 times here and was removed.
   Not an instrument's doing: with nothing attached, photographed from outside the window (37 s, ~2200 photographs): 16 with `RX_VK_FRAMEGEN=0`, none at the user's 4x. With
   `RX_VK_SUBMIT_DELAY_US`: 7 at 300, 0 at 1000; a repeat at 1000 with shots still had 7 events against 50-60. So it is a race with the game's threads: less overlap, fewer. The delay is a test, not a fix.
-- The builder's first full build: 43 minutes at below-normal priority, 0 failures; the folder starts from a double click and reaches the title at 60 fps.
+- The builder's first full build: 43 minutes at below-normal priority (13.5 to 14 minutes for nightly-56 on 2026-11-13:
+  [build times](development.md#build-times)), 0 failures; the folder starts from a double click and reaches the title at 60 fps.
 - Render conditions here gate single lights and read reports earlier in the same stream, so they cannot be read at record time.
 
 

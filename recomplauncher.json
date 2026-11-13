@@ -30,7 +30,7 @@
       "--game",
       "{game}"
     ],
-    "label": "Building the game from your copy (10 to 45 minutes)",
+    "label": "Building the game from your copy (15 to 30 minutes)",
     "timeout": 7200
   },
   "config": [
