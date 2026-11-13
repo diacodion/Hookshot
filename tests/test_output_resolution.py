@@ -33,6 +33,9 @@ using DWORD = unsigned long;
 constexpr int MAX_PATH = 260;
 DWORD hos_game_path_a(char *path, int size) { return snprintf(path, size, "./hookshot.exe"); }
 void hos_log(const char *, ...) {}
+// (the main screen at boot, for an options file with no output_res=: none known here, so the game's own)
+constexpr int SM_CXSCREEN = 0, SM_CYSCREEN = 1;
+int GetSystemMetrics(int) { return 0; }
 volatile uint64_t hos_wide_out = 0;   // (host/hos_main.c: the widescreen picture, 0 = none; nn_applet.c reads it)
 struct { int handheld, output_res, ultrawide; } opts;
 #include "host/hos_wide_size.h"
@@ -308,6 +311,36 @@ int main(int argc, char **argv) {
         ("abc", 0, None, 0, 2560, 1440, "2048x1152 (game's)", 512, "2048x1152"),
         ("5120x2880", 1, None, 0, 2560, 1440, "2048x1152 (game's)", 512, "2048x1152"),
     )
+    # (none chosen, a new install: a screen of fewer pixels than the game's 2048x1152 takes its own size, host and menu alike)
+    for need, where, text in (("hos_output_default(", "host/nn_applet.c output_mode", host[host.index("static int output_mode(void)"):]),
+                              ("hos_output_default(", "vk_menu.cpp menu_init", menu[menu.index("void menu_init() {"):])):
+        if need not in text[:text.index("\n}\n")]:
+            raise SystemExit(where + ": an Output resolution none chose does not follow hos_output_default")
+    init = menu[menu.index("void menu_init() {"):]
+    if not init.index("hos_output_default(") < init.index("restart_init();"):
+        raise SystemExit("menu_init: the screen's size is taken after restart_init: the first close would ask to restart")
+    rule = r'''
+#include <cassert>
+#include <cstdio>
+#include "host/hos_wide_size.h"
+int main() {
+    uint32_t w = 1, h = 1;
+    assert(hos_output_default(1280, 800, &w, &h) && w == 1280 && h == 800);    // (a Steam Deck)
+    assert(hos_output_default(1920, 1080, &w, &h) && w == 1920 && h == 1080);  // (1080p: fewer pixels than 2048x1152)
+    assert(hos_output_default(1366, 768, &w, &h) && w == 1360 && h == 768);    // (a multiple of 8)
+    assert(!hos_output_default(2048, 1152, &w, &h) && !w && !h);               // (the game's own)
+    assert(!hos_output_default(2560, 1440, &w, &h) && !w && !h);               // (larger: the game's own)
+    assert(hos_output_default(1920, 1200, &w, &h) && w == 1920 && h == 1200);  // (16:10 at 1200: fewer pixels still)
+    assert(!hos_output_default(0, 0, &w, &h) && !w && !h);                     // (not known)
+    assert(!hos_output_default(800, 1280, &w, &h) && !w && !h);                // (portrait: no size the game takes)
+    std::printf("the Output resolution none chose: the screen's below 2048x1152\n");
+}
+'''
+    with tempfile.TemporaryDirectory(prefix="output-default-") as tmp:
+        source, exe = Path(tmp) / "rule.cpp", Path(tmp) / "rule.exe"
+        source.write_text(rule, encoding="utf-8")
+        subprocess.run([args.cxx, "-std=c++17", "-I", str(ROOT), str(source), "-o", str(exe)], check=True)
+        subprocess.run([str(exe)], check=True)
     with tempfile.TemporaryDirectory(prefix="output-resolution-") as tmp:
         work = Path(tmp)
         source, exe = work / "fixture.cpp", work / "fixture.exe"

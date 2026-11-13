@@ -15,6 +15,18 @@ static inline int hos_output_size_valid(uint32_t w, uint32_t h) {
            (uint64_t)w * 4 >= (uint64_t)h * 5 && (uint64_t)w * 9 <= (uint64_t)h * 48;
 }
 
+/* The Output resolution when none is chosen (no output_res= line in the options file, no HOS_OUTPUT_RES): a main screen of
+   fewer pixels than the game's 2048 x 1152 (a Steam Deck's 1280 x 800, a 1080p monitor) takes its own size, so the game draws
+   no more than the screen shows; any other, or one not known, the game's own (0, *w and *h 0). host/nn_applet.c at boot and
+   the Insert menu's first start (gpu/vk/vk_menu.cpp menu_init) take it alike, so the run and the menu agree with no restart. */
+static inline int hos_output_default(uint32_t sw, uint32_t sh, uint32_t *w, uint32_t *h) {
+    *w = *h = 0;
+    sw &= ~7u, sh &= ~7u;
+    if ((uint64_t)sw * sh >= 2048ULL * 1152 || !hos_output_size_valid(sw, sh)) return 0;
+    *w = sw, *h = sh;
+    return 1;
+}
+
 /* An output size of a shape of its own: more than 1 % off 16:9 (16:10, 4:3, 21:9, 32:9...), as the Insert menu's Aspect ratio
    row offers them. The picture takes that shape (its cameras and HUD as at the monitor's shape), over HOS_ASPECT and the
    Aspect ratio's ultrawide=, which then only shape a 16:9 output. The same 1 % as host/hos_main.c's screen ratio. */

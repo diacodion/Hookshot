@@ -20,9 +20,10 @@ for next time; **Restart now** starts the game again, and you lose any progress 
 
 ## Good starting points
 
-A first start uses the **Auto (this PC)** quality preset. It picks settings from your graphics card, its video memory
-and your screen, then adjusts the render resolution during the first minute of play. If you change nothing, that is
-what you get.
+A first start uses the **Auto (this PC)** quality preset. It picks settings from your graphics card and its video memory,
+then adjusts the render resolution during the first minute of play. If you change nothing, that is what you get. The
+Output resolution starts at the game's own 2048x1152, or at your screen's size where that is smaller (a Steam Deck's
+1280x800, a 1080p monitor).
 
 | Your PC | Quality preset | Upscaler and render resolution | Frame rate cap | Frame generation |
 |---|---|---|---|---|

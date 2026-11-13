@@ -158,8 +158,14 @@ static int output_mode(void) {   /* (an explicit size: 1; the game's own: 0) */
         read = 1;
         char text[80] = "";
         const char *e = getenv("HOS_OUTPUT_RES");
-        if (!handheld() && (e || ini_text("output_res", text, sizeof text))) hos_output_parse(e ? e : text, &output_w, &output_h);
-        if (output_w) hos_log("oe: output resolution %ux%u", output_w, output_h);
+        const int chosen = e || ini_text("output_res", text, sizeof text);
+        if (!handheld() && chosen) hos_output_parse(e ? e : text, &output_w, &output_h);
+        /* (none chosen, a new install: a screen smaller than the game's own takes its size, hos_output_default; the menu's
+           first start saves the same. The window's thread made the window before the game's thread starts: the screen is known) */
+        const int sw = GetSystemMetrics(SM_CXSCREEN), sh = GetSystemMetrics(SM_CYSCREEN);
+        if (!handheld() && !chosen && sw > 0 && sh > 0 && hos_output_default((uint32_t)sw, (uint32_t)sh, &output_w, &output_h))
+            hos_log("oe: output resolution %ux%u (none chosen: the screen's, smaller than the game's 2048x1152)", output_w, output_h);
+        else if (output_w) hos_log("oe: output resolution %ux%u", output_w, output_h);
         else hos_log("oe: output resolution 2048x1152 (the game's)");
     }
     return output_w != 0;
