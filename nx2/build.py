@@ -642,7 +642,9 @@ from host_cpu import host_march, host_mtune   # (make_game.py asks it too: the A
 # (macos: Apple silicon, an AArch64 host: the guest's own FPU (RECOMP_FPX_HOST 1 in arm64_to_c.h), LSE atomics and the
 # rest of what the CPU has; host_march() gives a -mcpu name there. No -mcx16: 16-byte compare-and-swap is CASP /
 # LDXP+STXP, which clang emits inline here)
-ARM64 = platform.machine().lower() in ("arm64", "aarch64")
+# (os.uname, not platform.machine: on Windows that can run a process (`ver`) where WMI does not answer, which
+# tests/test_cpm_discovery.py refuses while it imports this file; Windows builds are x86-64)
+ARM64 = hasattr(os, "uname") and os.uname().machine.lower() in ("arm64", "aarch64")
 MARCH = os.environ.get("RX_MARCH") or host_march()
 if os.environ.get("RX_MARCH"):
     if MARCH != "x86-64-v3":
