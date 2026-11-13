@@ -82,6 +82,11 @@ def token():
     return state
 
 
+def me():
+    """Your login as Forgejo knows it now: the one saved at sign-in goes stale when the account is renamed"""
+    return api("GET", "/user")["login"]
+
+
 def api(method, path, body=None):
     try:
         return auth.forge_request(method, BASE + "/api/v1" + path, token=token()["access_token"], body=body)
@@ -202,7 +207,7 @@ def set_up_fork(login, remote="forge-fork"):
 
 
 def cmd_fork(args):
-    set_up_fork(token()["login"], args.remote)
+    set_up_fork(me(), args.remote)
 
 
 def cmd_whoami(args):
@@ -280,8 +285,13 @@ def complete_or_refuse(body, force, number=None, diff=None, merge_base=None):
     """Refuses (a ForgeError listing what is missing) unless body passes the PR description check; --force warns and
     goes on. The check's warnings are printed either way."""
     found, warnings = desc.review(body, diff=diff, merge_base=merge_base)
-    for w in warnings:
+    to_open = desc.requests_to_open(body)
+    for w in warnings if not to_open else [w for w in warnings if "still to open" not in w]:
         print("forge.py: warning: " + w, file=sys.stderr)
+    # (ready only once the test requests Needs other testers names are open: CONTRIBUTING.md, Commits and pull requests)
+    found = found + ["## Testing's 'Needs other testers:' still has a request to open: %s (open it: python -I "
+                     "scripts/test_requests.py request --pr <n> ..., then put its id there)" % item
+                     for item in to_open]
     if not found:
         return
     listed = "\n".join("  - " + f for f in found)
@@ -435,13 +445,25 @@ def cmd_pr_status(args):
              else "work in progress" if wip else "ready for review")
     print("#%d %s\n%s, by %s: %s" % (pr["number"], pr["title"], state, pr["user"]["login"], pr["html_url"]))
     found, warnings = desc.review(body, diff=pr_diff(pr["number"]), merge_base=pr.get("merge_base"))
-    print("Description: %s" % ("complete" if not found else "%d to fix%s" % (
+    to_open = len(desc.requests_to_open(body))
+    print("Description: %s" % (("complete" if not to_open else "complete but for %d test request%s to open" % (
+        to_open, "" if to_open == 1 else "s")) if not found else "%d to fix%s" % (
         len(found), "" if pr["state"] != "open" else " before pr ready" if wip
         else " (it is marked ready: pr wip %d if it needs more work)" % pr["number"])))
     for f in found:
         print("  - " + f)
     for w in warnings:
         print("  warning: " + w)
+    parts = desc.testing_parts(desc.sections(desc.without_comments(body)).get("Testing", ""))
+    needs = parts.get("Needs other testers", "").strip()
+    if not parts:
+        print("Testing: no Tested / Not tested / Needs other testers parts")
+    else:
+        items = [] if re.match(r"^none\b", needs, re.I) else desc.tester_lines(needs)
+        print("Testing: %s; needs other testers: %s" % (
+            ", ".join("%s %s" % (p, "filled in" if desc.STAND_IN.sub("", parts.get(p, "")).strip() else "missing") for p in desc.TESTING_PARTS[:2]),
+            "none" if not items else "%d (%d with a test request, %d to open)" % (
+                len(items), sum(bool(desc.TEST_REQUEST.search(i)) for i in items), len(desc.requests_to_open(body)))))
     lists = desc.sections(desc.sections(desc.without_comments(body)).get("Checklist", ""), "###")
     for name in ("For everyone", "If applicable"):
         items = desc.boxes(lists.get(name, ""))
@@ -477,17 +499,17 @@ def cmd_pr(args):
         body = text_arg(args) if body_given(args) else template_body()   # (nobody starts from nothing)
         if args.ready:
             complete_or_refuse(body, args.force)
-        state = token()
-        fork, made = ensure_fork(state["login"])
+        login = me()
+        fork, made = ensure_fork(login)
         if made:   # (first pull request: set up pushing, then the branch has to go there)
-            set_up_fork(state["login"])
+            set_up_fork(login)
         try:
             api("GET", "/repos/%s/branches/%s" % (fork, urllib.parse.quote(args.branch, safe="")))
         except ForgeError:
             raise ForgeError("no branch %s on %s: push it there first (jj git push --remote forge-fork -b %s, or "
                              "git push forge-fork %s)" % (args.branch, fork, args.branch, args.branch))
         pr = api("POST", "/repos/%s/pulls" % REPO, {
-            "base": "main", "head": "%s:%s" % (state["login"], args.branch),
+            "base": "main", "head": "%s:%s" % (login, args.branch),
             "title": title if args.ready else WIP + title, "body": body})
         filled = fill_commits(body, args.branch, pr)
         if filled != body:
@@ -498,12 +520,12 @@ def cmd_pr(args):
                   "measurements and the checklist are in: python -I scripts/forge.py pr ready %d"
                   % (WIP.strip(), pr["number"], pr["number"]))
     elif args.action == "list":
-        me = token()["login"] if args.mine else None
+        mine = me() if args.mine else None
         page, shown = 1, 0
         while True:
             prs = api("GET", "/repos/%s/pulls?state=%s&limit=50&page=%d" % (REPO, args.state, page)) or []
             for p in prs:
-                if me and p["user"]["login"] != me:
+                if mine and p["user"]["login"] != mine:
                     continue
                 state = "merged" if p.get("merged") else p["state"]
                 print("#%-5d %-7s %-16s %s" % (p["number"], state, p["user"]["login"], p["title"]))

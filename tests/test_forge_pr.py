@@ -5,7 +5,8 @@ in), and --ready only when the description passes check_pr_description.py; pr re
 refuses an incomplete description (--force goes on with a warning), prints the check's warnings, and takes WIP: and the
 'needs measurements' label off; pr wip puts WIP: back (and the label, when asked); pr
 edit keeps the WIP state; pr update edits the description and comments in one step, or only comments; pr comment takes
---body-file; pr status shows the state, the check, the checklist, the reviews and the last comments.
+--body-file; the fork and the PR's head use the login Forgejo has now, not the one saved at sign-in (an
+account can be renamed); pr status shows the state, the check, the checklist, the reviews and the last comments.
 
     python -I -B tests/test_forge_pr.py
 """
@@ -60,12 +61,15 @@ class Forgejo:
     def __call__(self, method, path, body=None):
         self.calls.append((method, path, body))
         base = "/repos/MagicBeanDev/Hookshot"
+        if method == "GET" and path == "/user":
+            return {"login": "alice"}
         if method == "GET" and path.startswith("/repos/alice/Hookshot/branches/"):
             return {"name": path.rsplit("/", 1)[1]}
         assert path.startswith(base), path
         path = path[len(base):]
         parts = path.split("?")[0].strip("/").split("/")
         if method == "POST" and parts == ["pulls"]:
+            assert body["head"].startswith("alice:"), body["head"]   # (the login Forgejo has now)
             pr = self.add(len(self.prs) + 1, body["title"], body["body"])
             pr["head"]["sha"], pr["merge_base"] = "992a2420" + "1" * 32, "7afe6ae1" + "2" * 32
             return dict(pr)
@@ -114,8 +118,9 @@ class PR(unittest.TestCase):
         self.forgejo = Forgejo()
         self.patches = [mock.patch.object(forge, "api", self.forgejo),
                         mock.patch.object(forge, "api_text", self.forgejo.text),
-                        mock.patch.object(forge, "token", lambda: {"login": "alice", "access_token": "t"}),
-                        mock.patch.object(forge, "ensure_fork", lambda login: ("alice/Hookshot", False)),
+                        # (the login saved at sign-in, from before the account was renamed: the server's is the one used)
+                        mock.patch.object(forge, "token", lambda: {"login": "alice-before", "access_token": "t"}),
+                        mock.patch.object(forge, "ensure_fork", lambda login: ("%s/Hookshot" % login, False)),
                         mock.patch.object(forge.auth, "forge_request", no_network),
                         mock.patch.object(forge.auth, "forge_session", no_network)]
         for p in self.patches:
@@ -204,6 +209,21 @@ class PR(unittest.TestCase):
         code, out, err = self.run_forge("pr", "ready", "5")
         self.assertEqual(code, 0, err)
         self.assertIn("warning: measured on main", err, "a warning does not stop it")
+
+    def test_ready_waits_for_the_test_requests(self):
+        body = FILLED.replace("(T-9MZ4)", "(request to open)")
+        self.forgejo.add(5, "WIP: fix: x", body)
+        code, _, err = self.run_forge("pr", "ready", "5")
+        self.assertEqual(code, 1)
+        self.assertIn("## Testing's 'Needs other testers:' still has a request to open: Steam Deck", err)
+        self.assertIn("scripts/test_requests.py request --pr", err)
+        self.assertNotIn("warning: ## Testing", err, "said once, as the reason")
+        self.assertIn("Description: complete but for 1 test request to open", self.run_forge("pr", "status", "5")[1])
+        self.forgejo.prs[5]["body"] = FILLED
+        self.assertEqual(self.run_forge("pr", "ready", "5")[0], 0)
+        out = self.run_forge("pr", "status", "5")[1]
+        self.assertIn("Testing: Tested filled in, Not tested filled in; needs other testers: 2 (2 with a test request, "
+                      "0 to open)", out)
 
     def test_ready_force(self):
         self.forgejo.add(5, "WIP: fix: x", TEMPLATE)
@@ -312,14 +332,14 @@ class PR(unittest.TestCase):
                                              "created_at": "2026-11-12T18:0%d:00Z" % i})
         code, out, _ = self.run_forge("pr", "status", "5")
         self.assertEqual(code, 0)
-        for want in ("work in progress", "to fix before pr ready", "For everyone: 0 of 9 ticked", "Mergeable: yes",
+        for want in ("work in progress", "to fix before pr ready", "For everyone: 0 of 10 ticked", "Mergeable: yes",
                      "Labels: needs measurements", "Reviews: bob approved", "Last comments (5 in all)", "comment 4"):
             self.assertIn(want, out)
         self.assertNotIn("carol", out)
         self.assertNotIn("comment 1", out)
         self.forgejo.add(6, "fix: y", FILLED)
         out = self.run_forge("pr", "status", "6")[1]
-        for want in ("ready for review", "Description: complete", "For everyone: 9 of 9 ticked", "Reviews: none"):
+        for want in ("ready for review", "Description: complete", "For everyone: 10 of 10 ticked", "Reviews: none"):
             self.assertIn(want, out)
 
     def test_view_shows_wip(self):

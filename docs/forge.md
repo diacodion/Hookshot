@@ -71,8 +71,9 @@ python -I scripts/forge.py pr status 12                          WIP or ready, t
 - `pr ready` runs the PR description check (`scripts/check_pr_description.py`, the same one the `PR description`
   workflow runs) on the description and the PR's diff, and refuses while a section is empty or still holds the
   template's `<...>`, the Measurements don't name `main @ <hash>` and `this PR @ <hash>`, a switch the diff adds is
-  missing from the Flags table, or a *For everyone* box is unticked. It prints what is missing; `--force` goes on with a
-  warning. It also takes off the label `needs measurements`.
+  missing from the Flags table, Testing lacks its Tested, Not tested or Needs other testers part, a test request is
+  still "request to open", the checklist isn't whole, or a *For everyone* box is unticked. It prints what is missing;
+  `--force` goes on with a warning. It also takes off the label `needs measurements`.
 - `pr update` is the "I pushed more" step: it edits the description (with `--body-file`) and posts the comment saying
   what changed, so the description stays the PR as it is now and the comments keep the history. With `--comment` only,
   it only comments.

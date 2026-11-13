@@ -38,10 +38,17 @@ How to reproduce: open the pause menu at 3840x2160 on any save; `python -I -B te
 [menu] font scale 2.00 (height 2160), widest row 3610 px       this PR @ 992a2420
 ```
 
-## Not tested
+## Testing
 
-Not tested: NVIDIA and Intel GPUs, Windows (test request T-7KQ2).
-Tested but not measured: 1440p on the same PC: the text fits.
+**Tested:** on the RX 6700 XT above (CachyOS, Mesa 25.2): `tests/run_all.py`, and in the game the pause menu, the
+Insert menu and the save menu at 3840x2160 and 1920x1080, every row read to its end. Tested but not measured: 1440p on
+the same PC: the text fits.
+
+**Not tested:** the title screen's menu, which uses the same font scale: nobody has opened it at 4K since the change.
+
+**Needs other testers:**
+- NVIDIA on Windows: the pause menu at 4K fits and the frame time is unchanged (T-7KQ2)
+- Steam Deck: the menu at 1280x800 is no smaller than on main (T-9MZ4)
 
 ## Screenshots
 
@@ -62,13 +69,16 @@ Fixes #42
 
 ## Checklist
 
+<!-- n/a: the boxes left unticked below. -->
+
 ### For everyone
 
 - [x] One topic.
 - [x] The title is a Conventional Commit (`type(scope): description`).
 - [x] Rebased on current `main`.
 - [x] `python -I -B tests/run_all.py` run and passing (any failure that also fails on `main` is named above).
-- [x] Tested in the game, or what wasn't is named under Not tested.
+- [x] Tested in the game, or what wasn't is named under Testing.
+- [x] Testing filled in: what was tested, what wasn't, and what needs other testers (with test requests).
 - [x] Measured: main and this PR at named commits, on the same PC, scene and settings, at least 2 interleaved runs each, the median reported.
 - [x] No game files, dumps, build output or generated files.
 - [x] `third_party/` untouched (a new folder with a `PROVENANCE.md` instead).

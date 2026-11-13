@@ -84,7 +84,9 @@ problem with a log outranks an NVIDIA one of the same severity.
    - `python -I -B tests/run_all.py`, all of it.
    - In the game, on your hardware: what you did and what you saw, with numbers from `hookshot_log.txt` for performance.
    - Add a row to [tested configurations](tested-configurations.md) for each run you measured.
-   - Say what you could not test (another OS, another vendor, real input devices).
+   - Say what you could not test (another OS, another vendor, real input devices), and open a test request for
+     what others must test: the description's Testing section
+     ([CONTRIBUTING.md](../CONTRIBUTING.md#commits-and-pull-requests)).
 5. **Pull request.** Open it as work in progress (`forge.py pr create`, a `WIP:` title) and fill in
    [the template](../.forgejo/pull_request_template.md) as
    [CONTRIBUTING.md](../CONTRIBUTING.md#commits-and-pull-requests) says. Mark it ready (`pr ready`) only once it is

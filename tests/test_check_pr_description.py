@@ -1,7 +1,10 @@
 """scripts/check_pr_description.py on sample descriptions, game-free: the template as it comes fails on every section,
 the sample good description (tests/pr_description/good.md) passes, and so does CONTRIBUTING.md's example
-measurements; an unticked or deleted For everyone box fails and the If applicable ones (the AI trailers among them) may
-stay empty; Measurements' columns must name main and this PR with their commits, never a bare Before and After; a
+measurements; the checklist is kept whole: an unticked or deleted For everyone box, a deleted If applicable list or no
+checklist at all fails, while If applicable boxes (the AI trailers among them) may stay unticked; Testing has its
+three parts (Tested, Not tested, Needs other testers), filled in, each tester line with its test request or "request to
+open" (a warning, and pr ready's refusal), and naming something the Measurements say was measured as untested is a
+warning; Measurements' columns must name main and this PR with their commits, never a bare Before and After; a
 Flags and settings table or "None" is required, and a switch the diff adds must be listed; a menu change with no flags
 and a rebase since the measurements are warnings; a work-in-progress PR (WIP: or [WIP], as Forgejo reads them) passes
 with a notice; and the workflow runs the script on Forgejo's events.
@@ -64,7 +67,8 @@ def filled():
     for name, text in (("Why", "The menu's text is cut off at 4K."), ("What changed", "- menu: the font scales."),
                        ("Flags and settings", "None"),
                        ("Measurements", example_measurements() + "\n```\n[hos host] 600 presents, 78.4 fps\n```"),
-                       ("Not tested", "Not tested: Windows.\nTested but not measured: nothing."),
+                       ("Testing", "**Tested:** run_all.py on Linux.\n\n**Not tested:** Windows: no PC.\n\n"
+                                   "**Needs other testers:** None"),
                        ("Risk and rollback", "Text could overflow on small screens; revert the commit.")):
         body = section(body, name, text)
     head, tail = body.split("### If applicable")
@@ -77,7 +81,7 @@ class Check(unittest.TestCase):
         text = "\n".join(found)
         for name in check.REQUIRED:
             self.assertIn("## %s still holds the template's placeholders" % name, text)
-        self.assertEqual(sum(f.startswith("not ticked: ") for f in found), 9)
+        self.assertEqual(sum(f.startswith("not ticked: ") for f in found), 10)
 
     def test_the_good_sample_passes(self):
         self.assertEqual(check.review(GOOD, diff=DIFF.replace("RX_VK_NEW_THING", "RX_VK_MENU_FONT_SCALE")), ([], []))
@@ -91,7 +95,7 @@ class Check(unittest.TestCase):
 
     def test_the_sections_follow_the_order(self):
         names = list(check.sections(TEMPLATE))
-        self.assertEqual(names, ["Why", "What changed", "Flags and settings", "Measurements", "Not tested", "Screenshots",
+        self.assertEqual(names, ["Why", "What changed", "Flags and settings", "Measurements", "Testing", "Screenshots",
                                  "Risk and rollback", "Reviewer notes", "Issues", "Checklist"])
         for name in names[:-1]:   # (a line of guidance under each, as a comment)
             self.assertTrue(check.sections(TEMPLATE)[name].strip().startswith("<!--"), name)
@@ -117,8 +121,10 @@ class Check(unittest.TestCase):
         self.assertEqual(check.problems(section(GOOD, "Risk and rollback", "")), ["## Risk and rollback is empty"])
         commented = section(GOOD, "Why", "<!-- The menu's text is cut off at 4K. -->")
         self.assertEqual(check.problems(commented), ["## Why is empty"])
-        self.assertEqual(check.problems(section(GOOD, "Not tested", "Not tested: <hardware, systems or areas>")),
-                         ["## Not tested still holds the template's placeholders: <hardware, systems or areas>"])
+        self.assertEqual(check.problems(GOOD.replace("the title screen's menu", "<what this PR could affect that "
+                                                     "nobody has run yet, and why>")),
+                         ["## Testing still holds the template's placeholders: <what this PR could affect that nobody "
+                          "has run yet, and why>"])
         self.assertEqual(check.problems(section(GOOD, "Reviewer notes", "")), [], "Reviewer notes are optional")
         self.assertIn("no ## Why section", " ".join(check.problems(None)))
 
@@ -241,6 +247,67 @@ class Check(unittest.TestCase):
         self.assertRegex(wf, r"uses: https://github.com/actions/checkout@[0-9a-f]{40} ")
         self.assertIn("python3 -I scripts/check_pr_description.py --pr", wf)
         self.assertNotIn("${{ github.event.pull_request.title", wf)   # (nothing the PR's author writes reaches the shell)
+
+
+class Testing(unittest.TestCase):
+    def needs(self, text):
+        return GOOD[:GOOD.index("**Needs other testers:**")] + "**Needs other testers:**\n" + text + "\n" + \
+            GOOD[GOOD.index("## Screenshots"):]
+
+    def test_the_parts(self):
+        self.assertEqual(check.testing_parts(check.sections(GOOD)["Testing"]).keys(), set(check.TESTING_PARTS))
+        self.assertIn("Tested but not measured", check.testing_parts(check.sections(GOOD)["Testing"])["Tested"],
+                      "a note inside Tested, not a part of its own")
+        no_part = GOOD.replace("**Not tested:** the title screen's menu", "The title screen's menu")
+        self.assertEqual(check.problems(no_part),
+                         ["## Testing has no 'Not tested:' part (Tested, Not tested, Needs other testers)"])
+        empty = re.sub(r"\*\*Tested:\*\*.*?(?=\*\*Not tested)", "**Tested:**\n\n", GOOD, flags=re.S)
+        self.assertEqual(check.problems(empty), ["## Testing's 'Tested:' is empty"])
+        self.assertEqual(check.problems(self.needs("")),
+                         ["## Testing's 'Needs other testers:' is empty: write None if nobody else needs to test it"])
+        headings = section(GOOD, "Testing", "### Tested\nRan it.\n### Not tested\nWindows.\n### Needs other testers\nNone")
+        self.assertEqual(check.problems(headings), [], "the parts as headings")
+
+    def test_needs_other_testers(self):
+        self.assertEqual(check.review(self.needs("None, the change is Linux-only.")), ([], []))
+        self.assertEqual(check.problems(self.needs("- Arc A770: walls drawn, expecting no gaps (https://matrix.to/#/x)")), [])
+        self.assertEqual(check.problems(self.needs("- Arc A770: walls drawn, expecting no gaps")), [
+            "## Testing's 'Needs other testers:' has no test request for 'Arc A770: walls drawn, expecting no gaps': "
+            "link it (scripts/test_requests.py request --pr <n> ...), or write 'request to open'"])
+        wip = self.needs("- Arc A770: walls drawn,\n  expecting no gaps (request to open)\n- Deck: same (T-9MZ4)")
+        found, warnings = check.review(wip)
+        self.assertEqual(found, [], "request to open passes the check...")
+        self.assertEqual(check.requests_to_open(wip), ["Arc A770: walls drawn, expecting no gaps (request to open)"])
+        self.assertEqual(warnings, ["## Testing's 'Needs other testers:' has a test request still to open: 'Arc A770: "
+                                    "walls drawn, expecting no gaps (request to open)' (the PR goes ready once it is "
+                                    "open: docs/test-requests.md)"], "...with a warning (pr ready refuses it)")
+        self.assertEqual(check.requests_to_open(TEMPLATE), [], "the template's own stand-in is not a request")
+
+    def test_untested_but_measured_is_a_warning(self):
+        body = GOOD.replace("the title screen's menu, which", "the RX 6700 XT at 1440p, and the title screen's menu, "
+                                                            "which")
+        found, warnings = check.review(body)
+        self.assertEqual(found, [])
+        self.assertEqual(warnings, ["## Testing says 'RX 6700 XT' is not tested or needs other testers, but the "
+                                    "Measurements say it was measured"])
+        self.assertEqual(check.measured(check.sections(GOOD)["Measurements"])[:2], ["RX 6700 XT", "Mesa 25.2 RADV"])
+
+
+class Checklist(unittest.TestCase):
+    def test_the_whole_checklist_is_kept(self):
+        self.assertEqual(check.problems(GOOD[:GOOD.index("## Checklist")]),
+                         ["no ## Checklist: keep the template's whole checklist, For everyone and If applicable"])
+        no_applicable = GOOD[:GOOD.index("### If applicable")]
+        self.assertEqual(check.problems(no_applicable), [
+            "the ### If applicable list was deleted: keep it, and leave unticked (or write n/a beside) what doesn't apply"])
+        unticked = re.sub(r"- \[x\] (?=Flags table)", "- [ ] ", GOOD)
+        self.assertEqual(check.problems(unticked.replace("- [ ] Docs updated.", "- [ ] Docs updated. n/a")), [],
+                         "If applicable boxes may stay unticked or say n/a")
+        box = "- [x] Testing filled in: what was tested, what wasn't, and what needs other testers (with test requests).\n"
+        self.assertIn(box, GOOD)
+        self.assertEqual(check.problems(GOOD.replace(box, "")), [
+            "missing from For everyone: Testing filled in: what was tested, what wasn't, and what needs other testers "
+            "(with test requests)."])
 
 
 if __name__ == "__main__":

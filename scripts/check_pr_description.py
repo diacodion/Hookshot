@@ -1,8 +1,10 @@
 """Check a pull request's description against the template (.forgejo/pull_request_template.md, CONTRIBUTING.md
 "Commits and pull requests"):
 
-  - Why, What changed, Flags and settings, Measurements, Not tested and Risk and rollback there, filled in, none of the
+  - Why, What changed, Flags and settings, Measurements, Testing and Risk and rollback there, filled in, none of the
     template's <...> stand-ins left;
+  - Testing: its three parts, Tested, Not tested and Needs other testers, each filled in; Needs other testers is
+    "None", or a line per thing with its test request (a T-XXXX id or a link) or "request to open";
   - Flags and settings: "None", or a table with a filled-in row per flag; every RX_*, HOS_* or HOOKSHOT_* name the
     diff adds is listed there;
   - Measurements: a table whose columns each name what they measured with its hash, never a bare Before and After:
@@ -10,10 +12,12 @@
     named build). main against this PR needs nothing more; anything else says which column is the baseline in a
     "Baseline: <its column>" line. A main or this PR column comes with its "main: <hash> (<date>)" or "this PR:
     <branch> @ <hash>" line, on the same commit; and a row of values;
-  - every box of "For everyone" ticked. The "If applicable" boxes may stay empty.
+  - the whole checklist kept: every box of "For everyone" there and ticked, and the "If applicable" list there (its
+    boxes may stay unticked, or say n/a).
 
-Warnings, which do not fail it: a diff that changes the menu's code while Flags and settings says None, and a PR
-rebased onto a newer main than the one measured.
+Warnings, which do not fail it: a diff that changes the menu's code while Flags and settings says None, a PR rebased
+onto a newer main than the one measured, Not tested or Needs other testers naming something the Measurements say was
+measured, and a test request still to open (forge.py pr ready refuses that one: the PR goes ready once they are open).
 
 A pull request still in work in progress (a title starting with WIP: or [WIP], Forgejo's draft mark, or the API's
 draft) is not checked: it passes with a notice listing what is left. The check applies once it is marked ready for
@@ -40,8 +44,15 @@ TEMPLATE = Path(__file__).resolve().parents[1] / ".forgejo" / "pull_request_temp
 WIP_PREFIXES = ("WIP:", "[WIP]")
 NEEDS_MEASUREMENTS = "needs measurements"   # (the label of a PR sent back to WIP for its measurements)
 # The sections a description fills in; Screenshots, Reviewer notes and Issues may stay empty.
-REQUIRED = ("Why", "What changed", "Flags and settings", "Measurements", "Not tested", "Risk and rollback")
+REQUIRED = ("Why", "What changed", "Flags and settings", "Measurements", "Testing", "Risk and rollback")
 FLAGS = "Flags and settings"
+TESTING_PARTS = ("Tested", "Not tested", "Needs other testers")
+# A part of Testing: "**Tested:** ...", "Tested: ..." or a "### Tested" heading ("Tested but not measured: ..." is a
+# note inside Tested, not a part)
+PART = re.compile(r"^(?:#{3,4}\s+)?[*_]*(%s)[*_]*\s*(?::[*_]*\s*(.*)|$)" % "|".join(
+    sorted(TESTING_PARTS, key=len, reverse=True)), re.I)
+TEST_REQUEST = re.compile(r"\bT-[0-9A-Z]{4}\b|https?://\S+")
+TO_OPEN = re.compile(r"request to open", re.I)
 COMMIT = re.compile(r"^[0-9a-f]{7,40}$")
 STAND_IN = re.compile(r"<[^<>\n!]+>")   # (the template's <...> stand-ins, read from the template itself)
 # A measurement column: "main @ 7afe6ae1", "this PR @ 992a2420, RX_VK_X=1", or a build named by its tag,
@@ -216,6 +227,67 @@ def diff_changes(diff):
     return sorted(added - removed), files
 
 
+def testing_parts(text):
+    """{part: its text} for the parts of ## Testing"""
+    out, name = {}, None
+    for line in text.splitlines():
+        m = PART.match(line.strip())
+        if m:
+            name = next(p for p in TESTING_PARTS if p.lower() == m.group(1).lower())
+            out[name] = (m.group(2) or "") + "\n"
+        elif name:
+            out[name] += line + "\n"
+    return out
+
+
+def tester_lines(text):
+    """Needs other testers' items: each bullet with its continuation lines, or each line when there are no bullets"""
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    if not any(re.match(r"^\s*[-*] ", ln) for ln in lines):
+        return [ln.strip() for ln in lines]
+    items = []
+    for ln in lines:
+        if re.match(r"^\s*[-*] ", ln) or not items:
+            items.append(re.sub(r"^\s*[-*] ", "", ln).strip())
+        else:
+            items[-1] += " " + ln.strip()
+    return items
+
+
+def testing_problems(text):
+    parts, out = testing_parts(text), []
+    for name in TESTING_PARTS:
+        if name not in parts:
+            out.append("## Testing has no '%s:' part (Tested, Not tested, Needs other testers)" % name)
+        elif not parts[name].strip():
+            out.append("## Testing's '%s:' is empty%s" % (name, ": write None if nobody else needs to test it"
+                                                           if name == "Needs other testers" else ""))
+    needs = parts.get("Needs other testers", "").strip()
+    if needs and not re.match(r"^none\b", needs, re.I):
+        out += ["## Testing's 'Needs other testers:' has no test request for '%s': link it (scripts/test_requests.py "
+                "request --pr <n> ...), or write 'request to open'" % item
+                for item in tester_lines(needs) if not TEST_REQUEST.search(item) and not TO_OPEN.search(STAND_IN.sub("", item))]
+    return out
+
+
+def requests_to_open(body):
+    """The Needs other testers lines whose test request is still to open"""
+    parts = testing_parts(sections(without_comments((body or "").replace("\r\n", "\n"))).get("Testing", ""))
+    needs = parts.get("Needs other testers", "")
+    return [item for item in tester_lines(needs) if TO_OPEN.search(STAND_IN.sub("", item))]   # (not the template's own)
+
+
+def measured(text):
+    """What the Measurements say was measured on: the Hardware line's items and the table's rows"""
+    things = []
+    m = re.search(r"^\W*Hardware:\s*(.+)$", text, re.M | re.I)
+    if m:
+        things += [t.strip() for t in re.split(r"[,;]", m.group(1))]
+    for header, rows in tables(text)[:1]:
+        things += [r[0] for r in rows if r and r[0]]
+    return [t for t in things if len(t) >= 3]
+
+
 def review(body, diff=None, merge_base=None, template=None):
     """(problems, warnings) for body: it passes when there are no problems. diff (the PR's unified diff) adds the
     Flags checks; merge_base (the commit the PR is now on) the rebase warning."""
@@ -240,12 +312,20 @@ def review(body, diff=None, merge_base=None, template=None):
             out += measurement_problems(text)
         elif name == FLAGS:
             out += flags_problems(text, switches)
+        elif name == "Testing":
+            out += testing_problems(text)
     if FLAGS not in top and switches:
         out.append("the diff adds %s, and there is no ## Flags and settings" % ", ".join(switches))
-    everyone = for_everyone(body)
-    if everyone is None:
+    lists = sections(top.get("Checklist", ""), "###")
+    everyone = lists.get("For everyone")
+    if "Checklist" not in top:
+        out.append("no ## Checklist: keep the template's whole checklist, For everyone and If applicable")
+    elif everyone is None:
         out.append("no ### For everyone checklist under ## Checklist")
-    else:
+    if "Checklist" in top and not boxes(lists.get("If applicable", "")):
+        out.append("the ### If applicable list was deleted: keep it, and leave unticked (or write n/a beside) what "
+                   "doesn't apply")
+    if everyone is not None:
         have = {key(item) for _, item in boxes(everyone)}
         out += ["not ticked: " + item for ticked, item in boxes(everyone) if not ticked]
         out += ["missing from For everyone: " + item for _, item in boxes(for_everyone(without_comments(template)) or "")
@@ -258,6 +338,14 @@ def review(body, diff=None, merge_base=None, template=None):
     if m and merge_base and not merge_base.lower().startswith(m.group(1).lower()):
         warn.append("measured on main %s, but the PR is now on main %s: measure again, or say why the numbers still "
                     "hold" % (m.group(1), merge_base[:8]))
+    parts = testing_parts(top.get("Testing", ""))
+    untested = " ".join(parts.get(p, "") for p in ("Not tested", "Needs other testers")).lower()
+    for thing in measured(top.get("Measurements", "")):
+        if thing.lower() in untested:
+            warn.append("## Testing says '%s' is not tested or needs other testers, but the Measurements say it was "
+                        "measured" % thing)
+    warn += ["## Testing's 'Needs other testers:' has a test request still to open: '%s' (the PR goes ready once it "
+             "is open: docs/test-requests.md)" % item for item in requests_to_open(body)]
     return out, warn
 
 

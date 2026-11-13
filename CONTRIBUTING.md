@@ -286,13 +286,17 @@ python -I scripts/forge.py pr create fix/arc-walls --title "fix(vk): walls missi
      default, whether it should be on by default, where it helps and where it is untested), or "None";
    - **Measurements**: `main` and this PR, each at its commit, the hardware, the scene, the method, how to reproduce
      it, the table and the log lines ([what counts](#measurements));
-   - **Not tested**, and tested but not measured, with a [test request](docs/test-requests.md) for the hardware you
-     don't have;
+   - **Testing**, in three parts: **Tested** (what you ran and checked, where and how, including what you checked
+     but didn't measure), **Not tested** (what the PR could affect that nobody has run yet, and why) and **Needs other
+     testers** (a line per thing you can't test yourself: what to check, the result expected, and its
+     [test request](docs/test-requests.md); "None" if you covered everything). The PR goes ready only once those test
+     requests are open;
    - **Screenshots** when it shows on screen, from the same spot (a screenshot of the game is fine: the rule above is
      about game files);
    - **Risk and rollback**: what could break, and how to turn it off or revert it; **Reviewer notes** if any;
    - `Fixes #123` (one line per issue) closes the issue when the PR merges; `See #123` keeps it open;
-   - the **checklist**: every box of *For everyone* ticked, the *If applicable* ones that apply.
+   - the **checklist**, kept whole in every PR: every box of *For everyone* ticked; in *If applicable*, the ones that
+     apply ticked and the rest left unticked or marked n/a, never deleted.
 4. **A pull request is work in progress until it is measured and ready for review.** On Forgejo that is a title
    starting with `WIP:` (or `[WIP]`). `pr create` opens it so (`--ready` when the description is complete already);
    `pr ready <n>` marks it ready once the Measurements have real numbers and every *For everyone* box is ticked, and
