@@ -43,6 +43,16 @@ The workflows name actions by full URL: `https://github.com/actions/...` pinned 
 that is not github.com). The runners must reach github.com and data.forgejo.org, or those actions must be mirrored and
 the URLs changed. `actions/cache` needs the runner's cache server (on by default in forgejo-runner).
 
+Another project's repository is not checked out with `actions/checkout`'s `repository:`: on Forgejo that names a
+repository of this instance (`github.server_url`), not GitHub's. `scripts/fetch_commit.sh <URL> <commit> <folder>` fetches
+it by its full URL and commit, with no token. The actions are JavaScript (Node 24): a job in a `container:` without Node
+(the AppImage's `ubuntu:22.04`) installs Node.js's own build, pinned by its SHA-256, before its first action.
+
+An artifact goes to Forgejo, and comes back, by the address Forgejo signs its links with: its `ROOT_URL`
+(git.magicbean.dev, behind Cloudflare), whatever address the runner registered with; Forgejo has no setting for another.
+The actions send an artifact in 8 MB blocks, under Cloudflare's 100 MB limit, but a block that fails is not sent again,
+so each upload and download step is tried once more when it fails.
+
 ## Uploads larger than 100 MB
 
 The release workflows upload the builders (hundreds of MB) to the release. git.magicbean.dev is behind Cloudflare, which

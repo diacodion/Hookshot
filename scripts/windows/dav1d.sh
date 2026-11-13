@@ -21,8 +21,12 @@ for t in meson ninja nasm; do command -v "$t" >/dev/null || { echo "dav1d.sh: $t
 CC=$MINGW/bin/x86_64-w64-mingw32-clang
 [ -x "$CC" ] || [ -x "$CC.exe" ] || { echo "dav1d.sh: no x86_64-w64-mingw32-clang in $MINGW/bin"; exit 1; }
 
-curl -fL --retry 5 --retry-delay 10 --proto '=https' -o "$WORK/dav1d.tar.gz" \
-    "https://code.videolan.org/videolan/dav1d/-/archive/$DAV1D_VER/dav1d-$DAV1D_VER.tar.gz"
+# (VideoLAN's GitLab first, then its GitHub mirror of the same tag when GitLab cannot be reached: the check below pins what
+# either unpacks to, and both unpack to the same files. --retry-all-errors: a refused connection is retried too)
+fetch_dav1d() { curl -fL --retry 5 --retry-all-errors --retry-delay 5 --proto '=https' -o "$WORK/dav1d.tar.gz" "$1"; }
+fetch_dav1d "https://code.videolan.org/videolan/dav1d/-/archive/$DAV1D_VER/dav1d-$DAV1D_VER.tar.gz" ||
+    { echo "dav1d.sh: code.videolan.org failed: trying the GitHub mirror"
+      fetch_dav1d "https://github.com/videolan/dav1d/archive/refs/tags/$DAV1D_VER.tar.gz"; }
 mkdir -p "$WORK/src" && tar -xzf "$WORK/dav1d.tar.gz" -C "$WORK/src" --strip-components=1
 # (GitLab's tag archives are made on demand: pinned by what they unpack to, as scripts/linux/deps.sh's tree_is)
 other=$(find "$WORK/src" ! -type f ! -type d -print -quit)

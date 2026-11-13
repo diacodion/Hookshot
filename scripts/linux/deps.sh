@@ -67,7 +67,8 @@ VK_HEADERS_TREE=f420c9f8639ce3a078c8792624b292ae60858318c4741f609d8a087ddd958669
 SPIRV_HEADERS_TREE=d2eb655ad74ecf31e039866232142199476ffac691a8e3cfeba90993c2de5209
 VMA_TREE=ab0e5e18a0b0ba7303d0df7d3f5610e5dc99f045f8006c2404cb0e49d242d322
 
-CURL=(curl -fL --retry 5 --retry-delay 10 --proto '=https')
+# (--retry-all-errors: a refused connection, a host briefly out of reach, is retried as a timeout is)
+CURL=(curl -fL --retry 5 --retry-all-errors --retry-delay 10 --proto '=https')
 # A GitHub release link (github.com/O/R/releases/download/TAG/NAME) can answer 504 for a long while: the same file is
 # then fetched through the GitHub API (with $GH_TOKEN when it is set).
 fetch_github_api() {   # url out

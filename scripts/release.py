@@ -244,8 +244,10 @@ def notes(tag, product, root=ROOT):
     cliff = os.environ.get("GIT_CLIFF") or shutil.which("git-cliff")
     if not cliff:
         fail("git-cliff is needed for the notes: python -I scripts/release.py git-cliff <folder>, then GIT_CLIFF=<its path>")
-    args = [cliff, "--config", os.path.join(root, "cliff.toml"), "--tag", tag, "--strip", "all",
-            (since + ".." + ref) if since else ref]
+    # (no tag before and no first commit, the launcher's first release: every commit of the checkout, which is ref's. No
+    # range then: git-cliff takes a lone ref for a range and stops, SetCommitRangeError("HEAD", unable to parse OID))
+    args = [cliff, "--config", os.path.join(root, "cliff.toml"), "--tag", tag, "--strip", "all"] + \
+        ([since + ".." + ref] if since else [])
     p = subprocess.run(args, cwd=root, capture_output=True, text=True, encoding="utf-8")
     if p.returncode:
         fail("git-cliff: " + p.stderr.strip())
