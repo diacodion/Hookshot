@@ -121,6 +121,7 @@ void restart() {
     CHECK(has_options && !has_output && has_memory_budget && !has_vram_budget);
 }
 void apply_pad_layout(int) {}
+int detect_pad_layout() { return opts.pad_layout; }
 void sync_preset_budgets(int) {}
 void vram_budget_sync() {}
 constexpr int kVramMinimumOnly = 1;

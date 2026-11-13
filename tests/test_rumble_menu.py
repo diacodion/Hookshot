@@ -61,6 +61,7 @@ Options opts;
 int saves = 0, presets = 0;
 void save() { saves++; }
 void apply_pad_layout(int) {}
+int detect_pad_layout() { return opts.pad_layout; }
 void apply_preset(int) { presets++; }
 void sync_preset_budgets(int) {}
 void env_release(const int*) {}   // (the environment's hold on a row: none here)

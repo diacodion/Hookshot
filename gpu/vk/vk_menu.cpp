@@ -1772,22 +1772,23 @@ const char* tx_pad_layout(int v) {
     return t[std::min(std::max(v, 0), 3)];
 }
 void apply_pad_layout(int layout) {
-    if (!can_bind()) return;
-    if (layout == 0) { // Nintendo (Default: Bottom=B, Right=A, Top=X, Left=Y)
-        host->bind(HOS_BIND_PAD, HOS_SW_A, 0, HOS_PAD_EAST);
-        host->bind(HOS_BIND_PAD, HOS_SW_B, 0, HOS_PAD_SOUTH);
-        host->bind(HOS_BIND_PAD, HOS_SW_X, 0, HOS_PAD_NORTH);
-        host->bind(HOS_BIND_PAD, HOS_SW_Y, 0, HOS_PAD_WEST);
-    } else if (layout == 1) { // Xbox / PC Standard (Bottom=A, Right=B, Left=X, Top=Y)
-        host->bind(HOS_BIND_PAD, HOS_SW_A, 0, HOS_PAD_SOUTH);
-        host->bind(HOS_BIND_PAD, HOS_SW_B, 0, HOS_PAD_EAST);
-        host->bind(HOS_BIND_PAD, HOS_SW_X, 0, HOS_PAD_WEST);
-        host->bind(HOS_BIND_PAD, HOS_SW_Y, 0, HOS_PAD_NORTH);
-    } else if (layout == 2) { // Swap Face Buttons (Bottom=A, Right=B, Top=X, Left=Y)
-        host->bind(HOS_BIND_PAD, HOS_SW_A, 0, HOS_PAD_SOUTH);
-        host->bind(HOS_BIND_PAD, HOS_SW_B, 0, HOS_PAD_EAST);
-        host->bind(HOS_BIND_PAD, HOS_SW_X, 0, HOS_PAD_NORTH);
-        host->bind(HOS_BIND_PAD, HOS_SW_Y, 0, HOS_PAD_WEST);
+    if (!can_bind() || layout < 0 || layout > 2) return;
+    static const int face[4] = {HOS_SW_A, HOS_SW_B, HOS_SW_X, HOS_SW_Y};
+    static const int want[3][4] = {
+        {HOS_PAD_EAST, HOS_PAD_SOUTH, HOS_PAD_NORTH, HOS_PAD_WEST},   // Nintendo (Default: Bottom=B, Right=A, Top=X, Left=Y)
+        {HOS_PAD_SOUTH, HOS_PAD_EAST, HOS_PAD_WEST, HOS_PAD_NORTH},   // Xbox / PC Standard (Bottom=A, Right=B, Left=X, Top=Y)
+        {HOS_PAD_SOUTH, HOS_PAD_EAST, HOS_PAD_NORTH, HOS_PAD_WEST},   // Swap Face Buttons (Bottom=A, Right=B, Top=X, Left=Y)
+    };
+    // (again while a face button is not the preset's: the host leaves an empty Input 1 as it is when the input asked for is
+    // another button's only one (hos_bind), and that button may take its own new input later in the same pass)
+    for (int pass = 0; pass < 4; pass++) {
+        bool done = true;
+        for (int i = 0; i < 4; i++)
+            if (host->binding(HOS_BIND_PAD, face[i], 0) != want[layout][i]) {
+                host->bind(HOS_BIND_PAD, face[i], 0, want[layout][i]);
+                done = false;
+            }
+        if (done) break;
     }
 }
 int detect_pad_layout() {
@@ -2337,6 +2338,7 @@ void set_row(Row& r, int v, int dir, bool keep = true) {
         if (v < 0) v = 2;
         *r.value = v;
         apply_pad_layout(*r.value);
+        *r.value = detect_pad_layout();   // (Custom when the preset could not be had whole)
     } else if (r.value == &opts.preset) {
         *r.value = v > r.hi ? r.lo : v < r.lo ? r.hi : v;
         apply_preset(*r.value);
