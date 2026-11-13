@@ -431,9 +431,9 @@ sets `XDG_DATA_HOME` for the run, so it plays from saves of its own. `--env NAME
 
 ## Known limits
 
-- **Windows** is built and its pipe tested in CI only (the windows-2022 runner): the bridge inside a Windows game build,
-  `launch` on Windows, and refusing remote pipe clients (`PIPE_REJECT_REMOTE_CLIENTS`, which needs a second machine)
-  are not tested.
+- **Windows**: CI has no Windows runner, so the named pipe is tested only when a Windows tester runs the suite
+  (RELEASING.md, *Needs a Windows tester*). The bridge inside a Windows game build, `launch` on Windows, and refusing
+  remote pipe clients (`PIPE_REJECT_REMOTE_CLIENTS`, which needs a second machine) are not tested.
 - **The state is a guess** from the draws a frame (above). A scene with unusual counts can be misread; for OoT, `game`'s
   `event` and `loading` and `map` are the game's own.
 - **A teleport the game sent but that did not move Link**: `accepted` (the event manager's answer) is reported, not turned into an error: `false` was seen once, when the map did not change, but that it always means no move is not established. Otherwise `wait map` times out.
@@ -447,7 +447,7 @@ sets `XDG_DATA_HOME` for the run, so it plays from saves of its own. `--env NAME
 ## Tests
 
 `tests/test_control.py` builds the bridge with a fake game and drives it over its real transport: the Unix socket on
-Linux, the named pipe on Windows (the CI's windows-2022 runner). On Windows it also checks the pipe's access control:
+Linux, the named pipe on Windows (a Windows tester's run: CI is Linux only). On Windows it also checks the pipe's access control:
 another first instance of the name and a second bridge on it are refused, and the DACL, read back through a client's
 handle, is protected with a single ACE for the current user. `tests/test_hookshot_ctl.py` drives the client against a
 fake bridge on the same transports.

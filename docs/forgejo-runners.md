@@ -1,8 +1,8 @@
 # Forgejo Actions runners
 
-Hookshot's CI runs on Forgejo Actions (`.forgejo/workflows/`), on runners the team registers with git.magicbean.dev. None
-are registered yet, and Actions is off on the repositories. These are manual steps for an admin of the instance or of
-MagicBeanDev; nothing here needs a game.
+Hookshot's CI runs on Forgejo Actions (`.forgejo/workflows/`), on runners the team registers with git.magicbean.dev. Every
+job runs on Linux: **no Windows runner is needed**, and none is registered. These are manual steps for an admin of the
+instance or of MagicBeanDev; nothing here needs a game.
 
 ## Turn Actions on
 
@@ -14,8 +14,18 @@ MagicBeanDev/LongshotLauncher. The secrets and the variable the release workflow
 | Label | Used by | What it must be |
 |---|---|---|
 | `ubuntu-latest` | `release.yml`, `ci.yml` (its title check and its Linux checks run on `ubuntu-24.04`), `third-party.yml`, the launcher's `ci.yml` and `release.yml` | Linux, Docker: e.g. `ubuntu-latest:docker://ghcr.io/catthehacker/ubuntu:act-24.04` (Node for the actions, git, Python 3, curl, sudo and apt) |
-| `ubuntu-24.04` | `ci.yml`'s Linux parts, `build-linux.yml`, `build-windows.yml`'s Linux jobs (the Vulkan back end with llvm-mingw, dav1d), `vulkan-dlss.yml` | the same image; the AppImage job builds inside Ubuntu 22.04 itself (`scripts/linux/deps.sh` runs in its container) and needs Docker or enough disk (about 30 GB) |
-| `windows-2022` | `ci.yml`'s Windows parts, `build-windows.yml`'s zip job (`dotnet publish` of the WPF builder, the setup with llvm-mingw) | a Windows runner in host mode: Git for Windows (its bash), Python 3, the .NET 8 SDK; it may instead be replaced by a Linux job that cross-compiles with llvm-mingw (the setup and the Vulkan back end already do), with `EnableWindowsTargeting` for the WPF publish |
+| `ubuntu-24.04` | `ci.yml`'s tests (with the Windows Builder's compile and worker checks), `build-linux.yml`, `build-windows.yml` (all of it), `vulkan-dlss.yml` | the same image; the AppImage job builds inside Ubuntu 22.04 itself (`scripts/linux/deps.sh` runs in its container) and needs Docker or enough disk (about 30 GB). The Windows jobs install Wine and Xvfb with apt, and download llvm-mingw's Linux build and the .NET 8 SDK |
+
+### Windows files, built on Linux
+
+There is no `windows-*` label, and a job asking for one would queue forever (`tests/test_windows_on_linux.py` fails on
+one). `build-windows.yml` makes the Windows builder's zip on Linux: the setup with llvm-mingw's Linux build of
+`tools.lock`'s release (`scripts/builder_package.py llvm-mingw --host linux`, its SHA-256 checked), its icon, manifest
+and version with that llvm-mingw's `windres`; the WPF builder with `dotnet publish -r win-x64 -p:EnableWindowsTargeting=true`
+(self-contained, as before). `scripts/check_windows_files.py` checks what it made as Windows files and starts the setup
+and the builder under Wine. The Windows Vulkan back end (also with DLSS, `vulkan-dlss.yml`) is built with `RX_TARGET=windows`.
+What only a Windows PC can check is in RELEASING.md, *Needs a Windows tester*. The MSI source (`builder/msi/`, WiX) is
+not built by CI and not part of a release.
 
 ## Register a runner
 
@@ -23,7 +33,6 @@ MagicBeanDev/LongshotLauncher. The secrets and the variable the release workflow
 2. In MagicBeanDev's *Settings > Actions > Runners*, *Create new runner*, and copy the token.
 3. `forgejo-runner register --instance https://git.magicbean.dev --token <token> --name <name> --labels
    'ubuntu-latest:docker://ghcr.io/catthehacker/ubuntu:act-24.04,ubuntu-24.04:docker://ghcr.io/catthehacker/ubuntu:act-24.04'`
-   (a Windows runner: `--labels windows-2022:host`).
 4. Run it as a service (`forgejo-runner daemon`). One Linux runner is enough to start; the builder jobs are long (an hour
    and more) and want 4+ cores, 16 GB of memory and about 50 GB of disk.
 

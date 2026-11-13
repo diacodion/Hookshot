@@ -178,12 +178,13 @@ Both repositories have the same workflows in `.forgejo/workflows/`, on Forgejo A
 
 | Workflow | Hookshot | The launcher |
 |---|---|---|
-| `ci.yml` | every pull request and push to main: the PR title, every game-free check (`tests/run_all.py`, Linux and Windows) | the PR title, compile, `test_launcher_core.py`, `test_release.py` |
+| `ci.yml` | every pull request and push to main: the PR title, every game-free check (`tests/run_all.py`, on Linux) | the PR title, compile, `test_launcher_core.py`, `test_release.py` |
 | `release.yml` | tags `v*` and pushes to main: the version, the two builders (`build-linux.yml`, `build-windows.yml`), sign and publish | tags `v*` and pushes to main: the version, the launcher (`scripts/package.sh`), sign and publish |
 | `third-party.yml` | the third_party rule (`scripts/check_third_party.py`) | (none) |
 
 Hookshot also keeps `build-linux.yml` and `build-windows.yml` (also run on pull requests that change code) and
-`vulkan-dlss.yml` (the upscalers' build checks). The runners are in Hookshot's [docs/forgejo-runners.md](https://git.notrexed.dev/Hookshot/Hookshot/src/branch/main/docs/forgejo-runners.md).
+`vulkan-dlss.yml` (the upscalers' build checks). Every job runs on Linux: Hookshot's Windows files are cross-built there,
+and what only Windows can check is a tester's (RELEASING.md, *Needs a Windows tester*). The runners are in Hookshot's [docs/forgejo-runners.md](https://git.notrexed.dev/Hookshot/Hookshot/src/branch/main/docs/forgejo-runners.md).
 
 ## The version a tag must have
 

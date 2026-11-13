@@ -1,9 +1,10 @@
 """The Windows Hookshot Builder's release zip (docs/releases.md), made in CI (.forgejo/workflows/release.yml, ci.yml). No game
 data is involved. Python's standard library only.
 
-    python -I scripts/builder_package.py llvm-mingw <folder> [--name]
-        tools.lock's llvm-mingw (its SHA-256 checked) unpacked into <folder>; prints its folder. --name: only its folder's name
-        (a cache key)
+    python -I scripts/builder_package.py llvm-mingw <folder> [--name] [--host windows|linux]
+        llvm-mingw (its SHA-256 checked) unpacked into <folder>; prints its folder. --name: only its folder's name (a cache
+        key). --host (default: this system): windows is tools.lock's, the one players get; linux is the same release's Linux
+        build (LINUX_LLVM_MINGW below), which the release's Windows files are made with on the Linux runner
     python -I scripts/builder_package.py package <out folder> --publish <dotnet publish folder> --setup <setup exe>
         the builder's folder, HookshotBuilder\\ in the zip: the published builder, the setup (its Repair runs it), LICENSE,
         the tracked gpu, host, nx2, scripts and third_party under tools\\, and the pipeline state list's sources
@@ -20,6 +21,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tarfile
 import zipfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -32,16 +34,36 @@ def tools_module():
     return m
 
 
+# llvm-mingw's Linux build, the same release as tools.lock's (tests/test_windows_on_linux.py keeps the two the same): CI has no
+# Windows runner (docs/forgejo-runners.md), so the setup, the Windows Vulkan back end and dav1d are compiled on Linux with it.
+# (version, folder in the archive, SHA-256, size, URL), as a tools.lock line has them
+LINUX_LLVM_MINGW = ("20261104", "llvm-mingw-20261104-ucrt-ubuntu-22.04-x86_64",
+                    "919380403de87dca3c581c2053230cd298af5e891286628ba0613b7fed370926", 84104244,
+                    "https://github.com/mstorsjo/llvm-mingw/releases/download/20261104/"
+                    "llvm-mingw-20261104-ucrt-ubuntu-22.04-x86_64.tar.xz")
+
+
 def llvm_mingw(a):
     tools = tools_module()
-    t = tools.named(tools.load(), "llvm-mingw")
+    if a.host == "windows":
+        t = tools.named(tools.load(), "llvm-mingw")
+    else:
+        version, prefix, sha256, size, url = LINUX_LLVM_MINGW
+        t = tools.Tool("llvm-mingw", version, "linux-x64", sha256, size, "-", prefix, [url])
     if a.name:
         print(t.prefix)
         return 0
     folder = os.path.join(a.folder, t.prefix)
-    if not os.path.isfile(os.path.join(folder, "bin", "clang.exe")):
-        with zipfile.ZipFile(tools.fetch(t, os.path.join(a.folder, ".cache"))) as zf:
-            zf.extractall(a.folder)
+    clang = os.path.join(folder, "bin", "clang.exe" if a.host == "windows" else "clang")
+    if not os.path.isfile(clang):
+        archive = tools.fetch(t, os.path.join(a.folder, ".cache"))   # (its size and SHA-256 checked)
+        if a.host == "windows":
+            with zipfile.ZipFile(archive) as zf:
+                zf.extractall(a.folder)
+        else:
+            with tarfile.open(archive, "r:xz") as tf:
+                # (the "data" filter: nothing written outside the folder; the links inside it are kept. Python 3.12)
+                tf.extractall(a.folder, filter="data")
     print(folder)
     return 0
 
@@ -122,6 +144,7 @@ def main():
     s = sub.add_parser("llvm-mingw")
     s.add_argument("folder", nargs="?", default="")
     s.add_argument("--name", action="store_true")
+    s.add_argument("--host", choices=("windows", "linux"), default="windows" if os.name == "nt" else "linux")
     s = sub.add_parser("package")
     s.add_argument("out")
     s.add_argument("--publish", required=True)
