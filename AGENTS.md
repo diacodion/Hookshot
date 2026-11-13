@@ -70,6 +70,17 @@ Never push to `forge`: Hookshot's `main` takes reviewed pull requests only. `pr 
   it, and don't review a WIP PR. One that needs more work goes back (`pr wip <n>`).
 - **The description is the PR as it is now; the comments are its history.** When the change, the numbers or what was
   tested change, edit the description and post a short comment saying what changed and why, in one step: `pr update`.
+- **The checklist is yours to keep true, on every update.** Each box is a statement about the PR as it is now, and
+  every box is yours to settle, none is left for someone else by default. For each one, work out whether it holds:
+  read the diff, run the check or the test it names, look at what was measured. Tick it when it holds, untick it when
+  a push makes it false, and delete an *If applicable* box that doesn't apply instead of marking it n/a. Go through
+  all of them again with every `pr update`.
+- **A box you can't settle yourself is a question for the person you work for, asked at once.** Say which box, what
+  you found and what you need from them (a decision, a run on their hardware, a fact only they have), then update
+  the box with their answer. Don't leave it unticked in silence and don't tick it on a guess. A box that can't be true
+  yet (not measured, a test not run) stays unticked with the reason beside it, and the PR stays WIP. What each box
+  asks is in [CONTRIBUTING.md](CONTRIBUTING.md#commits-and-pull-requests); the license box, for one, is a check of
+  where the diff's code comes from ([Licensing](CONTRIBUTING.md#licensing)), which you can read off the diff.
 
 - **The title is a Conventional Commit** ([CONTRIBUTING.md](CONTRIBUTING.md#pull-request-titles)): it becomes the
   commit on `main` and decides the release. `pr create` refuses anything else.
