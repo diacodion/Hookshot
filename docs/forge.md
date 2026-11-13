@@ -116,7 +116,7 @@ python -I scripts/forge.py pr list [--mine] [--state open|closed|all]
 python -I scripts/forge.py pr view 12 [--comments]
 python -I scripts/forge.py pr comment 12 "Tested on an RX 6700 XT: fixed."   (or --body-file F)
 python -I scripts/forge.py pr checkout 12                         its head as the bookmark (jj) or branch (git) pr/12
-python -I scripts/forge.py issue list [--label bug]
+python -I scripts/forge.py issue list [--label kind/bug]
 python -I scripts/forge.py issue view 40 --comments
 python -I scripts/forge.py issue create --title "..." --body-file issue.md
 python -I scripts/forge.py issue comment 40 "..."
