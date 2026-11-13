@@ -78,6 +78,8 @@ struct NvnState;
 uint32_t compute_ssbo_table(const NvnState& s, uint32_t* count, uint32_t* layout_end);   // (vk_bank.cpp)
 bool seed_cs_buffer_word(uint32_t offset);   // (vk_bank.cpp)
 bool key_listed(const char* hex, const char* var);   // (below)
+// (hookshot) Why a movie upscaler's network is not translated on a card that cannot run it as the console does: a trace line, not a failure
+constexpr char network_left_out[] = "a network left out on this card";
 }
 namespace {
 bool ptr_diag_on() {
@@ -1289,7 +1291,7 @@ void translate_into(Program& p, const NvnState& s, const Code* vsc, const Code* 
                     at = e == std::string::npos ? keep.size() : e + 1;
                 }
                 if ((!kept_one && (Shader::Backend::SPIRV::mma_software || dev.props.vendorID != 0x10DE)) || env_on("RX_VK_NO_F16") || !dev.vk12.shaderFloat16)
-                    throw std::runtime_error("a network left out on this card");
+                    throw std::runtime_error(network_left_out);
             }
             const std::vector<uint32_t> spirv = Shader::Backend::SPIRV::EmitSPIRV(profile_pinned(), rt, t->program, bindings);
             // (EvilOOT) RX_VK_DUMP_SPV=<folder>: the SPIR-V of the programs RX_VK_MISS_LOG_PROG names (all: unset), for spirv-val
@@ -1409,8 +1411,11 @@ void translate_into(Program& p, const NvnState& s, const Code* vsc, const Code* 
         p.failed = true;
         const bool trial = forced && !forced->want.empty();   // (an answer seed_compute tries: it may well not translate)
         if (!trial) st_failed++;
-        static std::atomic<int> logged;
-        if (!trial && logged++ < 30) logf("vk: program %016llx not translated: %s", (unsigned long long)p.key, e.what());
+        // (a network left out on purpose is a trace line, counted apart: the dozen of them on every AMD card took the 30 lines a failure gets)
+        static std::atomic<int> logged, left_out;
+        if (!strcmp(e.what(), network_left_out)) {
+            if (!trial && left_out++ < 30) logf_at(log_trace, "vk: program %016llx not translated: %s", (unsigned long long)p.key, e.what());
+        } else if (!trial && logged++ < 30) logf("vk: program %016llx not translated: %s", (unsigned long long)p.key, e.what());
     }
     st_translate_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count();
     p.ready.store(true, std::memory_order_release);

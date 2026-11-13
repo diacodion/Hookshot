@@ -84,6 +84,15 @@ or file, is logged as he wrote it, within those limits.
 none, and `unavailable` means the loaded SDL lacks a required diagnostic call. A zero GUID is `unknown`.
 These queries do not change bindings, load a mapping file, or change which controllers are read.
 
+### Log levels
+
+A log line is info unless it says otherwise: `hos_log` and the renderer's `logf` write it as before. `hos_log_at(HOS_LOG_TRACE,
+...)` (host/hos.h) and `logf_at(log_trace, ...)` (gpu/vk/vk_internal.h) give it another level, written after the thread's tag:
+`[hos host] [trace] vk: ...`, and likewise `[error]`, `[warn]` and `[debug]`. The log file keeps every line. The Hookshot
+Launcher's build log shows info and above unless its level picker asks for more; a builder or launcher that doesn't read the tag
+shows the line with it. Per-item lines a player can't act on (one per program or pipeline, a decoder's details) are debug or
+trace; `HOS_TRACE`'s calls are trace. `tests/test_log_levels.py` checks the tags.
+
 ## Switches for testing and debugging
 
 The running game reads its switches from the environment or from `hookshot_env.txt` beside `image.bin` (one

@@ -108,14 +108,25 @@ int64_t steady_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 std::atomic<int64_t> last_log_ms{0};   // (when logf last wrote: the preparation's status line comes after a silence)
-void logf(const char* fmt, ...) {
+static void vlogf(LogLevel level, const char* fmt, std::va_list a) {
+    static const char* const tags[] = {"[error] ", "[warn] ", "", "[debug] ", "[trace] "};
     char b[1024];
-    std::va_list a;
-    va_start(a, fmt);
-    std::vsnprintf(b, sizeof b, fmt, a);
-    va_end(a);
+    const int n = std::snprintf(b, sizeof b, "%s", tags[level >= log_error && level <= log_trace ? level : log_info]);
+    std::vsnprintf(b + n, sizeof b - n, fmt, a);
     last_log_ms.store(steady_ms(), std::memory_order_relaxed);
     if (host) host->log(b);
+}
+void logf(const char* fmt, ...) {
+    std::va_list a;
+    va_start(a, fmt);
+    vlogf(log_info, fmt, a);
+    va_end(a);
+}
+void logf_at(LogLevel level, const char* fmt, ...) {
+    std::va_list a;
+    va_start(a, fmt);
+    vlogf(level, fmt, a);
+    va_end(a);
 }
 
 namespace {
