@@ -263,7 +263,7 @@ class Check(unittest.TestCase):
         self.assertIn("pull_request_target:", on)
         self.assertIn("types: [opened, edited, synchronize, reopened]", on)   # (edited: the title's WIP: taken off)
         self.assertNotIn("ready_for_review", on)   # (Forgejo 17 has no such event)
-        self.assertIn("runs-on: ubuntu-latest", wf)   # (the label of the team's runners)
+        self.assertIn("runs-on: quick", wf)   # (a quick job: the runner kept free for them, docs/forgejo-runners.md)
         self.assertRegex(wf, r"uses: https://github.com/actions/checkout@[0-9a-f]{40} ")
         self.assertIn("python3 -I scripts/check_pr_description.py --pr", wf)
         self.assertNotIn("${{ github.event.pull_request.title", wf)   # (nothing the PR's author writes reaches the shell)
