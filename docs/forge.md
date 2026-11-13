@@ -80,6 +80,8 @@ python -I scripts/forge.py pr status 12                          WIP or ready, t
   what changed, so the description stays the PR as it is now and the comments keep the history. With `--comment` only,
   it only comments.
 - `pr edit` and `pr update` warn when a PR marked ready no longer passes the check: `pr wip` it if it needs more work.
+- Take your PR out of WIP yourself (`pr ready`) as soon as it is complete: a WIP PR isn't reviewed, so it waits until
+  you do. Forgejo shows a WIP PR as not mergeable, whether or not it needs a rebase.
 
 ## Other commands
 

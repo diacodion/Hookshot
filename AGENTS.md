@@ -68,6 +68,10 @@ Never push to `forge`: Hookshot's `main` takes reviewed pull requests only. `pr 
 - **Work in progress until measured.** A PR opens as WIP (a `WIP:` title; `pr create` does it) and is marked ready
   (`pr ready`) only when the Measurements have real numbers and every *For everyone* box is ticked. Don't `--force`
   it, and don't review a WIP PR. One that needs more work goes back (`pr wip <n>`).
+- **Take it out of WIP yourself once it is ready.** When the description check passes (`pr status <n>`) and the
+  change is tested and measured, run `pr ready <n>` in the same session. Don't wait to be asked: nobody reviews a WIP
+  PR, so one left WIP waits for nothing. A change the game doesn't run (a script, the docs, the checks) is measured by
+  its game-free checks. Forgejo shows a WIP PR as not mergeable: that alone isn't a reason to rebase.
 - **The description is the PR as it is now; the comments are its history.** When the change, the numbers or what was
   tested change, edit the description and post a short comment saying what changed and why, in one step: `pr update`.
 - **The checklist is yours to keep true, on every update.** Each box is a statement about the PR as it is now, and
