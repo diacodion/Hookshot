@@ -64,7 +64,7 @@ python -I scripts/forge.py pr ready 12 [--force]                 take WIP: off o
 python -I scripts/forge.py pr wip 12 [--needs-measurements]      put WIP: back: it needs more work (the label: maintainers)
 python -I scripts/forge.py pr edit 12 [--title T] [--body-file F]   the title or the description; WIP stays as it is
 python -I scripts/forge.py pr update 12 [--body-file F] --comment "what changed and why"
-python -I scripts/forge.py pr comment 12 ("text" | --body-file F)
+python -I scripts/forge.py pr comment 12 ("text" | --body-file F) [--attach FILE ...]   with pictures (below)
 python -I scripts/forge.py pr status 12                          WIP or ready, the check, the checklist, reviews, comments
 python -I scripts/forge.py pr review 12 (--approve | --comment | --request-changes) [--body-file F] [--at PATH:LINE TEXT]...
 ```
@@ -123,12 +123,28 @@ Pick the verdict by what the review asks for:
 python -I scripts/forge.py pr list [--mine] [--state open|closed|all]
 python -I scripts/forge.py pr view 12 [--comments]
 python -I scripts/forge.py pr comment 12 "Tested on an RX 6700 XT: fixed."   (or --body-file F)
+python -I scripts/forge.py pr comment 12 --body-file result.md --attach main.png pr.png   with pictures
 python -I scripts/forge.py pr checkout 12                         its head as the bookmark (jj) or branch (git) pr/12
 python -I scripts/forge.py issue list [--label kind/bug]
 python -I scripts/forge.py issue view 40 --comments
 python -I scripts/forge.py issue create --title "..." --body-file issue.md
 python -I scripts/forge.py issue comment 40 "..."
 ```
+
+## Pictures in a comment
+
+A test result or a review often needs screenshots: `pr comment --attach` puts them in the comment. In the text,
+`![main @ 7afe6ae1](attach:main.png)` shows the file `main.png` there (a name with a space is written percent-encoded,
+`attach:main%2021x9.png`); a file the text doesn't show goes at the end. forge.py posts the comment, puts each file up
+as an attachment of it, then edits the comment so the pictures show. Put the text before `--attach`, or give it with
+`--body` or `--body-file`.
+
+Only pictures go up: PNG, JPEG, GIF or WebP, checked by name and by their first bytes, so that no game file, key or
+build goes up by mistake ([the rule with no exceptions](../CONTRIBUTING.md#the-rule-with-no-exceptions): screenshots
+are fine). Each is 25 MiB at most: a 4K PNG of the game fits (crop a larger one, or save it as JPEG or
+WebP). Anything else, a missing file and an `attach:` with no file of its name are refused before anything is posted.
+If an upload fails, it stops there, prints the comment's link and says which pictures went up: the comment shows those,
+and the rest go in by hand (Edit on the comment) or in a new comment, not by posting it again.
 
 ## fj, the Forgejo command line
 

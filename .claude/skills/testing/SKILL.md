@@ -87,6 +87,8 @@ Result: ... (numbers in a small table when comparing; the log lines that matter;
 - Facts only: what was run, on what, what came out. A failure says how to reproduce it.
 - [CONTRIBUTING.md](../../../CONTRIBUTING.md) applies: **no game files or anything made from them** attached or
   pasted (screenshots and lines of `hookshot_log.txt` are fine), no local paths, user names or anything personal.
+- Screenshots go up with the comment: `--attach <file> ...`, shown where the text has
+  `![main @ <commit>](attach:<file>)` or at the end ([docs/forge.md](../../../docs/forge.md#pictures-in-a-comment)).
 
 Then mark it done with that comment's link (the URL `forge.py pr comment` prints):
 
