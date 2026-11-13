@@ -68,7 +68,7 @@ else:raise SystemExit('unexpected package command')
 
 
 def bootstrap(root):
-    source = (root / ".github/workflows/linux-appimage.yml").read_text(encoding="utf-8")
+    source = (root / ".forgejo/workflows/build-linux.yml").read_text(encoding="utf-8")
     start = source.index("      - name: System packages")
     start = source.index("        run: |\n", start) + len("        run: |\n")
     lines = []

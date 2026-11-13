@@ -1,0 +1,21 @@
+# The build tools the Windows Hookshot Builder needs, which are not in Hookshot's releases: the builder's setup and the
+# Hookshot Launcher download each one it lacks, check its SHA-256 and size, keep it in a download cache that every
+# installed version shares, and unpack it into the install (docs/releases.md, "tools.lock"). A change is a pull request
+# that edits this file; scripts/tools.py checks it, mirrors an upstream archive, and assembles and uploads ours
+# (RELEASING.md, "Bump a tool"). The Linux builder carries its tools inside its AppImage (scripts/linux/deps.sh's pins).
+#
+#   tool <name> <version> <system> <sha256> <size> <dest> <prefix> <url> [<url> ...]
+#
+# dest: the folder the tool becomes in a builder install. prefix: the folder inside the archive that becomes dest ("-": the
+# whole archive). The URLs are tried in order: first the copy in Hookshot's "tools" release
+# (https://git.notrexed.dev/Hookshot/Hookshot/releases/download/tools/<sha256>-<name>.zip), then where it came from
+# (upstream, or NotRexed/Hookshot's release) as the fallback. Archives Hookshot assembles (a tool with our packages, our
+# profile) are only there. The tools release is filled before the first release (RELEASING.md, One-time setup).
+#
+# Taken as they are from Hookshot v2.1.0's Windows builder (NotRexed/Hookshot, release builder-parts), until
+# Hookshot assembles its own: python, emsdk, cpm and wgpu-native.
+tool llvm-mingw 20261104 windows-x64 552191b5754c49a5a20723276a6fc56541ea1922c4c50b7b669022333fc1b40f 191037046 HookshotBuilder/tools/llvm-mingw llvm-mingw-20261104-ucrt-x86_64 https://git.notrexed.dev/Hookshot/Hookshot/releases/download/tools/552191b5754c49a5a20723276a6fc56541ea1922c4c50b7b669022333fc1b40f-llvm-mingw.zip https://github.com/mstorsjo/llvm-mingw/releases/download/20261104/llvm-mingw-20261104-ucrt-x86_64.zip
+tool python 3.14-hookshot-v2.1.0 windows-x64 c0eb2e3fbabae82cb7d3dc61ec4b0e9b4b854269d9c38c3bbcc5a08e4497bd12 55961280 HookshotBuilder/tools/python HookshotBuilder/tools/python https://git.notrexed.dev/Hookshot/Hookshot/releases/download/tools/c0eb2e3fbabae82cb7d3dc61ec4b0e9b4b854269d9c38c3bbcc5a08e4497bd12-python.zip https://github.com/NotRexed/Hookshot/releases/download/builder-parts/HookshotBuilder-python-c0eb2e3fbaba.zip
+tool emsdk hookshot-v2.1.0 windows-x64 b4c8fc476654d7657806180039b3a96050c104cf6a93dab1cc5c027277ece368 120100315 HookshotBuilder/tools/emsdk HookshotBuilder/tools/emsdk https://git.notrexed.dev/Hookshot/Hookshot/releases/download/tools/b4c8fc476654d7657806180039b3a96050c104cf6a93dab1cc5c027277ece368-emsdk.zip https://github.com/NotRexed/Hookshot/releases/download/builder-parts/HookshotBuilder-emsdk-b4c8fc476654.zip
+tool cpm hookshot-v2.1.0 windows-x64 c30c77e4cf000ebf11ec82e79ace4bef3206d3698c61146f7477baa428ea7ef0 18641689 HookshotBuilder/tools/cpm HookshotBuilder/tools/cpm https://git.notrexed.dev/Hookshot/Hookshot/releases/download/tools/c30c77e4cf000ebf11ec82e79ace4bef3206d3698c61146f7477baa428ea7ef0-cpm.zip https://github.com/NotRexed/Hookshot/releases/download/builder-parts/HookshotBuilder-cpm-c30c77e4cf00.zip
+tool wgpu-native 29.0.1.1 windows-x64 a3b3d8253fbaedf5975172994c0b45202fe2e4ff89a42ff5bfad53f9468cf498 2162194 HookshotBuilder/tools/wgpu-native HookshotBuilder/tools/wgpu-native https://git.notrexed.dev/Hookshot/Hookshot/releases/download/tools/a3b3d8253fbaedf5975172994c0b45202fe2e4ff89a42ff5bfad53f9468cf498-wgpu-native.zip https://github.com/NotRexed/Hookshot/releases/download/builder-parts/HookshotBuilder-wgpu-native-a3b3d8253fba.zip

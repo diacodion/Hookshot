@@ -152,7 +152,7 @@ class Admission(unittest.TestCase):
                 install.assert_not_called()
                 self.assertEqual(events[:2], ["progress", "worker"])
                 self.assertEqual(events[2][0], "update-error")
-                self.assertIn("GitHub offered %s, not v2.3.0" % offered, events[2][1])
+                self.assertIn("The parts list is %s, not v2.3.0" % offered, events[2][1])
                 self.assertFalse(any(isinstance(row, tuple) and row[0] == "do-build" for row in events))
 
     def test_matching_target_can_rebuild_or_handoff_to_exact_downloaded_version(self):

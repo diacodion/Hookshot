@@ -254,7 +254,6 @@ static void call_guest(Ctx *c, uint64_t addr, uint64_t sp, const char *what) {
     call_guest_args(c, addr, sp, what);
 }
 
-void hos_update_check(void);   /* (host/hos_update.c) */
 #ifndef _WIN32
 /* (linux) Saves live in $XDG_DATA_HOME/hookshot (~/.local/share/hookshot), so a rebuilt game folder still finds them.
    A user/ folder beside the executable from before is moved there the first time, entry by entry. Anything that
@@ -1840,9 +1839,6 @@ static int game_main(int argc, char **argv) {
 #else
                 if (!hos_user_dir) hos_user_dir = beside_user;
 #endif
-                /* (a game folder from the builder: is a newer release out? host/hos_update.c. After the saves' place is known:
-                   on Linux the check keeps its "Skip this version" there) */
-                hos_update_check();
             }
         }
     }

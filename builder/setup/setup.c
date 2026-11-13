@@ -1,11 +1,15 @@
-/* HookshotBuilder-Setup.exe: the one file players download. It reads the latest release's hookshot-setup.txt, downloads
-   the parts it names (the builder and its tools from this repository's release, llvm-mingw from its own official
-   release), checks each one's SHA-256, unpacks them with Windows' own tar.exe into %LOCALAPPDATA%\HookshotBuilder\<tag>
-   and starts the builder there. Parts already downloaded and checked are used again; a release already installed just
-   starts. Files fetched by a program carry no "downloaded from the internet" mark, and the download itself holds no
-   scripts, which is what antivirus programs' machine-learning guesses (Trojan:Script/...!ml) fired on.
+/* HookshotBuilder.exe in HookshotBuilder-<version>-windows-x64.zip (docs/releases.md): installs the Hookshot Builder the zip
+   carries, with the build tools tools.lock names, and starts it. It looks for no release itself: the Hookshot Launcher
+   (MagicBeanDev/LongshotLauncher) installs and updates the builder from Hookshot's releases, and RecompLauncher runs this.
+   The zip holds this setup, HookshotBuilder\ (the builder and Hookshot's sources), tools.lock and VERSION: the builder is
+   copied into %LOCALAPPDATA%\HookshotBuilder\versions\<version>, and each tool of tools.lock (`tool <name> <version> <system>
+   <sha256> <size> <dest> <prefix> <url> [<url>]`) is downloaded from the first URL that answers, checked by its SHA-256,
+   and its <prefix> folder unpacked as <dest>. A tool an installed version has is moved over, not downloaded again.
+   Tools are unpacked with Windows' own tar.exe. Files fetched by a program carry no "downloaded from the internet" mark,
+   and the download itself holds no scripts, which is what antivirus programs' machine-learning guesses
+   (Trojan:Script/...!ml) fired on.
 
-   hookshot-setup.txt, one item a line:
+   HOOKSHOT_SETUP_LIST=<url> installs a list of the older form instead, for development:
        tag <tag>
        part <sha256> <bytes> <folder under the install> <top folder in the zip to rename, or -> <new name, or -> <url>
        run <the builder, relative to the install>
@@ -35,6 +39,7 @@ static wchar_t g_status[512];
 static volatile LONG g_percent = -1;
 static DWORD g_http_status;   /* (the last answer: 0 when the server was not reached) */
 static wchar_t g_cmdline[2048];
+static wchar_t g_app[MAX_PATH];   /* (HookshotBuilder\ beside this setup, the builder its zip carries; empty with HOOKSHOT_SETUP_LIST) */
 static HbHome g_home;
 static int g_home_ok;
 /* (RecompLauncher) --cli <make_game.py's options>: no window, the builder's lines on this process's stdout and stderr, its exit code
@@ -53,7 +58,8 @@ static void say_error(const wchar_t *msg) {
 typedef struct {
     char sha[65];
     unsigned long long size;
-    char dest[260], from[260], to[260], url[1024];
+    char dest[260], from[260], to[260], url[1024], url2[1024];
+    int tool;   /* (a tools.lock line: from is the archive's prefix, unpacked as dest) */
 } Part;
 /* the next non-empty line of a text, cut in place (its \r or \n made 0); *next moves past it. NULL at the end
    (strtok's work without its hidden state) */
@@ -359,7 +365,9 @@ static void write_small(const wchar_t *path, const char *text) {
    wgpu-native, llvm-mingw): that folder, relative to a version's folder, in rel (0: the part has none, e.g. the builder's own code).
    Named from its download (HookshotBuilder-<name>-<sha>.zip) or, for llvm-mingw, from its dest and rename. */
 static int part_folder(const Part *p, wchar_t *rel, int n) {
-    if (strcmp(p->to, "-") && strcmp(p->dest, ".")) {   /* (llvm-mingw: dest HookshotBuilder/tools, renamed to llvm-mingw) */
+    if (p->tool) {   /* (a tool of tools.lock: its folder is its dest) */
+        swprintf(rel, n, L"%hs", p->dest);
+    } else if (strcmp(p->to, "-") && strcmp(p->dest, ".")) {   /* (llvm-mingw: dest HookshotBuilder/tools, renamed to llvm-mingw) */
         swprintf(rel, n, L"%hs\\%hs", p->dest, p->to);
     } else {
         const char *b = strrchr(p->url, '/');
@@ -513,117 +521,11 @@ static void prune(const wchar_t *versions, const wchar_t *downloads, const char 
 
 static void w(const char *s8, wchar_t *out, int n) { MultiByteToWideChar(CP_UTF8, 0, s8, -1, out, n); }
 
-/* (HOOKSHOT_SETUP_LIST=<url>: another list, for testing a release before it is the latest) */
-/* ---- The GitHub API's link for a release file (after PR 546 by nicholasgower, issue 544). GitHub answered the release
-   page's cached link (releases/latest/download/...) with 504 for hours on 2026-11-08 while its API still answered: the API
-   gives the file's own asset link, which redirects to a fresh download. Used when the release link fails. ---- */
-static int json_space(char c) { return c == 32 || c == 9 || c == 10 || c == 13; }
-
-static int json_string_after(const char *p, const char *end, char *out, int n) {
-    while (p < end && json_space(*p)) p++;
-    if (p >= end || *p != ':') return 0;
-    for (p++; p < end && json_space(*p); p++) {}
-    if (p >= end || *p != '"') return 0;
-    int i = 0;
-    for (p++; p < end && *p != '"'; p++) {
-        if (*p == '\\' && p + 1 < end) p++;
-        if (i + 1 < n) out[i++] = *p;
-    }
-    if (p >= end) return 0;
-    out[i] = 0;
-    return 1;
-}
-
-/* The API link of the asset called name in a release's JSON (in an asset object its own "url" comes before its "name") */
-static int asset_from_json(const char *json, size_t len, const char *name, char *out, int n) {
-    const char *end = json + len, *at = NULL;
-    char v[600];
-    for (const char *p = json; (p = strstr(p, "\"name\"")) && p < end; p += 6)
-        if (json_string_after(p + 6, end, v, sizeof v) && !strcmp(v, name)) { at = p; break; }
-    if (!at) return 0;
-    const char *url = NULL;
-    for (const char *p = json; p + 5 <= at; p++)
-        if (!strncmp(p, "\"url\"", 5)) url = p;
-    return url && json_string_after(url + 5, end, out, n) && !strncmp(out, "https://api.github.com/", 23);
-}
-
-/* repo "owner/name", tag NULL for the latest release */
-static int api_asset_url(const char *repo, const char *tag, const char *name, char *out, int n) {
-    char api[1024];
-    if (tag) snprintf(api, sizeof api, "https://api.github.com/repos/%s/releases/tags/%s", repo, tag);
-    else snprintf(api, sizeof api, "https://api.github.com/repos/%s/releases/latest", repo);
-    Mem m = {0};
-    const int found = http_get(api, mem_sink, &m, 0, L"application/vnd.github+json") && m.p && asset_from_json(m.p, m.n, name, out, n);
-    free(m.p);
-    return found;
-}
-
-/* https://github.com/<owner>/<repo>/releases/download/<tag>/<name> or .../releases/latest/download/<name> -> its API link */
-static int api_link_for(const char *url, char *out, int n) {
-    static const char pre[] = "https://github.com/";
-    char repo[256], tag[256], name[260];
-    if (strncmp(url, pre, sizeof pre - 1)) return 0;
-    const char *p = url + sizeof pre - 1, *slash = strchr(p, '/');
-    if (!slash || !(slash = strchr(slash + 1, '/'))) return 0;
-    if ((size_t)(slash - p) >= sizeof repo) return 0;
-    memcpy(repo, p, slash - p), repo[slash - p] = 0;
-    const char *t;
-    int latest = 0;
-    if (!strncmp(slash, "/releases/latest/download/", 26)) latest = 1, t = slash + 26;
-    else if (!strncmp(slash, "/releases/download/", 19)) {
-        t = slash + 19;
-        const char *e = strchr(t, '/');
-        if (!e || (size_t)(e - t) >= sizeof tag) return 0;
-        memcpy(tag, t, e - t), tag[e - t] = 0;
-        t = e + 1;
-    } else return 0;
-    if (!*t || strlen(t) >= sizeof name || strpbrk(t, "/?#")) return 0;
-    strcpy(name, t);
-    return api_asset_url(repo, latest ? NULL : tag, name, out, n);
-}
-
 /* an answer worth trying again: none (no connection), a server error, a download cut off half way (200), a timeout, or the API's
    rate limit (403/429) */
 static int retryable(DWORD status) {
     return !status || status >= 500 || status == 200 || status == 408 || status == 429 || status == 403;
 }
-
-/* (the release the builder asked for: --tag <t> in the arguments, "" when none) */
-static void wanted_tag(char *out, size_t n) {
-    out[0] = 0;
-    const wchar_t *t = wcsstr(g_cmdline, L"--tag ");
-    if (!t) return;
-    t += 6;
-    while (*t == L' ' || *t == L'"') t++;
-    size_t k = 0;
-    while (*t && *t != L' ' && *t != L'"' && k + 1 < n) {
-        const wchar_t c = *t++;
-        if (!((c >= L'0' && c <= L'9') || (c >= L'a' && c <= L'z') || (c >= L'A' && c <= L'Z') || c == L'.' || c == L'-' || c == L'_'))
-            { out[0] = 0; return; }
-        out[k++] = (char)c;
-    }
-    out[k] = 0;
-}
-
-/* (an update to a named release reads THAT release's list: the latest/download link can answer with the release before it for a
-   while after a publish, and the setup then installed the old version again and started it with --fetched, which builds without
-   checking: players pressed Update and stayed on v2.0.3, 2026-11-08) */
-/* (a nightly's version, git describe --long's v2.1.0-rc.1-3-g1a2b3c4: its files are on the rolling nightly release) */
-static int nightly_tag(const char *s) {
-    size_t n = strlen(s), h;
-    if (n > 6 && !strcmp(s + n - 6, "-dirty")) n -= 6;
-    for (h = n; h && strchr("0123456789abcdef", s[h - 1]); h--) {}
-    if (h == n || h < 3 || s[h - 1] != 'g' || s[h - 2] != '-') return 0;
-    size_t d = h - 2;
-    while (d && s[d - 1] >= '0' && s[d - 1] <= '9') d--;
-    return d < h - 2 && d > 0 && s[d - 1] == '-';
-}
-
-/* (HOOKSHOT_SETUP_RELEASE, set when a release candidate's or the nightly's setup is built: started with no --tag, it installs
-   the release it came from (v2.1.0-rc.1, or nightly: the newest nightly), not the latest release) */
-#ifndef HOOKSHOT_SETUP_RELEASE
-#define HOOKSHOT_SETUP_RELEASE ""
-#endif
 
 /* The shipping Builder is a directory-based, self-contained WPF app: an EXE alone cannot start it.
    Keep this startup contract in step with the publish format; this is not an integrity check of every assembly. */
@@ -653,16 +555,14 @@ static int builder_ready(const wchar_t *exe) {
     return 1;
 }
 
+#define LAUNCHER_RELEASES L"https://git.notrexed.dev/Hookshot/HookshotLauncher/releases"
+
+/* The list to install: HOOKSHOT_SETUP_LIST=<url>, NULL when none was given (then the list beside this setup, if any) */
 static const char *manifest_url(void) {
     static char u[1024];
     const char *e = getenv("HOOKSHOT_SETUP_LIST");
-    char tag[128];
-    wanted_tag(tag, sizeof tag);
-    if (!tag[0] && HOOKSHOT_SETUP_RELEASE[0] && strlen(HOOKSHOT_SETUP_RELEASE) < sizeof tag) strcpy(tag, HOOKSHOT_SETUP_RELEASE);
-    if (e && *e) snprintf(u, sizeof u, "%s", e);
-    else if (tag[0])
-        snprintf(u, sizeof u, "https://github.com/NotRexed/Hookshot/releases/download/%s/hookshot-setup.txt", nightly_tag(tag) ? "nightly" : tag);
-    else snprintf(u, sizeof u, "%s", "https://github.com/NotRexed/Hookshot/releases/latest/download/hookshot-setup.txt");
+    if (!e || !*e || strlen(e) >= sizeof u) return NULL;
+    snprintf(u, sizeof u, "%s", e);
     return u;
 }
 
@@ -683,42 +583,58 @@ static DWORD WINAPI work(LPVOID unused) {
     home_path(downloads, L"%ls\\downloads", base);
     mkdirs(downloads);
 
-    status(L"Looking for the latest Hookshot Builder...");
+    status(L"Reading the parts list...");
     Mem man = {0};
-    /* (tried again on a server error or no answer: GitHub's release downloads answered 504 for an hour, 2026-11-08, and every
-       start failed at once) */
-    /* (low-vram, issue 558: 5 tries in 41 s were not enough while GitHub's site and API both failed on and off for hours; 8 tries
-       over ~3 minutes now, alternating the release link and the API's) */
+    /* (no URL given: the list beside this setup, as the RecompLauncher zip carries it; nothing is looked up on a server) */
+    int beside = 0;
+    if (!manifest_url()) {
+        wchar_t list[MAX_PATH];
+        GetModuleFileNameW(NULL, list, MAX_PATH);
+        wchar_t *slash = wcsrchr(list, L'\\');
+        if (slash && (size_t)(slash + 1 - list) + 20 < MAX_PATH) wcscpy(slash + 1, L"tools.lock");
+        HANDLE h = slash ? CreateFileW(list, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL) : INVALID_HANDLE_VALUE;
+        if (h == INVALID_HANDLE_VALUE)
+            fail(L"No tools.lock beside this setup: unpack the whole HookshotBuilder zip, or get the Hookshot Launcher from " LAUNCHER_RELEASES);
+        char buf[4096];
+        DWORD got;
+        while (ReadFile(h, buf, sizeof buf, &got, NULL) && got && man.n < (1 << 20)) mem_sink(&man, buf, got);
+        CloseHandle(h);
+        if (!man.p) fail(L"The tools.lock beside this setup is empty.");
+        /* (the version: VERSION beside it, one line; the builder: HookshotBuilder\ beside it) */
+        char version[128] = "";
+        wcscpy(slash + 1, L"VERSION");
+        read_small(list, version, sizeof version);
+        version[strcspn(version, "\r\n ")] = 0;
+        if (!version[0]) fail(L"No VERSION beside this setup: unpack the whole HookshotBuilder zip again.");
+        char head[256];
+        snprintf(head, sizeof head, "tag %s\nrun HookshotBuilder/HookshotBuilder.exe\n", version);
+        mem_sink(&man, head, (DWORD)strlen(head));
+        wcscpy(slash + 1, L"HookshotBuilder");
+        wcscpy(g_app, list);
+        beside = 1;
+    }
+    /* (tried again on a server error or no answer: 8 tries over ~3 minutes) */
     static const int waits[] = {3, 6, 12, 20, 30, 45, 60};
     enum { TRIES = 8 };
-    int ok = 0;
+    int ok = beside;
     for (int attempt = 0; attempt < TRIES && !ok; attempt++) {
         if (attempt) {
-            status(L"GitHub didn't answer (%lu). Trying again in %d s...", g_http_status, waits[attempt - 1]);
+            status(L"The server didn't answer (%lu). Trying again in %d s...", g_http_status, waits[attempt - 1]);
             Sleep(waits[attempt - 1] * 1000);
-            status(L"Looking for the latest Hookshot Builder...");
+            status(L"Reading the parts list...");
         }
         free(man.p);
         man = (Mem){0};
         g_http_status = 0;
         ok = http_get(manifest_url(), mem_sink, &man, 0, NULL) && man.p;
-        const DWORD first = g_http_status;
-        char api[1024];
-        if (!ok && (!first || first >= 500) && api_link_for(manifest_url(), api, sizeof api)) {   /* (the API's link instead) */
-            free(man.p);
-            man = (Mem){0};
-            ok = http_get(api, mem_sink, &man, 0, L"application/octet-stream") && man.p;
-            if (!ok) g_http_status = first;
-        }
         if (!ok && !retryable(g_http_status)) break;   /* (404 and the like: trying again changes nothing) */
     }
     if (!ok)
         fail(g_http_status == 404
-                 ? L"The latest Hookshot release has no setup files yet. Download HookshotBuilder.zip from the releases page for now: "
-                   L"https://github.com/NotRexed/Hookshot/releases/latest"
-             : g_http_status ? L"GitHub's download servers are failing right now (an error 500 or above, tried 8 times over 3 minutes). "
-                               L"This is on GitHub's side: try again in a few minutes, or later today."
-                             : L"Could not reach GitHub to get the Hookshot Builder. Check your internet connection and try again.");
+                 ? L"The parts list was not found. Get the Hookshot Launcher: " LAUNCHER_RELEASES
+             : g_http_status ? L"The download server is failing right now (an error 500 or above, tried 8 times over 3 minutes). "
+                               L"Try again in a few minutes, or later today."
+                             : L"Could not reach the server to get the Hookshot Builder. Check your internet connection and try again.");
 
     char tag[128] = "", run[260] = "";
     Part parts[MAX_PARTS];
@@ -728,7 +644,15 @@ static DWORD WINAPI work(LPVOID unused) {
         else if (!strncmp(line, "run ", 4)) sscanf(line + 4, "%259s", run);
         else if (!strncmp(line, "part ", 5) && nparts < MAX_PARTS) {
             Part *p = &parts[nparts];
+            memset(p, 0, sizeof *p);
             if (sscanf(line + 5, "%64s %llu %259s %259s %259s %1023s", p->sha, &p->size, p->dest, p->from, p->to, p->url) == 6) nparts++;
+        } else if (!strncmp(line, "tool ", 5) && nparts < MAX_PARTS) {   /* (tools.lock: name version system sha size dest prefix urls) */
+            Part *p = &parts[nparts];
+            char name[64], version[64], system[32];
+            memset(p, 0, sizeof *p);
+            const int got = sscanf(line + 5, "%63s %63s %31s %64s %llu %259s %259s %1023s %1023s", name, version, system, p->sha,
+                                   &p->size, p->dest, p->from, p->url, p->url2);
+            if (got >= 8 && !strcmp(system, "windows-x64")) strcpy(p->to, "-"), p->tool = 1, nparts++;
         }
     }
     if (!tag[0] || !run[0] || !nparts) fail(L"The release's setup list could not be read. Try again later.");
@@ -737,22 +661,12 @@ static DWORD WINAPI work(LPVOID unused) {
         for (int i = 0; i < nparts && !bad; i++) {
             const Part *p = &parts[i];
             bad = strlen(p->sha) != 64 || strspn(p->sha, "0123456789abcdef") != 64 || _strnicmp(p->url, "https://", 8) ||
-                  (strcmp(p->dest, ".") && !list_name_ok(p->dest, 1)) || (strcmp(p->from, "-") && !list_name_ok(p->from, 0)) ||
-                  (strcmp(p->to, "-") && !list_name_ok(p->to, 0));
+                  (p->url2[0] && _strnicmp(p->url2, "https://", 8)) ||
+                  (strcmp(p->dest, ".") && !list_name_ok(p->dest, 1)) || (strcmp(p->from, "-") && !list_name_ok(p->from, p->tool)) ||
+                  (strcmp(p->to, "-") && !list_name_ok(p->to, 0)) || (p->tool && !strcmp(p->dest, "."));
         }
         if (bad) fail(L"The release's setup list has a name this setup does not accept. Try again later.");
     }
-    {
-        char want[128];
-        wanted_tag(want, sizeof want);
-        if (want[0] && strcmp(want, tag)) {
-            wchar_t ww[128], wt[128];
-            MultiByteToWideChar(CP_UTF8, 0, want, -1, ww, 128), MultiByteToWideChar(CP_UTF8, 0, tag, -1, wt, 128);
-            fail(L"GitHub answered with the setup list of %ls, not %ls (its download links can lag right after a release). Try the "
-                 L"update again in a few minutes.", wt, ww);
-        }
-    }
-
     wchar_t install[MAX_PATH], marker[MAX_PATH], wtag[128], wrun[260], exe[MAX_PATH], versions[MAX_PATH], final_dir[MAX_PATH];
     w(tag, wtag, 128), w(run, wrun, 260);
     home_path(versions, L"%ls\\versions", base);
@@ -768,6 +682,12 @@ static DWORD WINAPI work(LPVOID unused) {
         rmtree(install);
         if (!g_home.portable) rmtree(final_dir);
         mkdirs(install);
+        if (g_app[0]) {   /* (the builder the zip carries, beside this setup) */
+            wchar_t app[MAX_PATH];
+            status(L"Copying the Hookshot Builder...");
+            home_path(app, L"%ls\\HookshotBuilder", install);
+            if (!copy_part_tree(g_app, app)) fail(L"Could not copy the Hookshot Builder from %ls (unpack the whole zip again).", g_app);
+        }
         for (int i = 0; i < nparts; i++) {
             Part *p = &parts[i];
             wchar_t zip[MAX_PATH], wsha[65];
@@ -784,7 +704,7 @@ static DWORD WINAPI work(LPVOID unused) {
                 int got = 0;
                 for (int attempt = 0; attempt < TRIES && !got; attempt++) {   /* (a server error or a dropped connection: again) */
                     if (attempt) {
-                        status(L"Part %d of %d: GitHub didn't answer (%lu). Trying again in %d s...", i + 1, nparts, g_http_status,
+                        status(L"Part %d of %d: the server didn't answer (%lu). Trying again in %d s...", i + 1, nparts, g_http_status,
                                waits[attempt - 1]);
                         Sleep(waits[attempt - 1] * 1000);
                     }
@@ -796,12 +716,8 @@ static DWORD WINAPI work(LPVOID unused) {
                     BCryptOpenAlgorithmProvider(&a, BCRYPT_SHA256_ALGORITHM, NULL, 0);
                     BCryptCreateHash(a, &fs.h, NULL, 0, NULL, 0, 0);
                     g_http_status = 0;
-                    /* (after a failed try the API's link to the same file, every other try) */
-                    char api[1024];
-                    if (attempt % 2 == 1 && api_link_for(p->url, api, sizeof api))
-                        got = http_get(api, file_sink, &fs, p->size, L"application/octet-stream");
-                    else
-                        got = http_get(p->url, file_sink, &fs, p->size, NULL);
+                    /* (a tool's second URL, its copy in Hookshot's tools release, every other try) */
+                    got = http_get(attempt % 2 == 1 && p->url2[0] ? p->url2 : p->url, file_sink, &fs, p->size, NULL);
                     CloseHandle(fs.f);
                     unsigned char d[32];
                     BCryptFinishHash(fs.h, d, 32, 0);
@@ -813,9 +729,8 @@ static DWORD WINAPI work(LPVOID unused) {
                     if (!got && !retryable(g_http_status)) break;
                 }
                 if (!got) DeleteFileW(part), fail(retryable(g_http_status)
-                    ? L"Downloading part %d of %d failed: GitHub's download servers are failing right now (tried 8 times over 3 "
-                      L"minutes). This is on GitHub's side. The parts already downloaded are kept: run HookshotBuilder.exe again in a "
-                      L"few minutes and it carries on from here."
+                    ? L"Downloading part %d of %d failed: the download server is failing right now (tried 8 times over 3 "
+                      L"minutes). The parts already downloaded are kept: try again in a few minutes and it carries on from here."
                     : L"Downloading part %d of %d failed. Check your connection and free space, then try again.", i + 1, nparts);
                 if (strcmp(have, p->sha)) DeleteFileW(part), fail(L"Part %d of %d did not download correctly (its checksum differs). Try again.", i + 1, nparts);
                 /* (the checked file or nothing: an old <sha>.zip that could not be removed is never unpacked instead) */
@@ -826,9 +741,14 @@ static DWORD WINAPI work(LPVOID unused) {
                 }
             }
             status(L"Unpacking part %d of %d...", i + 1, nparts);
-            wchar_t dest[MAX_PATH], wdest[260], tarcmd[2 * MAX_PATH + 64], sys[MAX_PATH];
+            wchar_t dest[MAX_PATH], wdest[260], tarcmd[2 * MAX_PATH + 64], sys[MAX_PATH], final_tool[MAX_PATH];
             w(p->dest, wdest, 260);
-            if (!strcmp(p->dest, ".")) wcscpy(dest, install);
+            if (p->tool) {   /* (a tool: unpacked aside, then its prefix folder moved in as dest) */
+                home_path(final_tool, L"%ls\\%ls", install, wdest);
+                for (wchar_t *q = final_tool; *q; q++) if (*q == L'/') *q = L'\\';
+                home_path(dest, L"%ls\\.tool-%d", install, i);
+                rmtree(dest);
+            } else if (!strcmp(p->dest, ".")) wcscpy(dest, install);
             else home_path(dest, L"%ls\\%ls", install, wdest);
             for (wchar_t *q = dest; *q; q++) if (*q == L'/') *q = L'\\';
             mkdirs(dest);
@@ -857,7 +777,18 @@ static DWORD WINAPI work(LPVOID unused) {
                 /* Keep both paths; the displayed excerpt uses only the space left in fail()'s 1024-wide message. */
                 fail(L"%ls%.*ls", heading, (int)(1023 - wcslen(heading)), detail);
             }
-            if (strcmp(p->from, "-") && strcmp(p->to, "-")) {   /* (llvm-mingw-<version>-ucrt-x86_64 -> llvm-mingw) */
+            if (p->tool) {
+                wchar_t from[MAX_PATH], wf[260], parent[MAX_PATH];
+                w(p->from, wf, 260);
+                if (strcmp(p->from, "-")) home_path(from, L"%ls\\%ls", dest, wf);
+                else wcscpy(from, dest);
+                for (wchar_t *q = from; *q; q++) if (*q == L'/') *q = L'\\';
+                wcscpy(parent, final_tool);
+                wchar_t *cut = wcsrchr(parent, L'\\');
+                if (cut) *cut = 0, mkdirs(parent);
+                if (!MoveFileW(from, final_tool)) fail(L"Could not set up tool %d of %d (%ls: no %ls in its archive?).", i + 1, nparts, wdest, wf);
+                rmtree(dest);
+            } else if (strcmp(p->from, "-") && strcmp(p->to, "-")) {   /* (llvm-mingw-<version>-ucrt-x86_64 -> llvm-mingw) */
                 wchar_t from[MAX_PATH], to[MAX_PATH], wf[260], wt[260];
                 w(p->from, wf, 260), w(p->to, wt, 260);
                 home_path(from, L"%ls\\%ls", dest, wf);

@@ -11,6 +11,7 @@ import sys
 import tempfile
 import unittest
 from types import SimpleNamespace
+from unittest import mock
 import zipfile
 from pathlib import Path
 
@@ -322,7 +323,8 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual(linux_update.parse_list(local).tag, "v2.1.0")
         with self.assertRaises(ValueError):
             linux_update.parse_list(local, local=False)
-        with self.assertRaises(ValueError):
+        # (and no list is downloaded at all: the builder looks up no release, the Hookshot Launcher does)
+        with mock.patch.dict(os.environ, {"HOOKSHOT_LINUX_LIST": ""}), self.assertRaises(RuntimeError):
             linux_update.fetch_manifest(get=lambda url: local.encode())
 
     def test_a_download_reads_at_most_its_limit(self):
@@ -356,7 +358,7 @@ class UpdateTests(unittest.TestCase):
         import urllib.request
         handlers = [h for h in linux_update._OPENER.handlers if isinstance(h, urllib.request.HTTPRedirectHandler)]
         self.assertEqual([type(h) for h in handlers], [linux_update._HttpsRedirects])   # (in place of urllib's, not beside it)
-        first = urllib.request.Request("https://github.com/NotRexed/Hookshot/releases/download/v9/part.zip",
+        first = urllib.request.Request("https://git.magicbean.dev/api/packages/MagicBeanDev/generic/hookshot-parts/store/part.zip",
                                        headers={"User-Agent": "Hookshot"})
         onward = handlers[0].redirect_request(first, None, 302, "Found", {}, "https://objects.example.invalid/part.zip")
         self.assertEqual(onward.full_url, "https://objects.example.invalid/part.zip")
@@ -389,8 +391,8 @@ class UpdateTests(unittest.TestCase):
         http = next(h for h in linux_update._OPENER.handlers if type(h) is urllib.request.HTTPHandler)
         with mock.patch.object(https, "https_open", https_open), mock.patch.object(http, "http_open", http_open), \
                 self.assertRaisesRegex(ValueError, "not an https link: 'http://objects.example.invalid/part.zip'"):
-            linux_update._request("https://github.com/NotRexed/Hookshot/releases/download/v9/part.zip", 5)
-        self.assertEqual(asked, ["https://github.com/NotRexed/Hookshot/releases/download/v9/part.zip"])
+            linux_update._request("https://git.magicbean.dev/api/packages/MagicBeanDev/generic/hookshot-parts/store/part.zip", 5)
+        self.assertEqual(asked, ["https://git.magicbean.dev/api/packages/MagicBeanDev/generic/hookshot-parts/store/part.zip"])
 
     def test_a_link_chain_cannot_leave_the_staging_tree(self):
         # x/../.. is inside the folder as written, but the system resolves x first: a link made after it (in the same zip
@@ -492,32 +494,24 @@ class UpdateTests(unittest.TestCase):
             (root / "hookshot-linux.txt").write_text(
                 "tag v1.1-rc.1\npart %s 10 usr/share/hookshot file://%s/rc.zip\nfile nx2/marker.py\n" % ("a" * 64, tmp),
                 encoding="utf-8")
-            stable = "tag v1.0\npart %s 10 usr/share/hookshot https://example.invalid/old.zip\nfile nx2/marker.py\n" % ("b" * 64)
-            got = linux_update.startup_manifest(str(root), get=lambda url: stable.encode())
-            self.assertEqual((got.tag, got.parts[0].sha), ("v1.1-rc.1", "a" * 64))     # (its own: nothing reinstalled)
-            newer = "tag v1.2\npart %s 10 usr/share/hookshot https://example.invalid/new.zip\nfile nx2/marker.py\n" % ("c" * 64)
-            got = linux_update.startup_manifest(str(root), get=lambda url: newer.encode())
-            self.assertEqual((got.tag, got.parts[0].sha), ("v1.2", "c" * 64))          # (a newer release still wins)
+            # (the list given on this PC, HOOKSHOT_LINUX_LIST, wins over the tools' own: a deliberate choice)
+            given = Path(tmp) / "given.txt"
+            given.write_text("tag v1.2\npart %s 10 usr/share/hookshot https://example.invalid/new.zip\nfile nx2/marker.py\n"
+                             % ("c" * 64), encoding="utf-8")
+            with mock.patch.dict(os.environ, {"HOOKSHOT_LINUX_LIST": str(given)}):
+                got = linux_update.startup_manifest(str(root))
+            self.assertEqual((got.tag, got.parts[0].sha), ("v1.2", "c" * 64))
+            # (none given: nothing is downloaded, and its own list stays)
+            with mock.patch.dict(os.environ, {"HOOKSHOT_LINUX_LIST": ""}), self.assertRaises(RuntimeError):
+                linux_update.startup_manifest(str(root))
+            self.assertEqual(linux_update.read_manifest(str(root)).tag, "v1.1-rc.1")
             # a HOOKSHOT_LINUX_LIST is taken even when the tags match (a patched part for a release, issue 990)
             (root / "patched.txt").write_text(
                 "tag v1.1-rc.1\npart %s 10 usr/share/hookshot file://%s/patched.zip\nfile nx2/marker.py\n" % ("d" * 64, tmp),
                 encoding="utf-8")
             with mock.patch.dict(os.environ, {"HOOKSHOT_LINUX_LIST": str(root / "patched.txt")}):
-                got = linux_update.startup_manifest(str(root), get=lambda url: stable.encode())
+                got = linux_update.startup_manifest(str(root))
                 self.assertEqual(got.parts[0].sha, "d" * 64)
-            # an AppImage at the latest release keeps using its bundled list (nothing was ever reinstalled there)
-            release = Path(tmp) / "release"
-            appdir(release)     # (VERSION v1)
-            (release / "hookshot-linux.txt").write_text(
-                "tag v1\npart %s 10 usr/share/hookshot file://%s/release.zip\nfile nx2/marker.py\n" % ("e" * 64, tmp),
-                encoding="utf-8")
-            same = "tag v1\npart %s 10 usr/share/hookshot https://example.invalid/old.zip\nfile nx2/marker.py\n" % ("b" * 64)
-            got = linux_update.startup_manifest(str(release), get=lambda url: same.encode())
-            self.assertEqual(got.parts[0].sha, "e" * 64)
-            # and one older than the release still downloads it
-            (release / "usr" / "share" / "hookshot" / "VERSION").write_text("v0.9\n", encoding="utf-8")
-            got = linux_update.startup_manifest(str(release), get=lambda url: stable.encode())
-            self.assertEqual(got.parts[0].sha, "b" * 64)
 
     def test_a_changed_part_is_downloaded_and_the_rest_are_kept(self):
         with tempfile.TemporaryDirectory(prefix="hookshot-parts-") as tmp:
@@ -620,7 +614,7 @@ class UpdateTests(unittest.TestCase):
                                                    "a": SimpleNamespace(fsr=False, no_fsr=False, update=None, fetch_fsr_runtime=False)})
             self.assertEqual((out / "hookshot").read_bytes(), (ROOT / "builder" / "linux" / "hookshot-folder").read_bytes())
             self.assertTrue((out / "hookshot").stat().st_mode & stat.S_IXUSR)
-            self.assertEqual(sorted(p.name for p in out.iterdir()), ["bin", "hookshot", "image.bin"])
+            self.assertEqual(sorted(p.name for p in out.iterdir()), ["bin", "image.bin", "hookshot"])
             self.assertEqual(sorted(p.name for p in (out / "bin").iterdir()), sorted(make_game.BESIDE))
             self.assertEqual((out / "bin" / "hookshot").read_bytes(), b"new hookshot")
 
@@ -660,7 +654,7 @@ class UpdateTests(unittest.TestCase):
 
     def test_the_folder_launcher_finds_the_builder_under_the_builder_home(self):
         # HOOKSHOT_BUILDER_HOME is the data directory, as XDG_DATA_HOME is: linux_update installs to
-        # <home>/hookshot/builder and host/hos_update.c looks there, so the launcher must too
+        # <home>/hookshot/builder, so the folder launcher must look there
         with tempfile.TemporaryDirectory(prefix="hookshot-folder-") as tmp:
             root = Path(tmp)
             game = root / "game"

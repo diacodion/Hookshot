@@ -42,6 +42,8 @@ What CONTRIBUTING.md doesn't spell out, and agents trip on:
 - **Generated files are generated.** The SPIR-V headers in `gpu/vk/shaders/` (`*_spv.h`) are compiled from the shader
   beside them, and name its SHA-256: regenerate them with glslang (the shaders' tests show the command) rather than
   editing them.
+- **third_party/ is checked.** Its parts must match the `tree-sha256` in their `PROVENANCE.md`
+  (`python -I scripts/check_third_party.py`); a fix goes outside them, not into them (CONTRIBUTING.md).
 - **Two platforms.** Windows builds with llvm-mingw, Linux with clang/gcc. Keep host code portable, and paths UTF-8
   (no `CP_ACP`; `tests/test_utf8_paths.py`).
 - **No CI, and no game in the checks.** Forgejo runs no checks yet: run `python -I -B tests/run_all.py` yourself

@@ -65,7 +65,7 @@ BASE = auth.FORGE
 REPO = "MagicBeanDev/Hookshot"
 HELPER_KEY = "credential.%s.helper" % BASE
 # A pull request is squash-merged, so its title is the commit on main: a Conventional Commit, as CONTRIBUTING.md and the
-# PR title check (.github/workflows/pr-title.yml) want it.
+# PR title check (the CI workflow, .forgejo/workflows/ci.yml) want it.
 TITLE_TYPES = ("feat", "fix", "perf", "refactor", "docs", "test", "ci", "build", "chore", "revert")
 TITLE = re.compile(r"^(%s)(\([\w./-]+\))?!?: \S" % "|".join(TITLE_TYPES))
 WIP = desc.WIP_PREFIXES[0] + " "   # (the title prefix Forgejo reads as work in progress: "WIP: ")

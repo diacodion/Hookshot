@@ -1,7 +1,10 @@
-"""Linux builder updates, the same way Windows installs (builder/setup/setup.c, scripts/make_setup_parts.py).
+"""Installing a Linux builder from a parts list, the same way Windows installs (builder/setup/setup.c, scripts/make_setup_parts.py).
 
-A release publishes hookshot-linux.txt. Each part is a zip named by its SHA-256 and kept on the linux-parts release, so a
-part whose files did not change is not downloaded again. The player's copy lives at
+The builder no longer looks for releases itself: the Hookshot Launcher (MagicBeanDev/LongshotLauncher) reads Hookshot's signed
+releases, installs each version's builder and updates it (docs/releases.md). What is left here installs from a list given
+on this PC (HOOKSHOT_LINUX_LIST), and the version rules the builder's buttons use. A release publishes hookshot-linux.txt.
+Each part is a zip named by its SHA-256, so a part whose files did not change is not
+downloaded again. The player's copy lives at
 $XDG_DATA_HOME/hookshot/builder/versions/<tag> (AppRun at its root, the same layout as the AppImage). An unchanged part
 is copied from the builder that is running now (the mounted AppImage, or the version installed last time).
 
@@ -23,11 +26,7 @@ import zipfile
 from part_links import SYSROOT_PART, is_absolute_link, relative_sysroot_link
 
 LIST_NAME = "hookshot-linux.txt"
-LATEST_LIST = "https://github.com/NotRexed/Hookshot/releases/latest/download/" + LIST_NAME
-LATEST_API = "https://api.github.com/repos/NotRexed/Hookshot/releases/latest"
-RELEASES_API = "https://api.github.com/repos/NotRexed/Hookshot/releases?per_page=20"
-# (the update tracks: the builder's Track choice, by default the track of the build installed. The game's own check,
-# host/hos_update.c, and the Windows builder, Updater.cs, use the same rules)
+# (the tracks a version is on, from its name: the launcher's channels stable, rc and nightly; "release" is stable)
 TRACKS = ("release", "rc", "nightly")
 
 
@@ -120,17 +119,6 @@ def track_of(version):
         return "nightly"
     key = release_key(v)
     return "rc" if key and not key[1] else "release"
-
-
-def release_of(tag):
-    """The GitHub release that holds a version's files: the nightly's are on the rolling nightly release."""
-    return "nightly" if track_of(tag) == "nightly" else tag
-
-
-def list_url(tag=None):
-    if not tag:
-        return LATEST_LIST
-    return "https://github.com/NotRexed/Hookshot/releases/download/%s/%s" % (release_of(tag), LIST_NAME)
 
 
 def newest_release(tags):
@@ -305,29 +293,8 @@ def _request(url, timeout, limit=MAX_DOWNLOAD, stop=None):
         return _read_at_most(response, limit, stop)
 
 
-def _api_download(url, stop=None):
-    """A GitHub release link that failed: the same file through the API (scripts/linux/deps.sh does this for 504s)."""
-    prefix = "https://github.com/"
-    mark = "/releases/download/"
-    if not url.startswith(prefix) or mark not in url:
-        return None
-    repo, _, rest = url[len(prefix):].partition(mark)
-    tag, _, name = rest.partition("/")
-    if not repo or not tag or not name or "/" in name:
-        return None
-    info = _request("https://api.github.com/repos/%s/releases/tags/%s" % (repo, tag), 30)
-    import json
-    for asset in json.loads(info.decode("utf-8")).get("assets", []):
-        if asset.get("name") == name:
-            req = urllib.request.Request(_https(asset.get("url")), headers={
-                "User-Agent": "Hookshot", "Accept": "application/octet-stream"})
-            with _open(req, 120) as response:
-                return _read_at_most(response, MAX_DOWNLOAD, stop)
-    return None
-
-
 def fetch_bytes(url, timeout=60, stop=None):
-    """The url's bytes. A GitHub download that the server fails (5xx) is tried again, then through the API. stop: an event
+    """The url's bytes. A download that the server fails (5xx) is tried again. stop: an event
     (threading.Event) that ends it with Cancelled once set, during a read or a wait between tries."""
     delay, last = 2, "the download failed"
     for attempt in range(4):
@@ -336,7 +303,7 @@ def fetch_bytes(url, timeout=60, stop=None):
         except Cancelled:
             raise
         except urllib.error.HTTPError as error:
-            last = "GitHub answered %s" % error.code
+            last = "the server answered %s" % error.code
             if error.code < 500 and error.code != 429:
                 break
         except Exception as error:
@@ -348,51 +315,7 @@ def fetch_bytes(url, timeout=60, stop=None):
                 stop.wait(delay)
                 _stopped(stop)
             delay = min(delay * 2, 20)
-    try:
-        got = _api_download(url, stop)
-    except Cancelled:
-        raise
-    except Exception as error:
-        got = None
-        last = str(error) or last
-    if got is not None:
-        return got
     raise RuntimeError(last)
-
-
-def latest_tag(get=None, track="release"):
-    """The newest build of a track, or None when GitHub did not answer. release: the latest release's tag, the API first
-    (60 an hour), the setup list's tag otherwise, which is a file download and not that limit (the same fallback as the
-    Windows builder). rc: the newest of the release candidates and the releases (an RC is offered its version's release
-    once that ships), the latest release when the API does not answer. nightly: the nightly's list's tag."""
-    get = get or (lambda url: fetch_bytes(url, 8))
-    if track == "nightly":
-        try:
-            return parse_list(get(list_url("nightly")).decode("utf-8"), local=False).tag
-        except Exception:
-            return None
-    if track == "rc":
-        try:
-            import json
-            newest = newest_release([r.get("tag_name") for r in json.loads(get(RELEASES_API).decode("utf-8"))
-                                     if not r.get("draft")])
-            if newest:
-                return newest
-        except Exception:
-            pass
-    try:
-        import json
-        body = json.loads(get(LATEST_API).decode("utf-8"))
-        tag = body.get("tag_name")
-        if tag:
-            return tag
-    except Exception:
-        pass
-    try:
-        text = get(LATEST_LIST).decode("utf-8")
-        return parse_list(text, local=False).tag
-    except Exception:
-        return None
 
 
 def _sha256(data):
@@ -634,16 +557,17 @@ def installed_apprun():
 
 
 def fetch_manifest(get=None, tag=None):
-    get = get or (lambda url: fetch_bytes(url, 30))
+    """The list given on this PC (HOOKSHOT_LINUX_LIST). There is no other: the Hookshot Launcher installs released versions"""
     override = os.environ.get("HOOKSHOT_LINUX_LIST")
     if override:
         with open(override, encoding="utf-8") as handle:
             return parse_list(handle.read())
-    return parse_list(get(list_url(tag)).decode("utf-8"), local=False)
+    raise RuntimeError("The builder does not download versions: the Hookshot Launcher installs and updates it "
+                       "(https://git.notrexed.dev/Hookshot/HookshotLauncher/releases).")
 
 
 def startup_manifest(root, get=None, tag=None):
-    """The list begin_update installs on launch: the latest release, except when these tools ship a list of their own
+    """The list begin_update installs on launch: HOOKSHOT_LINUX_LIST's, except when these tools ship a list of their own
     that is that same release and no older than it (a self-contained -rc or Actions tab AppImage). Reinstalling an
     older release's parts over those tools replaces files the working tools had (issue 990: a -rc shipped
     gpu/vk/oot_cheat_items.h, the release's zip did not, and every launch lost it). The comparison is update_target's:

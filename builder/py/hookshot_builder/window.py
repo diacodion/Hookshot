@@ -1003,7 +1003,7 @@ class Window(QWidget):
             self.build_button.setText("Update")
         elif self.mode == "up_to_date":
             self.files_title.setText("Your game is up to date")
-            self.files_sub.setText("Your game is %s, as this builder. GitHub did not answer, so newer versions could not be checked." % game
+            self.files_sub.setText("Your game is %s, as this builder. Newer versions come with the Hookshot Launcher." % game
                                    if not self.latest_tag else
                                    "%s is the latest version. Pick game files below only to build it again from scratch." % game)
             self.build_button.setText("Play")
@@ -1041,7 +1041,7 @@ class Window(QWidget):
         tools = core.Tools.find()
         self.update_target = tag or (tools.version if tools else None)
         if not self.update_target:
-            self.launch_status.setText("Could not check for updates (GitHub did not answer)")
+            self.launch_status.setText("The Hookshot Launcher keeps your game up to date")
         elif game and game != self.update_target and core.game_version(folder):
             self.launch_status.setText("Update available: %s" % self.update_target)
             self.launch_status.setFont(font(13, W_SEMIBOLD))

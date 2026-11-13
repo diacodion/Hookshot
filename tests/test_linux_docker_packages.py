@@ -1,5 +1,5 @@
 """scripts/linux/Dockerfile is the Linux AppImage's CI build environment for any distribution: the same base system and the
-same system packages as .github/workflows/linux-appimage.yml. Reads both files; nothing is built.
+same system packages as .forgejo/workflows/build-linux.yml. Reads both files; nothing is built.
 
 Issue: the two lists are kept by hand. A package added to the workflow alone (a new FFmpeg or SDL2 dependency) builds
 in CI and fails in the container, or builds a different AppImage there; a newer base image puts a newer glibc in the
@@ -13,7 +13,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DOCKERFILE = ROOT / "scripts/linux/Dockerfile"
-WORKFLOW = ROOT / ".github/workflows/linux-appimage.yml"
+WORKFLOW = ROOT / ".forgejo/workflows/build-linux.yml"
 
 
 def installs(text):

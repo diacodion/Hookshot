@@ -69,7 +69,7 @@ def build_env(tools, workers=None, ngx_sdk=None):
     env["PYTHONIOENCODING"] = "utf-8"
     if workers:
         env["HOOKSHOT_JOBS"] = str(int(workers))
-    # (written into the game folder's hookshot_version.txt: the game starts this app again to update, host/hos_update.c)
+    # (written into the game folder's hookshot_version.txt: the builder that made the game)
     exe, args = paths.launcher_command()
     env["HOOKSHOT_BUILDER_EXE"] = exe
     env["HOOKSHOT_BUILDER_ARGS"] = subprocess.list2cmdline(args)

@@ -245,8 +245,12 @@ for scripted input, screenshots, frame dumps and profiles are in the development
   reformat unrelated code in the same change.
 - Keep OoT-specific code in new files where possible. `nx2/`, `host/` and `gpu/` stay close to mkw-recomp so upstream
   fixes apply as a patch; each sync names its mkw-recomp base commit in the commit message.
-- Don't modify `third_party/`: its parts are unmodified upstream copies with their notices in `PROVENANCE.md`. Add a
-  new folder and a provenance note instead.
+- Don't modify `third_party/`: its parts are upstream copies with their notices in `PROVENANCE.md` (a64-kit's note lists
+  the changes Hookshot and Hookshot made to it). Add a new folder and a provenance note instead. CI checks it
+  (`scripts/check_third_party.py`, `.forgejo/workflows/third-party.yml`): every part's files against the `tree-sha256`
+  line its note ends with, a part with no note, and a pull request that changes a part without changing its note. For a
+  deliberate refresh from upstream, say so in the part's note and run `python -I scripts/check_third_party.py --update
+  <part>` in the same commit.
 - Treat local mkw-recomp and Eglantine checkouts as read-only references.
 - New switches use `RX_` in the renderer and `HOS_` in the runtime. They are off or neutral unless asked for, cost
   nothing while off, and are documented beside the switches around them.
@@ -386,11 +390,21 @@ scope in parentheses, a colon, and a short description (`forge.py pr create` ref
 | `chore` | anything else | `chore: remove patch backup files added by mistake` |
 | `revert` | undoing an earlier change | `revert: ...`, with the reverted PR in the body |
 
-The scope names the part of the project: `vk`, `linux`, `builder`, `menu`, `video`, `runtime` and so on. `feat` makes
-the next release a minor version, `fix` and `perf` a patch (each first as a release candidate), and a `!` after the
-type or scope (`feat(builder)!: ...`) marks a breaking change. The other types make no release on their own. Commits
-inside a branch can say anything: only the title reaches `main`. The version rules are in
-[docs/versioning.md](docs/versioning.md).
+The scope names the part of the project: `vk`, `linux`, `builder`, `menu`, `video`, `runtime` and so on. Commits inside
+a branch can say anything: only the title reaches `main`, where it decides the next version and is a line of its notes.
+
+A maintainer releases by pushing a tag ([RELEASING.md](RELEASING.md)), and CI refuses a number lower than the titles
+since the last stable call for:
+
+| Since the last stable, a title with | The next version is at least |
+|---|---|
+| a `!` after the type or scope (`feat(builder)!: ...`), or a `BREAKING CHANGE:` footer | the next major: `v4.0.0` after `v3.2.1` |
+| `feat` | the next minor: `v3.3.0` |
+| `fix`, `perf`, or any other type | the next patch: `v3.2.2` |
+
+Each is first a release candidate (`v3.3.0-rc.1`). git-cliff turns the titles into the release notes: Features, Fixes,
+Performance, and so on (`ci` and `chore` are left out). The details are in [docs/versioning.md](docs/versioning.md) and
+[docs/releases.md](docs/releases.md).
 
 AI assistance is recorded with `Assisted-by:` and `Co-Authored-By:` trailers where the account allows it: if you
 used a tool, add the trailers that describe it (the template's box is under *If applicable*, since some maintainer

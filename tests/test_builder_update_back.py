@@ -152,7 +152,7 @@ class WindowsBuilder(unittest.TestCase):
         self.assertIn("if (BuildButton == null || updating || runner != null) return;", block(MAIN, "void RefreshMode()"))
         order = ["ShowPage(FilesPage);", "if (!updating) return;", "updating = false;", "if (!filesReady)", "filesReady = true;",
                  "var folder = OutPath.Text;", "Finder.FindDumps", "ApplySettings();", "OutPath.Text = folder;", "FillDumps();",
-                 "CheckAll();", "latestTag ??=", "Refresh();"]
+                 "CheckAll();", "Refresh();"]
         at = [to_files.index(part) for part in order]
         self.assertEqual(at, sorted(at))
         start = block(MAIN, "async void Start()")

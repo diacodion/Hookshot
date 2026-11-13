@@ -1,11 +1,11 @@
-"""The parts a Linux update downloads (builder/linux/linux_update.py), from an AppDir.
+"""The parts of a version's Linux build tools, which the Hookshot Launcher installs (MagicBeanDev/LongshotLauncher, Core/Toolchains.cs), from an AppDir.
 
     python3 scripts/linux/make_parts.py <AppDir> <tag> <out folder> [--base <url>]
 
 Each directory that changes on its own is one zip: the tools (every release), Python, clang, FFmpeg, the sysroot, and
 the two libraries beside them. A zip is deterministic, so a directory whose files did not change has the same SHA-256
-next time and the builder copies the one it already has. The zips are uploaded to the linux-parts release; the version's
-own release carries hookshot-linux.txt, which names them.
+next time and the launcher copies the one it already has. The zips go to the hookshot-parts store on git.magicbean.dev
+(scripts/release.py upload-parts); the version's signed release names hookshot-linux.txt, which names them.
 
 The list is not inside a zip (it names the zips' checksums).
 """
@@ -87,7 +87,8 @@ def main():
     parser.add_argument("appdir")
     parser.add_argument("tag")
     parser.add_argument("out")
-    parser.add_argument("--base", default="https://github.com/NotRexed/Hookshot/releases/download/linux-parts")
+    # (the hookshot-parts store on git.magicbean.dev: scripts/release.py upload-parts, docs/releases.md)
+    parser.add_argument("--base", default="https://git.magicbean.dev/api/packages/MagicBeanDev/generic/hookshot-parts/store")
     args = parser.parse_args()
     root = os.path.abspath(args.appdir)
     if not os.path.isfile(os.path.join(root, "AppRun")):

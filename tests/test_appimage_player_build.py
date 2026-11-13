@@ -93,7 +93,7 @@ class PlayerBuildFromTheAppImage(unittest.TestCase):
 
 class TheChecksAreWired(unittest.TestCase):
     def test_the_workflow_checks_the_image_it_made(self):
-        flow = (ROOT / ".github/workflows/linux-appimage.yml").read_text(encoding="utf-8")
+        flow = (ROOT / ".forgejo/workflows/build-linux.yml").read_text(encoding="utf-8")
         self.assertLess(flow.index("run: scripts/linux/appimage.sh"), flow.index("run: scripts/linux/check_player_build.sh"))
 
     def test_apprun_sets_up_before_python(self):

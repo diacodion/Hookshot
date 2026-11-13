@@ -302,7 +302,7 @@ file:line evidence from this tree.
   core on every accepted GPU. The only consumer of `dev.vk12` (`:331`) is the
   `shaderFloat16` check (`vk_coopmat.cpp:377`) — no path turns the UBO layout
   back off.
-- CI says it outright (`.github/workflows/source-regressions.yml:147-148`):
+- CI says it outright (`.forgejo/workflows/ci.yml`):
   "the back end's device has uniformBufferStandardLayout ... so constant
   buffers are u32 arrays of stride 4", and validates the back end's own
   modules with `spirv-val --target-env vulkan1.3

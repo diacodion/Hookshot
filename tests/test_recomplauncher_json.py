@@ -29,9 +29,37 @@ class RecompLauncherJsonTests(unittest.TestCase):
                       (ROOT / "scripts" / "linux" / "appimage.sh").read_text(encoding="utf-8"))
 
     def test_windows_zip_carries_it(self):
-        workflow = (ROOT / ".github" / "workflows" / "windows-builder.yml").read_text(encoding="utf-8")
-        self.assertIn('z.write("recomplauncher.json", "recomplauncher.json")', workflow)
-        self.assertIn("dist/Hookshot-*-Windows-x64.zip", workflow)
+        # (scripts/builder_package.py zip: the setup as HookshotBuilder.exe, the builder, tools.lock and VERSION, and this
+        # file at the top, where RecompLauncher reads it; the setup installs the tools tools.lock names, with no release lookup)
+        import importlib.util, tempfile, zipfile
+        spec = importlib.util.spec_from_file_location("builder_package", ROOT / "scripts" / "builder_package.py")
+        bp = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(bp)
+        with tempfile.TemporaryDirectory() as tmp:
+            package = Path(tmp) / "package"
+            (package / "tools").mkdir(parents=True)
+            (package / "HookshotBuilder.exe").write_bytes(b"MZ builder")
+            setup = Path(tmp) / "setup.exe"
+            setup.write_bytes(b"MZ setup")
+            out = Path(tmp) / "HookshotBuilder-v3.0.0-windows-x64.zip"
+            import contextlib, io
+            with contextlib.redirect_stdout(io.StringIO()):
+                bp.make_zip(str(package), "v3.0.0", str(setup), str(out))
+            with zipfile.ZipFile(out) as z:
+                self.assertEqual(sorted(z.namelist()), ["HookshotBuilder.exe", "HookshotBuilder/HookshotBuilder.exe", "VERSION",
+                                                        "recomplauncher.json", "tools.lock"])
+                self.assertEqual(z.read("HookshotBuilder.exe"), b"MZ setup")
+                self.assertEqual(z.read("VERSION"), b"v3.0.0\n")
+        manifest = json.loads((ROOT / "recomplauncher.json").read_text(encoding="utf-8"))
+        self.assertIn("HookshotBuilder.exe", manifest["start"]["program"])
+        self.assertIn("HookshotBuilder.exe", manifest["prepare"]["program"])
+        workflow = (ROOT / ".forgejo" / "workflows" / "build-windows.yml").read_text(encoding="utf-8")
+        self.assertIn('--out "dist/HookshotBuilder-$TAG-windows-x64.zip"', workflow)
+
+    def test_no_repository_it_cannot_read(self):
+        # (RecompLauncher's "repo" is a GitHub owner/name, and Hookshot's releases are on git.magicbean.dev: none is named)
+        manifest = json.loads((ROOT / "recomplauncher.json").read_text(encoding="utf-8"))
+        self.assertNotIn("repo", manifest)
 
 
 if __name__ == "__main__":

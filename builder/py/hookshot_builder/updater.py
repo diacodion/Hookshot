@@ -1,49 +1,20 @@
-"""The game's update offer and the builder's own (Updater.cs, the same rules). The game (host/hos_update.c) starts this app with
---update <game folder> --tag <release>. When these tools are not that release, the release is installed (setup_parts: only the
-parts that changed are downloaded) and this app starts again on it with --fetched to build the folder; when they are, the folder is
-built again here (nx2/make_game.py --update: from the game files the folder keeps)."""
-import json
+"""--update <game folder> [--tag <release>]: the folder built again (nx2/make_game.py --update, from the game files the folder keeps).
+The builder looks for no release itself: the Hookshot Launcher finds new versions and installs their builders (docs/releases.md).
+A version is installed here only from a list given with HOOKSHOT_SETUP_LIST (setup_parts: only the parts that changed are
+downloaded), and this app then starts again on it with --fetched to build the folder."""
 import os
 import subprocess
 import threading
-import time
-import urllib.request
 
-from . import REPO, paths, setup_parts
+from . import paths, setup_parts
 from .core import Tools
-
-LATEST = "https://api.github.com/repos/%s/releases/latest" % REPO
 
 
 def latest_tag():
-    """The latest release's tag, quietly (None: GitHub did not answer); a few tries, 20 s at most"""
-    if os.environ.get("HOOKSHOT_LATEST_TAG"):   # (development: a made-up latest release, "none" for no answer)
-        t = os.environ["HOOKSHOT_LATEST_TAG"]
-        return None if t == "none" else t
-    for attempt in range(3):
-        try:
-            req = urllib.request.Request(LATEST, headers={"User-Agent": "HookshotBuilder", "Accept": "application/vnd.github+json"})
-            with urllib.request.urlopen(req, timeout=8) as r:
-                return json.loads(r.read()).get("tag_name")
-        except urllib.error.HTTPError as e:
-            if e.code < 500:   # (the API's limit, 60 an hour a PC: the list below instead)
-                break
-        except (OSError, ValueError):
-            pass
-        time.sleep(2 << attempt)
-    # (v2.0.0: when the API did not answer, the builder said a game was up to date. The release's setup list names its tag in its
-    # first line, from GitHub's download service, not the API)
-    for _ in range(2):
-        try:
-            req = urllib.request.Request(setup_parts.manifest_url(), headers={"User-Agent": "HookshotBuilder"})
-            with urllib.request.urlopen(req, timeout=8) as r:
-                for line in r.read().decode("utf-8", "replace").splitlines():
-                    if line.startswith("tag "):
-                        return line[4:].strip()
-        except OSError:
-            pass
-        time.sleep(2)
-    return None
+    """The newest version known: none, as the builder asks no server (the Hookshot Launcher does). HOOKSHOT_LATEST_TAG names one,
+    for development and for a list given with HOOKSHOT_SETUP_LIST"""
+    t = os.environ.get("HOOKSHOT_LATEST_TAG")
+    return None if not t or t == "none" else t
 
 
 def restart(args):
@@ -85,15 +56,14 @@ def update_folder(ui, folder, tag, fetched):
     (this app then starts again on it with --update folder --tag t --fetched)"""
     ui.begin_update(folder, tag)
     tools = Tools.find()
-    # (just installed, but another release than asked for: GitHub's latest link lags right after a publish)
+    # (just installed, but another release than asked for: the list named another version)
     if fetched and tag and tools and tools.version and tools.version != tag:
-        ui.download_failed("The update installed %s, not %s: GitHub's download links can lag right after a release. Try Update again "
-                           "in a few minutes." % (tools.version, tag))
+        ui.download_failed("The update installed %s, not %s. Use the Hookshot Launcher to update." % (tools.version, tag))
         return
     if tools and (fetched or (tag and tools.version == tag)):
         ui.update_build(tools, folder)
         return
-    ui.note("Asking GitHub for the latest release")
+    ui.note("Installing the version the parts list names")
 
     def installed(new_tag):
         restart(["--update", folder, "--tag", new_tag, "--fetched"])
@@ -103,7 +73,7 @@ def update_folder(ui, folder, tag, fetched):
 
 def run_latest_setup(ui):
     """The latest release installed, then this app started again on it (the builder's own update)"""
-    ui.note("Asking GitHub for the latest release")
+    ui.note("Installing the version the parts list names")
 
     def installed(_tag):
         restart([])

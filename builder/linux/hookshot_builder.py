@@ -886,19 +886,10 @@ class Builder(tk.Tk):
         self.path_row(out, 0, None, self.out, lambda: self.pick_dir(self.out), button="Change")
         ttk.Combobox(f, textvariable=self.language, values=[n for _, n in make_game.LANGUAGES], state="readonly",
                      font="HsNote", cursor="hand2").grid(row=8, column=2, sticky="we")
-        # (the update track: Release, Release candidate or Nightly; the builder updates from it, saved once chosen)
-
         options = ttk.Frame(f)
         options.grid(row=9, column=0, sticky="we", pady=(px(22), 0))
-        # (the update track: Release, Release candidate or Nightly. The builder updates from it; saved once chosen)
-        tracks = ttk.Frame(f)
-        tracks.grid(row=9, column=2, sticky="nwe", pady=(px(22), 0))
-        tracks.columnconfigure(0, weight=1)
-        self.section(tracks, "Update track", 0, top=0)
-        track = ttk.Combobox(tracks, textvariable=self.track, values=list(TRACK_NAMES.values()), state="readonly", font="HsNote",
-                             cursor="hand2")
-        track.grid(row=1, column=0, sticky="we")
-        track.bind("<<ComboboxSelected>>", self.on_track_changed)
+        # (no update track: the Hookshot Launcher chooses the channel, installs each version's builder and updates it,
+        # docs/releases.md)
         ttk.Checkbutton(options, text="Prepare shaders now", variable=self.prepare, cursor="hand2").pack(anchor="w")
         ttk.Label(options, text="A few minutes at the end of the build. Unticked, the game prepares them at its first start, "
                   "behind a black window.", style="Small.TLabel", wraplength=px(540)).pack(anchor="w", padx=(px(26), 0), pady=(px(2), 0))
@@ -1014,12 +1005,10 @@ class Builder(tk.Tk):
         threading.Thread(target=run, daemon=True).start()
 
     def lookup_latest(self):
-        def run():
-            forced = os.environ.get("HOOKSHOT_LATEST_TAG")
-            tag = None if forced == "none" else (forced or linux_update.latest_tag(track=track))
-            self.lines.put(("latest", tag or ""))
-        track = self.track_id()
-        threading.Thread(target=run, daemon=True).start()
+        """The newest version known. The builder asks no server: the Hookshot Launcher finds new versions and installs their
+        builders (docs/releases.md). HOOKSHOT_LATEST_TAG names one, for the tests and for a list given with HOOKSHOT_LINUX_LIST"""
+        forced = os.environ.get("HOOKSHOT_LATEST_TAG")
+        self.lines.put(("latest", "" if forced in (None, "none") else forced))
 
     def apply_mode(self):
         if self.launch_folder and self.build_button is None:
@@ -1060,7 +1049,7 @@ class Builder(tk.Tk):
             self.status.set("Your game is %s, newer than this builder's update target %s. Play keeps this version; "
                             "choose another update track to change versions." % (game, target))
         elif self.mode == "up-to-date" and self.latest is None:
-            self.status.set("Your game is %s, as this builder. GitHub did not answer, so newer versions could not be checked." % game)
+            self.status.set("Your game is %s, as this builder. Newer versions come with the Hookshot Launcher." % game)
         elif self.mode == "up-to-date":
             self.status.set("%s is the latest version." % game)
         elif self.mode == "update-builder":
@@ -1082,11 +1071,11 @@ class Builder(tk.Tk):
         elif target and game and game != target:
             self.launch_status.set("%s is out. Build this folder again with Hookshot Builder to get it." % target)
         elif game and self.latest is None:
-            self.launch_status.set("Up to date with this builder (GitHub did not answer)")
+            self.launch_status.set("Up to date with this builder. The Hookshot Launcher keeps it up to date")
         elif game:
             self.launch_status.set("Up to date")
         else:
-            self.launch_status.set("Could not check for updates (GitHub did not answer)" if self.latest is None else "Hookshot")
+            self.launch_status.set("Hookshot")
         if hasattr(self, "launch_update"):
             self.launch_update.pack(side="right", padx=self.px(4)) if show else self.launch_update.pack_forget()
 
@@ -1167,7 +1156,7 @@ class Builder(tk.Tk):
                 if not fetched:
                     root = linux_update.running_root()
                     if root is None:
-                        raise RuntimeError("These tools are a source checkout, so they cannot download a release. Start the AppImage to update.")
+                        raise RuntimeError("These tools are a source checkout, so they cannot install a version. Use the Hookshot Launcher to update.")
                     # (another track's build, or a Track switch: that version's own list)
                     named = target if target and (self.switching() or linux_update.track_of(target) != "release") else None
                     manifest = linux_update.startup_manifest(root, get=lambda url: linux_update.fetch_bytes(url, 30, stop),
@@ -1175,8 +1164,7 @@ class Builder(tk.Tk):
                     # The API and its download list can disagree right after a release. Check even when the list
                     # names the running tools: otherwise a newer target silently rebuilds with those older tools.
                     if target and manifest.tag != target:
-                        raise RuntimeError("GitHub offered %s, not %s: its download links can lag right after a release. "
-                                           "Try Update again in a few minutes." % (manifest.tag, target))
+                        raise RuntimeError("The parts list is %s, not %s. Use the Hookshot Launcher to update." % (manifest.tag, target))
                     if manifest.tag != linux_update.tools_tag(root):
                         source =linux_update.read_manifest(root)
                         apprun = linux_update.install(manifest, root, source, note=lambda message: self.lines.put(("note", message)),
