@@ -31,7 +31,7 @@ BUILDER = ("HookshotBuilder.exe", "HookshotBuilder.dll", "HookshotBuilder.deps.j
            "hostfxr.dll", "hostpolicy.dll", "coreclr.dll", "clrjit.dll", "System.Private.CoreLib.dll",
            "PresentationFramework.dll", "PresentationCore.dll", "WindowsBase.dll", "wpfgfx_cor3.dll",
            "PresentationNative_cor3.dll", "vcruntime140_cor3.dll",
-           "tools/nx2/make_game.py", "tools/scripts/tools.py")
+           "tools/nx2/make_game.py", "tools/scripts/tools.py", "tools/version.txt")
 # (the libraries the setup may import: Windows' own, and the UCRT's api-ms-win-crt-*; never llvm-mingw's libc++ or winpthread)
 SETUP_IMPORTS = re.compile(r"^(kernel32|user32|gdi32|advapi32|shell32|ole32|comctl32|winhttp|bcrypt|shlwapi|oleaut32)\.dll$"
                            r"|^api-ms-win-crt-[a-z0-9-]+\.dll$", re.I)
@@ -88,6 +88,9 @@ def files(a):
             z.extractall(tmp)
         print("%s: %d files" % (os.path.basename(a.zip), len(names)))
         b = os.path.join(tmp, "HookshotBuilder")
+        with open(os.path.join(tmp, "VERSION"), "rb") as f1, open(os.path.join(b, "tools", "version.txt"), "rb") as f2:
+            if f1.read() != f2.read():   # (the game's log and hookshot_version.txt name the release from the second)
+                bad("VERSION and HookshotBuilder/tools/version.txt differ")
         with open(os.path.join(tmp, "HookshotBuilder.exe"), "rb") as f1, open(os.path.join(b, "HookshotBuilder-Setup.exe"), "rb") as f2:
             if f1.read() != f2.read():
                 bad("HookshotBuilder.exe (the setup) and HookshotBuilder/HookshotBuilder-Setup.exe differ")

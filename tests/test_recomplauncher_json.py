@@ -49,10 +49,13 @@ class RecompLauncherJsonTests(unittest.TestCase):
             with contextlib.redirect_stdout(io.StringIO()):
                 bp.make_zip(str(package), "v3.0.0", str(setup), str(out))
             with zipfile.ZipFile(out) as z:
-                self.assertEqual(sorted(z.namelist()), ["HookshotBuilder.exe", "HookshotBuilder/HookshotBuilder.exe", "VERSION",
+                self.assertEqual(sorted(z.namelist()), ["HookshotBuilder.exe", "HookshotBuilder/HookshotBuilder.exe",
+                                                        "HookshotBuilder/tools/version.txt", "VERSION",
                                                         "recomplauncher.json", "tools.lock"])
                 self.assertEqual(z.read("HookshotBuilder.exe"), b"MZ setup")
                 self.assertEqual(z.read("VERSION"), b"v3.0.0\n")
+                # (and where the builder and the game read it: without it a release's game logged "hookshot unknown")
+                self.assertEqual(z.read("HookshotBuilder/tools/version.txt"), b"v3.0.0\n")
         manifest = json.loads((ROOT / "recomplauncher.json").read_text(encoding="utf-8"))
         self.assertIn("HookshotBuilder.exe", manifest["start"]["program"])
         self.assertIn("HookshotBuilder.exe", manifest["prepare"]["program"])
