@@ -1943,7 +1943,10 @@ static int transport_open(const char *path) {
     const mode_t old = umask(077);
     const int bound = bind(listen_fd, (struct sockaddr *)&a, sizeof a);
     umask(old);
-    if (bound || chmod(path, 0600) || listen(listen_fd, 4)) {
+    /* (the backlog: connections not yet accepted. Linux holds a connect past it until there is room; macOS refuses it at
+       once (ECONNREFUSED): 8 of 12 clients dialling at once were refused with 4, on a CI runner whose bridge thread accepted
+       them more slowly than they came. Clients past the bridge's 8 are still told "too many clients" once accepted) */
+    if (bound || chmod(path, 0600) || listen(listen_fd, 32)) {
         ctl_log("control: %s: %s", path, strerror(errno));
         close(listen_fd);
         listen_fd = -1;
