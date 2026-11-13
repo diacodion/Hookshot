@@ -35,7 +35,9 @@ The release on Forgejo ($RELEASE_TOKEN: in CI the job's own token, forgejo.token
 this is; $FORGEJO_API, $FORGEJO_UPLOAD_API):
     python -I scripts/release.py publish <tag> --target <commit> --notes <file> <file>...
         a draft release (pre-release unless a stable), every file uploaded and checked, then published: until that last step
-        no launcher sees it. A draft left by a failed run of the same tag is reused
+        no launcher sees it. A draft left by a failed run of the same tag is reused. The page is the notes under a header
+        (release_page): the launcher's, big download links to its own files; Hookshot's, "to play, get the Hookshot
+        Launcher", with hookshot.magicbean.dev's links to the newest launcher of the same channel
     python -I scripts/release.py prune [--keep 5]
         the nightly releases and their tags past the newest <keep>; nothing else is ever deleted
     python -I scripts/release.py released-as <commit> [--not <tag>]
@@ -258,6 +260,52 @@ def notes(tag, product, root=ROOT):
     return p.stdout.strip() + "\n"
 
 
+# ---- the release page ----
+
+# (hookshot.magicbean.dev's permanent download links, the Hookshot website, website/ in MagicBeanDev/Hookshot: /download/launcher/<channel>[/<os>] goes to that channel's
+# newest launcher, by the rules of newest() above)
+SITE = "https://hookshot.magicbean.dev"
+LAUNCHER_FILES = {"setup": "-windows-x64-setup.exe", "portable": "-windows-x64-portable.zip", "appimage": "-x86_64.AppImage"}
+CHANNEL_SAYS = {"stable": "This is a stable release: it builds Hookshot's stable versions by default.",
+                "rc": "This is a release candidate: it builds Hookshot's rc versions by default.",
+                "nightly": "This is a nightly, untested: it builds Hookshot's nightlies by default."}
+
+
+def page_header(tag, product, names, repo=None):
+    """The top of a release's page, above git-cliff's notes: big heading links that look like buttons, no tables. The
+    launcher's: this release's own files. Hookshot's: "to play, get the Hookshot Launcher", with hookshot.magicbean.dev's links to
+    the newest launcher of the same channel (rc to rc, nightly to nightly, stable to stable), and "don't download the files
+    below" (above the builder files)"""
+    channel = channel_of(tag, PRODUCTS[product]["first_major"]) or "nightly"
+    if product == "launcher":
+        base = "%s/%s/releases/download/%s/" % (SERVER, repo or repo_of(product), urllib.parse.quote(tag))
+        url = {k: base + urllib.parse.quote(n) for k, suffix in LAUNCHER_FILES.items() for n in sorted(names)
+               if n.startswith("LongshotLauncher-") and n.endswith(suffix)}
+        lines = ["# ⬇️ Download Hookshot Launcher", ""]
+        if "setup" in url:
+            lines += ["### [🪟 &nbsp;Download for Windows](%s)" % url["setup"], ""]
+        if "appimage" in url:
+            lines += ["### [🐧 &nbsp;Download for Linux (AppImage)](%s)" % url["appimage"], ""]
+        if "portable" in url:
+            lines += ["Windows without installing: [portable zip](%s)" % url["portable"], ""]
+        return "\n".join(lines + [
+            "Run it, point it at your own dump of the game (a `.nup`, or its romfs and exefs folders), and press **Build**. "
+            "It installs Hookshot and keeps it and itself up to date. %s" % CHANNEL_SAYS[channel], "", "---", ""])
+    link = "%s/download/launcher/%s" % (SITE, channel)
+    return "\n".join([
+        "# 🎮 To play, get the Hookshot Launcher", "",
+        "### [🪟 &nbsp;Download the launcher for Windows](%s/windows)" % link, "",
+        "### [🐧 &nbsp;Download the launcher for Linux (AppImage)](%s/linux)" % link, "",
+        "Windows without installing: [portable zip](%s/windows-portable) · [the launcher's newest %s release](%s)"
+        % (link, channel, link), "",
+        "**Don't download the files below:** they're the builder the launcher installs for you.", "", "---", ""])
+
+
+def release_page(tag, product, notes_text, names, repo=None):
+    """The release page's text: the header, then git-cliff's notes"""
+    return page_header(tag, product, names, repo) + "\n" + notes_text.strip() + "\n"
+
+
 # ---- keys and signatures ----
 
 def fetch_git_cliff(folder):
@@ -441,7 +489,7 @@ def publish(tag, target, notes_file, files, product):
             fail("%s looks like a game, dump or NVIDIA file: never released (CONTRIBUTING.md)" % path)
     stable = bool(STABLE.match(tag))
     with open(notes_file, encoding="utf-8") as f:
-        body = f.read()
+        body = release_page(tag, product, f.read(), [os.path.basename(p) for p in files], repo)
     title = "%s %s" % (PRODUCTS[product]["display"], tag)
     found = [r for r in releases(repo) if r["tag_name"] == tag]
     if found and not found[0]["draft"]:

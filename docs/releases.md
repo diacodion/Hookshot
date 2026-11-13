@@ -241,6 +241,32 @@ Fixes, Performance, Reverted, Documentation, Code, Build and Tests; `ci` and `ch
 release page only: nothing is committed back to `main`, and there is no changelog file to keep up. Hookshot's
 `CHANGELOG.md` in Hookshot is history.
 
+`release.py publish` puts a header above the notes (`release_page`), so a player who lands on a release page downloads the
+right thing:
+
+- **The launcher's releases** start with big download links to that release's own files: *Download for Windows* (the
+  installer), *Download for Linux* (the AppImage), and a small link to the portable zip.
+- **Hookshot's releases** start with "To play, get the Hookshot Launcher": the same big links, to the newest launcher of
+  the **same channel** (an rc to the launcher's rc, a nightly to its nightly, a stable to its stable) through the links
+  below, then "Don't download the files below": they are the builders the launcher installs.
+
+## Download links
+
+Forgejo's `/releases/latest` covers stable only. hookshot.magicbean.dev (the Hookshot website, `website/worker/index.ts` in MagicBeanDev/Hookshot) has permanent links to
+the newest launcher of each channel, read from LongshotLauncher's release list by the rules above (cached 60 seconds):
+
+| Link | Goes to |
+|---|---|
+| `https://hookshot.magicbean.dev/download` | a page: the launcher for the visitor's system, from the best channel there is, and every channel |
+| `https://hookshot.magicbean.dev/download/launcher/<os>` | that file of the best channel there is: stable, else rc, else nightly |
+| `https://hookshot.magicbean.dev/download/launcher/<channel>` | the channel's newest release page |
+| `https://hookshot.magicbean.dev/download/launcher/<channel>/<os>` | that file of the channel's newest release |
+
+`<channel>` is `stable`, `rc` or `nightly`; `<os>` is `windows` (the setup), `windows-portable` (the zip) or `linux` (the
+AppImage). A channel with no release yet answers with a page that says so and offers the newest there is. The READMEs'
+download buttons and Hookshot's release pages use these links; there are none for Hookshot's builder files, which only
+the launcher downloads.
+
 ## RecompLauncher (Hookshot)
 
 [RecompLauncher](https://recomplauncher.com) is the other way to install Hookshot. It installs a recomp from a release

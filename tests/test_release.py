@@ -2,7 +2,8 @@
 SHA256SUMS and its signature; the channels as the launcher reads them from the release list; the version a tag must reach
 (the bump from the commits since the last stable), in a git repository made here; the nightly's name; and publish and
 prune against a fake Forgejo on 127.0.0.1 (a draft first, every file uploaded and checked, published last; only nightlies
-pruned); and the release a tag's commit already has (released-as: found by its tag's commit, taken only signed and whole).
+pruned); the release page (the launcher's download links, Hookshot's "download the launcher" notice, per channel); and the
+release a tag's commit already has (released-as: found by its tag's commit, taken only signed and whole).
 Needs git and the openssl command line.
 
     python -I tests/test_release.py
@@ -228,6 +229,59 @@ class Bump(unittest.TestCase):
             args = release.notes("nightly-3-0123abcd", "launcher", root=str(self.dir)).split()
         self.assertEqual(args[-1], "v1.0.0..HEAD")
 
+class ReleasePage(unittest.TestCase):
+    """The release page publish writes: the launcher's starts with big download links to its own files; Hookshot's with "to
+    play, get the Hookshot Launcher", linking hookshot.magicbean.dev's newest launcher of the same channel, and "don't download the
+    files below" (above the builder files)"""
+
+    LAUNCHER = ("LongshotLauncher-%s-windows-x64-setup.exe", "LongshotLauncher-%s-windows-x64-portable.zip",
+                "LongshotLauncher-%s-x86_64.AppImage", "SHA256SUMS", "SHA256SUMS.sig")
+    HOOKSHOT = ("HookshotBuilder-%s-windows-x64.zip", "Hookshot-%s-x86_64.AppImage", "tools.lock", "SHA256SUMS", "SHA256SUMS.sig")
+
+    def page(self, tag, product, files):
+        names = [f % tag if "%s" in f else f for f in files]
+        return release.release_page(tag, product, "## %s\n\n### Fixes\n\n- a fix\n" % tag, names, "MagicBeanDev/LongshotLauncher")
+
+    def test_the_launcher_page_links_its_own_files(self):
+        for tag, channel in (("v1.0.0", "stable"), ("v1.1.0-rc.2", "rc"), ("nightly-10-968b7963", "nightly")):
+            with self.subTest(tag):
+                page = self.page(tag, "launcher", self.LAUNCHER)
+                head, notes = page.split("\n---\n", 1)
+                base = "https://git.notrexed.dev/Hookshot/HookshotLauncher/releases/download/%s/LongshotLauncher-%s" % (tag, tag)
+                self.assertEqual(head.strip().split("\n\n")[:4], [
+                    "# ⬇️ Download Hookshot Launcher",
+                    "### [🪟 &nbsp;Download for Windows](%s-windows-x64-setup.exe)" % base,
+                    "### [🐧 &nbsp;Download for Linux (AppImage)](%s-x86_64.AppImage)" % base,
+                    "Windows without installing: [portable zip](%s-windows-x64-portable.zip)" % base])
+                self.assertIn(release.CHANNEL_SAYS[channel], head)
+                self.assertNotIn("|", head)                     # (no tables: big links)
+                self.assertNotIn("SHA256SUMS", head)
+                self.assertEqual(notes.strip(), "## %s\n\n### Fixes\n\n- a fix" % tag)   # (git-cliff's notes follow)
+        # (a file a release lacks is not linked)
+        page = self.page("v1.0.0", "launcher", self.LAUNCHER[2:])
+        self.assertIn("Download for Linux", page)
+        self.assertNotIn("Download for Windows", page)
+        self.assertNotIn("portable zip", page)
+
+    def test_the_hookshot_page_sends_players_to_the_launcher_of_its_channel(self):
+        for tag, channel in (("v3.0.0", "stable"), ("v3.0.0-rc.1", "rc"), ("nightly-34-545618fc", "nightly")):
+            with self.subTest(tag):
+                page = self.page(tag, "hookshot", self.HOOKSHOT)
+                head, notes = page.split("\n---\n", 1)
+                link = "https://hookshot.magicbean.dev/download/launcher/" + channel
+                self.assertEqual(head.strip().split("\n\n")[:5], [
+                    "# 🎮 To play, get the Hookshot Launcher",
+                    "### [🪟 &nbsp;Download the launcher for Windows](%s/windows)" % link,
+                    "### [🐧 &nbsp;Download the launcher for Linux (AppImage)](%s/linux)" % link,
+                    "Windows without installing: [portable zip](%s/windows-portable) · [the launcher's newest %s release](%s)"
+                    % (link, channel, link),
+                    "**Don't download the files below:** they're the builder the launcher installs for you."])
+                for other in {"stable", "rc", "nightly"} - {channel}:
+                    self.assertNotIn("/download/launcher/" + other, page)
+                self.assertNotIn("releases/download", page)   # (no link to a builder file)
+                self.assertTrue(notes.strip().startswith("## " + tag))
+
+
 NIGHTLY_OF = lambda tag: release.NIGHTLY.match(tag)
 
 
@@ -338,6 +392,28 @@ class Publish(unittest.TestCase):
         bad.write_bytes(b"x")
         with self.assertRaises(SystemExit):
             run("--product", "hookshot", "publish", "v3.0.1-rc.1", "--target", "abc", "--notes", notes, bad)
+
+    def test_the_page_on_the_release(self):
+        # (publish puts the notes under the page's header: Hookshot's says to download the launcher of its channel)
+        notes = self.dir / "notes.md"
+        notes.write_text("### Fixes\n\n- a fix\n")
+        f = self.dir / "HookshotBuilder-nightly-34-545618fc-windows-x64.zip"
+        f.write_bytes(b"PK zip")
+        run("--product", "hookshot", "publish", "nightly-34-545618fc", "--target", "abc", "--notes", notes, f)
+        body = FakeForgejo.releases[0]["body"]
+        self.assertTrue(body.startswith("# 🎮 To play, get the Hookshot Launcher\n"))
+        self.assertIn("https://hookshot.magicbean.dev/download/launcher/nightly/windows", body)
+        self.assertIn("### Fixes\n\n- a fix\n", body)
+        # (the launcher's: its own files, on its repository)
+        FakeForgejo.releases, FakeForgejo.uploads = [], []
+        f = self.dir / "LongshotLauncher-v1.0.0-rc.1-windows-x64-setup.exe"
+        f.write_bytes(b"MZ setup")
+        run("--product", "launcher", "publish", "v1.0.0-rc.1", "--target", "abc", "--notes", notes, f)
+        body = FakeForgejo.releases[0]["body"]
+        self.assertTrue(body.startswith("# ⬇️ Download Hookshot Launcher\n"))
+        self.assertIn("### [🪟 &nbsp;Download for Windows](https://git.magicbean.dev/MagicBeanDev/Test/releases/download/"
+                      "v1.0.0-rc.1/LongshotLauncher-v1.0.0-rc.1-windows-x64-setup.exe)", body)
+        self.assertIn(release.CHANNEL_SAYS["rc"], body)
 
     def test_a_draft_left_by_a_failed_run_is_reused(self):
         FakeForgejo.releases = [{"id": 1, "tag_name": "v3.0.0", "draft": True, "prerelease": False,
