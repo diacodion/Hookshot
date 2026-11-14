@@ -64,17 +64,27 @@ static int esc_had_capture;
 static int game_menu_open;
 static volatile LONG64 game_menu_seen_ns;
 static HosPointer game_pointer = HOS_POINTER_INIT;
-/* The cursor over the game's menus is hidden until the mouse is used (moved or a button pressed) and again once the
-   pads or the keys are (nn_hid.c: hos_player_input_ns): a player on a controller never sees it, and a mouse at rest
-   takes no part (no pointing or clicks while hidden). The wheel works hidden too, and does not show it: a button held
-   (R, for the item choice) counts as the pad in use, and hid the cursor again at each notch */
+/* The cursor over the game's window, in play and in the game's menus (not the Insert menu), is shown until the pads or
+   the keys are used (nn_hid.c: hos_player_input_ns) and again once the mouse is (moved or a button pressed): a player on
+   a controller sees it only until the first input, and a mouse at rest takes no part in the menus (no pointing or clicks
+   while hidden). The wheel works hidden too, and does not show it: a button held (R, for the item choice) counts as the
+   pad in use, and hid the cursor again at each notch. gm_mx, gm_my: the last point a move counted at, in screen
+   coordinates */
 int64_t hos_player_input_ns(void);
-static volatile LONG gm_shown, gm_mx = -1, gm_my = -1;
+static volatile LONG gm_shown = 1, gm_mx = -1, gm_my = -1;
 static volatile LONG64 gm_mouse_ns;
 static void gm_mouse_used(void) { InterlockedExchange64(&gm_mouse_ns, (LONG64)hos_now_ns()); InterlockedExchange(&gm_shown, 1); }
 static int gm_cursor_shown(void) {
     if (gm_shown && hos_player_input_ns() > InterlockedCompareExchange64(&gm_mouse_ns, 0, 0)) InterlockedExchange(&gm_shown, 0);
     return (int)gm_shown;
+}
+/* Whether a move to (x, y) is the mouse used, from the last point one counted at (ax, ay). While the cursor is shown any
+   other point is. While it is hidden only one more than slack pixels away: a bumped desk or a sensor's noise does not
+   bring it back in a cutscene. In screen coordinates, so the WM_MOUSEMOVE Windows sends when the window moves or
+   resizes under a cursor at rest (F11, a DPI change: its client point changes, its screen point does not) is no move */
+static int gm_move_counts(int shown, LONG x, LONG y, LONG ax, LONG ay, LONG slack) {
+    const LONG dx = x > ax ? x - ax : ax - x, dy = y > ay ? y - ay : ay - y;
+    return shown ? dx || dy : dx > slack || dy > slack;
 }
 
 int hos_mouse_pointer(MkwVkPointer *out) { return hos_pointer_take(&pointer, out); }
@@ -154,6 +164,15 @@ static UINT window_dpi(HWND w) {
     return dpi ? dpi : 96;
 }
 
+/* WM_MOUSEMOVE, also under the Insert menu: a click that closes it leaves the cursor shown. 4 pixels of slack at 96 dpi */
+static void gm_mouse_moved(HWND w) {
+    const DWORD at = GetMessagePos();
+    const LONG x = (short)LOWORD(at), y = (short)HIWORD(at);
+    if (!gm_move_counts(gm_cursor_shown(), x, y, gm_mx, gm_my, MulDiv(4, (int)window_dpi(w), 96))) return;
+    gm_mx = x, gm_my = y;
+    gm_mouse_used();
+}
+
 static void mouse_capture(HWND w, int on) {
     int rx_option(int id, int otherwise);
     if (on && rx_option(6, 0) == 2) return;   /* (Mouse camera Off: the mouse plays no part) */
@@ -200,7 +219,6 @@ static void menus_mouse(HWND w, int insert_open, int game_open) {
     if (game_open && !game_was && (!game_closed_ns || hos_now_ns() - game_closed_ns > 1000000000LL)) {
         POINT at = {0};
         GetCursorPos(&at);
-        ScreenToClient(w, &at);
         InterlockedExchange(&gm_shown, 0), gm_mx = at.x, gm_my = at.y;
     }
     if (now && !was) {
@@ -274,11 +292,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_MOUSEMOVE: {
         if (mouse_captured) return 0;
-        const int x = (short)LOWORD(lp), y = (short)HIWORD(lp);
-        if (game_menu_open && !menu_open && (x != gm_mx || y != gm_my)) {   /* (a move: not a repeat at rest) */
-            gm_mx = x, gm_my = y;
-            gm_mouse_used();
-        }
+        gm_mouse_moved(w);
         if (!pointer_tracking) {
             TRACKMOUSEEVENT t = {sizeof t, TME_LEAVE, w, 0};
             pointer_tracking = TrackMouseEvent(&t) != 0;
@@ -337,7 +351,8 @@ static LRESULT CALLBACK wndproc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
         if (game_menu_open && seen && (LONG64)hos_now_ns() - seen > 300000000LL &&
             InterlockedCompareExchange64(&game_menu_seen_ns, 0, seen) == seen)
             menus_mouse(w, menu_open, 0);
-        if (game_menu_open && !menu_open && !gm_cursor_shown()) gm_cursor_off(w);   /* (hidden by the pads or keys: at once) */
+        /* (hidden by the pads or keys: at once, not at the next move's WM_SETCURSOR) */
+        if (!menu_open && !gm_cursor_shown() && GetForegroundWindow() == w) gm_cursor_off(w);
         return 0;
     }
     case WM_SYSCOMMAND:
@@ -407,7 +422,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
         hos_pointer_reset(&game_pointer);
         break;
     case WM_SETCURSOR:
-        if ((mouse_captured || (game_menu_open && !menu_open && !gm_cursor_shown())) && LOWORD(lp) == HTCLIENT) {
+        if ((mouse_captured || (!menu_open && !gm_cursor_shown())) && LOWORD(lp) == HTCLIENT) {
             SetCursor(NULL);
             return TRUE;
         }
