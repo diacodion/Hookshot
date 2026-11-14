@@ -83,7 +83,9 @@ problem with a log outranks an NVIDIA one of the same severity.
    - A game-free test that fails without the change (see AGENTS.md: tests read the source).
    - `python -I -B tests/run_all.py`, all of it.
    - In the game, on your hardware: what you did and what you saw, with numbers from `hookshot_log.txt` for performance.
-   - Add a row to [tested configurations](tested-configurations.md) for each run you measured.
+   - Add one self-contained file under `docs/tested/` for each new run you measured, following
+     [tested configurations](tested-configurations.md). Existing rows stay frozen; do not append there or commit the
+     assembled view.
    - Say what you could not test (another OS, another vendor, real input devices), and open a test request for
      what others must test: the description's Testing section
      ([CONTRIBUTING.md](../CONTRIBUTING.md#commits-and-pull-requests)).

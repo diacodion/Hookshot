@@ -1,16 +1,26 @@
 # Tested configurations
 
-What has actually been run, where, and how it went: one row per test run, newest first. The README's
-[status table](../README.md#project-status) sums this up by vendor; this page keeps the runs themselves, so a
-regression can be traced to a build and a driver, and so the next tester knows what is already covered.
+What has actually been run, where, and how it went. The README's
+[status table](../README.md#project-status) sums this up by vendor; the runs below keep the evidence.
 
-Add a row for your own runs (a PR, or paste it in an issue and a maintainer adds it). A run that worked is as useful as
-one that did not. Keep it to facts you saw: the build (`hookshot vX.Y.Z-N-gHASH` from the first line of
-`hookshot_log.txt`), the hardware and driver, the settings that matter, where in the game, and what you measured.
-Frame rates come from `hookshot_log.txt` ("N presents, X fps") at a named spot, standing still unless the row says
-otherwise.
+**[Read the combined catalogue on the website](https://hookshot.magicbean.dev/tested-configurations/)** for the
+frozen table and new run files together. This source page keeps the existing table visible without running a command.
+The website assembles its view from these repository files; it does not collect results from a service.
 
-## Runs
+Browse the [new run files](tested/) individually, or use the combined catalogue above. For each new measured run,
+add a self-contained `YYYY-MM-DD-topic-tester-run.md` file under `docs/tested/`, following the
+[format and checking instructions](tested/README.md). The tester's name and a distinct run identifier are required;
+repeat the context instead of saying `as above`. New results belong in those files, not in the table below.
+
+The website orders new files by date, then filename, descending. Logs and measured commits still belong in the
+pull request's Measurements and Testing sections. Do not commit an assembled reading view.
+
+<!-- tested-run-fragments -->
+
+## Earlier runs (frozen)
+
+These existing rows keep their original text and order, including their relative references and repeated entries.
+Do not append new runs here. Frame rates come from the named run's log at the stated spot, unless the row says otherwise.
 
 | Date | Build | OS / desktop | GPU / driver | CPU / RAM | Settings | Where | Result |
 |---|---|---|---|---|---|---|---|
@@ -157,6 +167,6 @@ otherwise.
 
 ## Limits of the original RTX 4070 Ti runs
 
-- Real mouse aiming with Mouse camera = Native after #1462 (the camera states were traced, but not tested with a real mouse).
+- Real mouse aiming with Mouse camera = Native after https://github.com/NotRexed/Hookshot/pull/1462 (the camera states were traced, but not tested with a real mouse).
 - Frame generation at 120 Hz or above (the displays here top out at 75 Hz).
 - HDR output on an HDR monitor (the surface is offered, the picture was not judged on one).

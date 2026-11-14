@@ -62,6 +62,7 @@ size, and reverting the commit is enough.
 ## Reviewer notes
 
 Start with `menu_font_scale()`. The controller glyphs keep their size: left for a follow-up.
+New measured runs are files in `docs/tested/` (format in `docs/tested-configurations.md`); the earlier table stays frozen.
 
 ## Issues
 

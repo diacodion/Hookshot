@@ -106,7 +106,9 @@ Never push to `forge`: Hookshot's `main` takes reviewed pull requests only. `pr 
   - **A fix shows the bug gone:** the log line, the screenshot or the steps that failed before and pass now.
   - **A new default** (a switch on for everyone, a preset, a limit) says which hardware it was measured on, and what
     it costs where it wasn't.
-  - Add a row to [tested configurations](docs/tested-configurations.md) for each run you measured.
+  - Add one self-contained file under `docs/tested/` for each new run you measured, using the
+    [tested configurations](docs/tested-configurations.md) format. Existing rows stay frozen; do not append there or
+    commit an assembled view.
 
 ## Team chat
 

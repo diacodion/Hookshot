@@ -72,7 +72,7 @@ break.
 
 | | What |
 |---|---|
-| **Test on other hardware** | NVIDIA cards are the most tested; the README's [status table](README.md#project-status) says what works where, and [tested configurations](docs/tested-configurations.md) lists the runs behind it. Reports from AMD and Intel cards, other drivers, other distributions and SteamOS help even when everything works. Pull requests that need a run on your hardware are queued as [test requests](docs/test-requests.md). |
+| **Test on other hardware** | NVIDIA cards are the most tested; the README's [status table](README.md#project-status) says what works where, and the [tested configurations catalogue](https://hookshot.magicbean.dev/tested-configurations/) lists the runs behind it. Reports from AMD and Intel cards, other drivers, other distributions and SteamOS help even when everything works. Pull requests that need a run on your hardware are queued as [test requests](docs/test-requests.md). |
 | **Play further** | The tested area is the start of the game. Reaching new areas, cutscenes, menus and items finds problems nobody has seen. |
 | **Report what is broken** | Use the [issue forms](https://git.notrexed.dev/Hookshot/Hookshot/issues/new/choose): game problem, install or build problem, save problem or idea. Include the version, your hardware, where you were and `hookshot_log.txt`. |
 | **Send a fix** | Branch, fix, test, open a pull request from your fork ([how](#commits-and-pull-requests)). Small, focused changes are the easiest to review. |
@@ -387,8 +387,9 @@ How to reproduce: a save in that same outdoor area, Ultra preset, the FPS counte
 | readback waits | ~5.7 ms | <0.1 ms | -5.6 ms |
 ```
 
-followed by the log lines themselves. Add a row to [tested configurations](docs/tested-configurations.md) for each run
-you measured.
+followed by the log lines themselves. Add one self-contained file under `docs/tested/` for each new run you measured,
+following [tested configurations](docs/tested-configurations.md). Leave the existing table frozen and do not commit
+the assembled view; the [website catalogue](https://hookshot.magicbean.dev/tested-configurations/) combines both for readers.
 
 ### Pull request titles
 
