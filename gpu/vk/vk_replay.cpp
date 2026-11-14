@@ -116,6 +116,27 @@ const bool rec_thread_hook = (::mkwvk::rec::g_thread_start_hook = [] {
     ::mkwvk::logf("vk: RX_VK_RECORDER_PIN=%s: the recorder %s %#llx (reserved %#llx)", pin, ok ? "pinned to" : "NOT pinned, mask",
                   (unsigned long long)m, (unsigned long long)reserved);
 }, true);
+// (RX_VK_RECORDER_IDLE=wait: the recorder's idle waits on its ring counter. Windows: from kernelbase.dll, without linking
+// Synchronization.lib; Linux: host/posix's, a futex)
+const bool rec_wait_hooks = [] {
+#ifdef _WIN32
+    using WaitFn = BOOL(WINAPI*)(volatile VOID*, PVOID, SIZE_T, DWORD);
+    using WakeFn = VOID(WINAPI*)(PVOID);
+    static WaitFn wait = nullptr;
+    static WakeFn wake = nullptr;
+    if (const HMODULE k = GetModuleHandleA("kernelbase.dll")) {
+        wait = (WaitFn)(void*)GetProcAddress(k, "WaitOnAddress");
+        wake = (WakeFn)(void*)GetProcAddress(k, "WakeByAddressSingle");
+    }
+    if (!wait || !wake) return false;
+    ::mkwvk::rec::g_wait_on_address = [](volatile void* a, void* c, size_t n, uint32_t ms) { return wait(a, c, n, ms) != 0; };
+    ::mkwvk::rec::g_wake_by_address = [](void* a) { wake(a); };
+#else
+    ::mkwvk::rec::g_wait_on_address = [](volatile void* a, void* c, size_t n, uint32_t ms) { return WaitOnAddress(a, c, n, ms) != 0; };
+    ::mkwvk::rec::g_wake_by_address = [](void* a) { WakeByAddressSingle(a); };
+#endif
+    return true;
+}();
 // (RX_VK_BATCH: see queue_flush_locked)
 VkSemaphore batch_tl = VK_NULL_HANDLE;
 uint64_t batch_next = 0, batch_flushed = 0;
@@ -154,6 +175,7 @@ struct Recording {
 // replay waited ~1.5 ms a frame for a slot the GPU still had)
 constexpr int kRecordings = 48;   // (test: 24 before; with RX_VK_BATCH the ring came round to held submits once a frame)
 Recording recordings[kRecordings];
+uint64_t rec_end_pos[kRecordings];   // (RX_VK_RECORDER_OWN: the recorder ring's position after each slot's last end, vk_recorder.h)
 int recording_index = 0;
 
 /// (a recording slot's last submit done: before it is used again)
@@ -683,12 +705,16 @@ Recording& begin_recording(uint64_t value) {
         gpu_time_collect(r);
         gprof_collect(r.slot);
     }
-    vkResetCommandPool(dev.device, r.pool, 0);
-    vkResetCommandPool(dev.device, r.upload_pool, 0);
-    VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vkBeginCommandBuffer(r.cmd, &bi);
-    vkBeginCommandBuffer(r.upload, &bi);
+    rec::slot_begin(rec_end_pos[r.slot]);   // (RX_VK_RECORDER_OWN: the slot's own resets below and in draw_begin_recording)
+    {
+        rec::OwnSlot own;
+        vkResetCommandPool(dev.device, r.pool, 0);
+        vkResetCommandPool(dev.device, r.upload_pool, 0);
+        VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+        bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        vkBeginCommandBuffer(r.cmd, &bi);
+        vkBeginCommandBuffer(r.upload, &bi);
+    }
     gpu_time_begin(r);
     gprof_begin_recording(r.slot, r.cmd, r.upload);
     r.value = value;
@@ -697,6 +723,7 @@ Recording& begin_recording(uint64_t value) {
     memory_recording_value(value, completed());
     texture_begin_recording(r.upload, value);
     draw_begin_recording(r.slot, r.cmd, value);
+    rec::slot_done();
     return r;
 }
 void submit_recording(Recording& r, bool signal_value = true, uint64_t signal_at = 0) {
@@ -706,6 +733,7 @@ void submit_recording(Recording& r, bool signal_value = true, uint64_t signal_at
     gpu_time_end(r);
     vkEndCommandBuffer(r.upload);
     vkEndCommandBuffer(r.cmd);
+    rec_end_pos[r.slot] = rec::produced();   // (the ends waited for the recorder: it is past this)
     VkSemaphoreSubmitInfo signal{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
     signal.semaphore = timeline;
     signal.value = signal_at ? signal_at : r.value;

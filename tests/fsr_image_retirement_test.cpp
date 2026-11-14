@@ -105,6 +105,13 @@ void advance() {
     for (auto id : q.uses) need(!bundles[id].image && !bundles[id].views, "GPU accessed a destroyed image bundle");
     if (q.signal) gpu_done = std::max(gpu_done, q.signal);
 }
+namespace rec {   // (vk_recorder.h's RX_VK_RECORDER_OWN marks, as they are with the recorder off)
+inline void slot_begin(uint64_t) {}
+inline void slot_done() {}
+inline uint64_t produced() { return 0; }
+struct OwnSlot { OwnSlot() {} ~OwnSlot() {} };   // (a scope, as the real one)
+}   // namespace rec
+uint64_t rec_end_pos[64];   // (vk_replay.cpp: each slot's end in the recorder's ring)
 // PRODUCTION
 void retire(uintptr_t id, uint64_t required) {
     bundles[id].required = required;
