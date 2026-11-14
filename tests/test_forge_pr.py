@@ -675,6 +675,17 @@ deleted file mode 100644
         self.forgejo.add(5, "[wip] fix: x", FILLED)
         self.assertIn("work in progress, by alice", self.run_forge("pr", "view", "5")[1])
 
+    def test_view_into_a_cp1252_pipe(self):
+        # into a pipe on Windows, stdout is cp1252, which has no robot: pr view used to stop with a UnicodeEncodeError
+        self.forgejo.add(6, "fix: y", FILLED + "\n\N{ROBOT FACE} Generated\n")
+        pipe = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")
+        with contextlib.redirect_stdout(pipe), contextlib.redirect_stderr(io.StringIO()):
+            code = forge.main(["pr", "view", "6"])
+        pipe.flush()
+        text = pipe.buffer.getvalue().decode("utf-8")
+        self.assertEqual((code, pipe.encoding), (0, "utf-8"))
+        self.assertIn("\N{ROBOT FACE} Generated", text)
+
 
 if __name__ == "__main__":
     unittest.main()

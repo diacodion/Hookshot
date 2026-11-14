@@ -899,7 +899,22 @@ def cmd_issue(args):
         print(api("POST", "/repos/%s/issues/%d/comments" % (REPO, args.number), {"body": text_arg(args)})["html_url"])
 
 
+def unicode_output():
+    """Printing a pull request's or an issue's text never stops the command. On Windows, with -I (which ignores
+    PYTHONIOENCODING), output into a pipe is in the ANSI code page, cp1252, which has no emoji: pr view stopped with a
+    UnicodeEncodeError on a description ending in the robot. As team_chat.py does: a pipe gets UTF-8, a console keeps
+    its own encoding, and a character it cannot show is replaced."""
+    for stream in (sys.stdout, sys.stderr):
+        if not hasattr(stream, "reconfigure"):   # (a StringIO, as in the tests)
+            continue
+        if stream.isatty():
+            stream.reconfigure(errors="replace")
+        else:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
 def main(argv=None):
+    unicode_output()
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = p.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("login", help="sign in with Discord, set up git")
