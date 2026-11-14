@@ -73,6 +73,8 @@ Every copy:
   `~/.local/share` on Linux, in `%LOCALAPPDATA%\Hookshot` on Windows. To undo a copy, put the backup's contents back;
 - replaces the target's `slot_*` folders, `account.sav` and `option.sav`, so a slot that only existed on that side does
   not stay mixed in with the new save;
+- copies the new save into a folder inside the target first and swaps it in only when that copy worked, so a copy that
+  fails part way (a full disk) leaves the target's save as it was;
 - refuses a save that holds a link (it would copy whatever the link points to).
 
 When Hookshot (or, for `export hookshot`, Hookshot) has no save yet, the copy makes its save folder: on Linux in the data
