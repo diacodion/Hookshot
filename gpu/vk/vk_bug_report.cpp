@@ -474,7 +474,13 @@ std::string write(const Inputs& in) {
     else if (in.current_log.empty()) where = "Not known\n(This run's log is not in a file: the game was started from a terminal, or by a program that reads its output.";
     else where = "Not known\n(This run's log names no map yet: no save loaded since the start.";
     where += last.copied && !last.map.empty() ? " The run before was last in " + last.map + ".)" : std::string(")");
-    std::string settings = in.options.empty() ? "Every Insert menu option is at its default.\n" : in.options;
+    const std::string options = in.options.empty() ? (in.pc_options.empty() ? "Every Insert menu option is at its default.\n" :
+        "Every Insert menu option with a fixed default is at its default.\n") : in.options;
+    // (the rows whose defaults depend on this PC: in the same answer, the form's "Changes from the defaults", under a line of
+    // their own, so they reach the issue whichever way it is filed; the form has no field of their own)
+    const std::string pc = in.pc_options.empty() ? std::string()
+                                                 : "Depends on this PC (the values now, not counted as changes):\n" + in.pc_options;
+    std::string settings = options + pc;
     std::string names;
     const std::string sw = switches(in.env, &names);
     settings += sw.empty() ? "Switches set: none.\n"
@@ -509,20 +515,24 @@ std::string write(const Inputs& in) {
                                      std::pair{picture, "picture.png"}})
         if (here) files += std::string(", ") + name;
     const std::string gpu = in.gpu.empty() ? "Not known: the game has no Vulkan device." : in.gpu;
-    // (the link fills in the form's one-line answers and, while the whole link stays within kLinkMax, the options changed and
-    // the switches' names: never a switch's value, which only report.txt has. When they do not fit, the options and how many
-    // switches there are, else only the two counts)
+    // (the link fills in the form's one-line answers and, while the whole link stays within kLinkMax, the options changed, the
+    // rows that depend on this PC and the switches' names: never a switch's value, which only report.txt has. When they do not
+    // fit, the options, those rows and how many switches there are; then the options and how many of each; else only the counts)
     // (Forgejo fills a form's field from the query's field:<its id>: routers/web/repo/issue.go, setTemplateIfExists)
     std::string link = std::string(kForm) + "&field:version=" + url_part(in.version) +
                        (now.map.empty() ? "" : "&field:where=" + url_part(now.map)) + "&field:gpu=" + url_part(gpu) +
                        "&field:system=" + url_part(in.system);
     const auto count = [](const std::string& s) { return std::to_string(std::count(s.begin(), s.end(), '\n')); };
-    const std::string options = in.options.empty() ? "Every Insert menu option is at its default.\n" : in.options;
     const std::string named = sw.empty() ? "Switches set: none.\n" : "Switches set (their values are in the attached report.txt): " + names + ".\n";
     const std::string listed = sw.empty() ? "" : "Switches set: " + count(sw) + ", listed in the attached report.txt.\n";
+    // (the rows that depend on this PC after the changes, and the first to go short: then only how many)
+    const std::string pc_count = in.pc_options.empty() ? std::string()
+                                                       : "Depends on this PC: " + count(in.pc_options) + ", listed in the attached report.txt.\n";
     bool link_short = false;
-    for (const std::string& s : {options + named, options + listed,
-                                 count(in.options) + " Insert menu options changed and " + count(sw) +
+    for (const std::string& s : {options + pc + named, options + pc + listed, options + pc_count + listed,
+                                 count(in.options) + (in.pc_options.empty() ? " Insert menu options changed and " :
+                                     " Insert menu options with fixed defaults changed, " + count(in.pc_options) +
+                                     " whose defaults depend on this PC and ") + count(sw) +
                                      " switches set, listed in the attached report.txt.\n"}) {
         const std::string part = "&field:settings=" + url_part(s);
         if (link.size() + part.size() <= kLinkMax) {
@@ -548,7 +558,8 @@ std::string write(const Inputs& in) {
                      : "No picture: the game showed no new frame while the report was made, or its picture could not be written.\n\n");
     text += "### What this folder holds\n\n" + files + ". Nothing else from this PC: no saves, no game files, not the options file "
             "itself.\n\nThe link with the answers filled in" +
-            (link_short ? std::string(" (the changes from the defaults in short: the switches' names did not fit in a link)") : "") +
+            (link_short ? std::string(in.pc_options.empty() ? " (the changes from the defaults in short: the switches' names did not fit in a link)"
+                                                              : " (the changes from the defaults in short: not all of them fit in a link)") : "") +
             ":\n" + link + "\n";
     FILE* f = fopen((dir + "report.txt").c_str(), "wb");
     const bool written = f && fwrite(text.data(), 1, text.size(), f) == text.size();
