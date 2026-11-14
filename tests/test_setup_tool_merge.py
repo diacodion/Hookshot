@@ -138,6 +138,16 @@ static HANDLE FindFirstFileW(LPCWSTR pattern, WIN32_FIND_DATAW *fd) {
     return f;
 }
 static BOOL FindClose(HANDLE h) { Find *f = (Find *)h; closedir(f->dir), free(f); return TRUE; }
+#define CSTR_EQUAL 2
+#include <wctype.h>
+static int CompareStringOrdinal(const wchar_t *a, int na, const wchar_t *b, int nb, BOOL ignore_case) {
+    if (na != nb) return na < nb ? 1 : 3;
+    for (int i = 0; i < na; i++) {
+        wint_t x = ignore_case ? towupper((wint_t)a[i]) : (wint_t)a[i], y = ignore_case ? towupper((wint_t)b[i]) : (wint_t)b[i];
+        if (x != y) return x < y ? 1 : 3;
+    }
+    return CSTR_EQUAL;
+}
 static HANDLE CreateFileW(LPCWSTR path, DWORD access, DWORD share, void *sa, DWORD how, DWORD flags, HANDLE t) {
     char p[4 * MAX_PATH]; (void)access, (void)share, (void)sa, (void)how, (void)flags, (void)t;
     u8(path, p);
@@ -166,6 +176,7 @@ WINDOWS_HEAD = r'''
 #include <wchar.h>
 #include <stdarg.h>
 #include "portable_home.h"
+#include "long_path.h"
 '''
 
 HARNESS = r'''
@@ -206,11 +217,12 @@ int main(int argc, char **argv) {
 
 def harness(source):
     part_end = source.index("} Part;") + len("} Part;")
-    code = (WINDOWS_HEAD if WINDOWS else POSIX_WIN32 + "#define _wtoi(s) ((int)wcstol((s), NULL, 10))\n")
+    code = (WINDOWS_HEAD if WINDOWS else POSIX_WIN32 + '#include "long_path.h"\n#define _wtoi(s) ((int)wcstol((s), NULL, 10))\n')
     code += source[source.rfind("typedef struct", 0, part_end):part_end] + "\n"
     code += "static HbHome g_home;\nstatic void fail(const wchar_t *format, ...);\n"
-    for marker in ("static int home_path(", "static void rmtree(", "static void mkdirs(", "static void read_small(",
-                   "static int part_folder(", "static int copy_part_tree(", "static int place_tool(", "static int reuse_part("):
+    for marker in ("static int home_path(", "static void rmtree_at(", "static void rmtree(", "static void mkdirs(", "static void read_small(",
+                   "static int part_folder(", "static int copy_tree_at(", "static int copy_part_tree(", "static int place_tool(",
+                   "static int reuse_part("):
         code += function(source, marker) + "\n"
     return code + HARNESS.replace("static HbHome g_home;\n", "").replace("#define _wtoi(s) ((int)wcstol((s), NULL, 10))\n", "")
 

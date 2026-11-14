@@ -8,6 +8,9 @@
 
 #define HB_HOME_MARKER L".hookshot-portable"
 #define HB_HOME_MAGIC "Hookshot Builder portable home v1"
+/* --portable's home beside the setup. Not HookshotBuilder: that is the builder the zip carries, beside the setup too, which the
+   setup copies into the home's versions\<tag>; a home of that name would be copied into itself */
+#define HB_HOME_FOLDER L"HookshotBuilder-data"
 
 typedef struct { wchar_t root[MAX_PATH]; int portable; } HbHome;
 
@@ -128,7 +131,7 @@ static int hb_home_discover(HbHome *home, const wchar_t *requested, const wchar_
     /* The original setup remains beside its dedicated data folder after --portable's first invocation. */
     {
         wchar_t sibling[MAX_PATH];
-        if (hb_home_join(sibling, MAX_PATH, setup_directory, L"HookshotBuilder")) {
+        if (hb_home_join(sibling, MAX_PATH, setup_directory, HB_HOME_FOLDER)) {
             int marked = hb_home_marked(sibling);
             if (marked < 0) return 0;
             if (marked) { wcscpy(home->root, sibling); home->portable = 1; return 1; }

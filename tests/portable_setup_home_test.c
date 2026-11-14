@@ -26,7 +26,7 @@ int wmain(int argc, wchar_t **argv) {
     wchar_t volume[MAX_PATH], root[MAX_PATH], exe[MAX_PATH], ordinary[MAX_PATH], cwd[MAX_PATH];
     wchar_t marker[MAX_PATH], moved[MAX_PATH], next[MAX_PATH], normalized[MAX_PATH];
     join(volume, argv[1], L"volume old");
-    join(root, volume, L"HookshotBuilder");
+    join(root, volume, HB_HOME_FOLDER);
     join(exe, root, L"versions\\v-authored\\HookshotBuilder\\HookshotBuilder.exe");
     join(ordinary, argv[1], L"standard");
     join(cwd, argv[1], L"unrelated cwd");
@@ -49,7 +49,7 @@ int wmain(int argc, wchar_t **argv) {
     CHECK(!hb_home_discover(&home, L"relative", exe, ordinary) && !home.root[0]);
     join(moved, argv[1], L"volume moved");
     CHECK(MoveFileW(volume, moved));
-    join(next, moved, L"HookshotBuilder");
+    join(next, moved, HB_HOME_FOLDER);
     join(exe, next, L"versions\\v-authored\\HookshotBuilder\\HookshotBuilder.exe");
     CHECK(hb_home_discover(&home, NULL, exe, ordinary) && home.portable && !wcscmp(home.root, next));
 
