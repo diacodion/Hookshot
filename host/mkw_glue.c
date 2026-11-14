@@ -51,18 +51,21 @@ static void commit_refused(uint64_t lo, uint64_t size, DWORD err) {
     }
 }
 
-void hos_commit(uint64_t addr, uint64_t size) {
-    if (!size) return;
+/* 1: the range is committed; 0: it is not (outside the guest window, or refused: logged) */
+int hos_commit(uint64_t addr, uint64_t size) {
+    if (!size) return 1;
     if (!hos_guest_range(addr, size)) {   /* (hookshot: guest pages only; the posix layer's commit changes any page's protection) */
         hos_log("mem: commit of %#llx bytes at %#llx: outside the guest window", (unsigned long long)size, (unsigned long long)addr);
-        return;
+        return 0;
     }
     const uint64_t lo = addr & ~0xFFFFULL, hi = (addr + size + 0xFFFF) & ~0xFFFFULL;
     if (!VirtualAlloc(GP(lo), (SIZE_T)(hi - lo), MEM_COMMIT, PAGE_READWRITE)) {
         const DWORD err = GetLastError();
-        if (err == ERROR_COMMITMENT_LIMIT && commit_wait(GP(lo), (SIZE_T)(hi - lo))) return;
+        if (err == ERROR_COMMITMENT_LIMIT && commit_wait(GP(lo), (SIZE_T)(hi - lo))) return 1;
         commit_refused(lo, hi - lo, err);
+        return 0;
     }
+    return 1;
 }
 
 DWORD WINAPI hos_out_of_memory_box(LPVOID unused) {
@@ -84,7 +87,18 @@ static LONG CALLBACK commit_on_touch(EXCEPTION_POINTERS *info) {
     const uint64_t guest = (uint64_t)(p - A64_MEM);
     if (guest < 0x100000) return EXCEPTION_CONTINUE_SEARCH;   /* (a null pointer: the game's own fault) */
     MEMORY_BASIC_INFORMATION mbi;
-    if (!VirtualQuery(p, &mbi, sizeof mbi) || mbi.State != MEM_RESERVE) return EXCEPTION_CONTINUE_SEARCH;
+    if (!VirtualQuery(p, &mbi, sizeof mbi)) return EXCEPTION_CONTINUE_SEARCH;
+#ifdef _WIN32
+    /* (another thread committed this 64 KB between the fault and the look: the access is tried again. The heap is committed on
+       touch now (hos_mem.c), and two threads touching one new chunk at once crashed the second in the boot's module loads.
+       Not an execute fault (8, DEP): a jump into guest memory would fault again at once, forever; it goes on to the crash report.
+       Windows only: Linux commits nothing lazily, its VirtualQuery stand-in calls every guest page committed and read-write, and
+       its signal handler never sets 8, so there every SIGSEGV and SIGBUS in the window would be tried again forever, at 100% CPU,
+       rather than reach report_crash) */
+    if (mbi.State == MEM_COMMIT && mbi.Protect == PAGE_READWRITE && rec->ExceptionInformation[0] != 8)
+        return EXCEPTION_CONTINUE_EXECUTION;
+#endif
+    if (mbi.State != MEM_RESERVE) return EXCEPTION_CONTINUE_SEARCH;
     static volatile LONG touched;
     if (InterlockedIncrement(&touched) <= 16)
         hos_log("mem: %#llx committed on first touch (nothing handed it out)", (unsigned long long)guest);

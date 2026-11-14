@@ -36,7 +36,7 @@
 #include "vk_antilag.h"
 #include "vk_draw.h"
 #include "vk_dump.h"
-#include "vk_paths.h"   // (game_module_path: the frame trace beside the game)
+#include "vk_paths.h"   // (log_path: the frame trace in the game folder's logs/)
 #include "vk_gprof.h"
 #include "vk_framegen.h"
 #include "vk_dlss.h"   // (hookshot: dlss_fg_idle)
@@ -116,6 +116,27 @@ const bool rec_thread_hook = (::mkwvk::rec::g_thread_start_hook = [] {
     ::mkwvk::logf("vk: RX_VK_RECORDER_PIN=%s: the recorder %s %#llx (reserved %#llx)", pin, ok ? "pinned to" : "NOT pinned, mask",
                   (unsigned long long)m, (unsigned long long)reserved);
 }, true);
+// (RX_VK_RECORDER_IDLE=wait: the recorder's idle waits on its ring counter. Windows: from kernelbase.dll, without linking
+// Synchronization.lib; Linux: host/posix's, a futex)
+const bool rec_wait_hooks = [] {
+#ifdef _WIN32
+    using WaitFn = BOOL(WINAPI*)(volatile VOID*, PVOID, SIZE_T, DWORD);
+    using WakeFn = VOID(WINAPI*)(PVOID);
+    static WaitFn wait = nullptr;
+    static WakeFn wake = nullptr;
+    if (const HMODULE k = GetModuleHandleA("kernelbase.dll")) {
+        wait = (WaitFn)(void*)GetProcAddress(k, "WaitOnAddress");
+        wake = (WakeFn)(void*)GetProcAddress(k, "WakeByAddressSingle");
+    }
+    if (!wait || !wake) return false;
+    ::mkwvk::rec::g_wait_on_address = [](volatile void* a, void* c, size_t n, uint32_t ms) { return wait(a, c, n, ms) != 0; };
+    ::mkwvk::rec::g_wake_by_address = [](void* a) { wake(a); };
+#else
+    ::mkwvk::rec::g_wait_on_address = [](volatile void* a, void* c, size_t n, uint32_t ms) { return WaitOnAddress(a, c, n, ms) != 0; };
+    ::mkwvk::rec::g_wake_by_address = [](void* a) { WakeByAddressSingle(a); };
+#endif
+    return true;
+}();
 // (RX_VK_BATCH: see queue_flush_locked)
 VkSemaphore batch_tl = VK_NULL_HANDLE;
 uint64_t batch_next = 0, batch_flushed = 0;
@@ -154,6 +175,7 @@ struct Recording {
 // replay waited ~1.5 ms a frame for a slot the GPU still had)
 constexpr int kRecordings = 48;   // (test: 24 before; with RX_VK_BATCH the ring came round to held submits once a frame)
 Recording recordings[kRecordings];
+uint64_t rec_end_pos[kRecordings];   // (RX_VK_RECORDER_OWN: the recorder ring's position after each slot's last end, vk_recorder.h)
 int recording_index = 0;
 
 /// (a recording slot's last submit done: before it is used again)
@@ -265,6 +287,8 @@ void queue_flush_locked() {   // (dev.present_mu held)
     si.pSignalSemaphoreInfos = sig;
     PROF(PROF_QSUBMIT);
     si.pNext = reflex_submit_id(nullptr, pend.reflex);   // (NVIDIA Reflex: the game frame of the batch's first command buffer)
+    VkSemaphoreSubmitInfo sparse_wait;   // (hookshot: after the sparse mirrors' binds, RX_VK_MIRROR_SPARSE)
+    if (memory_sparse_wait(&sparse_wait)) si.waitSemaphoreInfoCount = 1, si.pWaitSemaphoreInfos = &sparse_wait;
     const VkResult res = vkQueueSubmit2(dev.queue, 1, &si, VK_NULL_HANDLE);
     static int failures;
     if (res != VK_SUCCESS && failures++ < 8) logf("vk: batched submit %llu failed (%d)", (unsigned long long)batch_next, (int)res);
@@ -710,12 +734,16 @@ Recording& begin_recording(uint64_t value) {
         gpu_time_collect(r);
         gprof_collect(r.slot);
     }
-    vkResetCommandPool(dev.device, r.pool, 0);
-    vkResetCommandPool(dev.device, r.upload_pool, 0);
-    VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vkBeginCommandBuffer(r.cmd, &bi);
-    vkBeginCommandBuffer(r.upload, &bi);
+    rec::slot_begin(rec_end_pos[r.slot]);   // (RX_VK_RECORDER_OWN: the slot's own resets below and in draw_begin_recording)
+    {
+        rec::OwnSlot own;
+        vkResetCommandPool(dev.device, r.pool, 0);
+        vkResetCommandPool(dev.device, r.upload_pool, 0);
+        VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+        bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        vkBeginCommandBuffer(r.cmd, &bi);
+        vkBeginCommandBuffer(r.upload, &bi);
+    }
     gpu_time_begin(r);
     gprof_begin_recording(r.slot, r.cmd, r.upload);
     r.value = value;
@@ -724,6 +752,7 @@ Recording& begin_recording(uint64_t value) {
     memory_recording_value(value, completed());
     texture_begin_recording(r.upload, value);
     draw_begin_recording(r.slot, r.cmd, value);
+    rec::slot_done();
     return r;
 }
 void submit_recording(Recording& r, bool signal_value = true, uint64_t signal_at = 0) {
@@ -733,6 +762,7 @@ void submit_recording(Recording& r, bool signal_value = true, uint64_t signal_at
     gpu_time_end(r);
     vkEndCommandBuffer(r.upload);
     vkEndCommandBuffer(r.cmd);
+    rec_end_pos[r.slot] = rec::produced();   // (the ends waited for the recorder: it is past this)
     VkSemaphoreSubmitInfo signal{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
     signal.semaphore = timeline;
     signal.value = signal_at ? signal_at : r.value;
@@ -805,6 +835,8 @@ void submit_recording(Recording& r, bool signal_value = true, uint64_t signal_at
     }
     PROF(PROF_QSUBMIT);
     si.pNext = reflex_submit_id(nullptr);   // (NVIDIA Reflex: the frame being made)
+    VkSemaphoreSubmitInfo sparse_wait;   // (hookshot: after the sparse mirrors' binds, RX_VK_MIRROR_SPARSE)
+    if (memory_sparse_wait(&sparse_wait)) si.waitSemaphoreInfoCount = 1, si.pWaitSemaphoreInfos = &sparse_wait;
     const VkResult res = vkQueueSubmit2(dev.queue, 1, &si, r.fence);
     r.submitted = res == VK_SUCCESS;
     static int failures;
@@ -1765,14 +1797,19 @@ void maybe_split(VkCommandBuffer& cmd) {
     if (split_off || !rec_cur || every <= 0 || ++part_work < every || rec_parts + 1 >= kMaxParts || dump_on()) return;
     end_pass(cmd);
     // (a part's end does not write the stream's uniform updates recorded so far into guest memory, nor start a new window
-    // of them: the submission's last part writes them all, as an unsplit submission does (finish_recording). Written at
-    // each part's end, the draws of the later parts that read those ranges from guest memory saw a state an unsplit
-    // submission never shows: on Intel, white blocks and haze at Kokiri, and a whole-screen white flash every 8 frames on
-    // the Arc 140V (issue 999). Measured on Intel only, so the default there; RX_VK_SPLIT_UBFLUSH=1: written at each part's
-    // end, as before, =0: at the last part's on any GPU)
+    // of them: the submission's last part writes them all, as an unsplit submission does (finish_recording) and as the
+    // parallel replay does. A uniform binding is not what changes: one overlapping an update gets an overlay copy built
+    // from the whole list (ub_overlay), the same bytes either way. What changes is everything else that reads guest memory
+    // after a part's end: a later part's storage, vertex, index or texture reads of an updated range, and, on a GPU whose
+    // buffer pools have no VRAM mirror, the game's own CPU reads, since the GPU then writes the memory the game sees partway
+    // through its frame. Written at each part's end, on Intel without mirrors: white blocks and flashes at Kokiri, and
+    // a whole-screen white flash every 8 frames on the Arc 140V (issue 999).
+    // Measured on an Intel iGPU only (no mirrors), so the default there; with mirrors (Arc discrete) the write goes to the
+    // mirror, and it was not tested there: left as before. RX_VK_SPLIT_UBFLUSH=1: written at each part's end, as before,
+    // =0: at the last part's on any GPU)
     static const bool part_flush = [] {
         const char* e = getenv("RX_VK_SPLIT_UBFLUSH");
-        return e ? env_on("RX_VK_SPLIT_UBFLUSH") : dev.props.vendorID != 0x8086;
+        return e ? env_on("RX_VK_SPLIT_UBFLUSH") : dev.props.vendorID != 0x8086 || pools_mirrored();
     }();
     if (part_flush) flush_ub_updates(cmd);
     memory_end_submission(cmd, rec_cur->part);
@@ -2083,6 +2120,8 @@ const uint8_t* replay_handle(VkCommandBuffer& cmd, const uint8_t* h, bool may_st
         std::lock_guard lk(dev.present_mu);
         queue_flush_locked();
         si.pNext = reflex_submit_id(nullptr);   // (NVIDIA Reflex: the frame being made; after the flush, which tags its own)
+        VkSemaphoreSubmitInfo sparse_wait;   // (hookshot: after the sparse mirrors' binds, RX_VK_MIRROR_SPARSE)
+        if (memory_sparse_wait(&sparse_wait)) si.waitSemaphoreInfoCount = 1, si.pWaitSemaphoreInfos = &sparse_wait;
         const VkResult res = vkQueueSubmit2(dev.queue, 1, &si, j->r->fence);
         j->r->submitted = res == VK_SUCCESS;
         if (res != VK_SUCCESS) logf("vk: segment submit %llu failed (%d)", (unsigned long long)j->r->value, (int)res);
@@ -3730,10 +3769,7 @@ void status_tick() {
     // pipeline compiles, the GPU behind. RX_VK_FRAME_LOG has the frame times alone)
     static FILE* trace = [] {
         if (!getenv("RX_VK_FRAME_TRACE") || !atoi(getenv("RX_VK_FRAME_TRACE"))) return (FILE*)nullptr;
-        char exe[MAX_PATH];
-        const DWORD n = game_module_path(exe, MAX_PATH);
-        std::string dir(exe, n);
-        FILE* f = fopen((dir.substr(0, dir.find_last_of("\\/") + 1) + "hookshot_frames.csv").c_str(), "w");
+        FILE* f = fopen(log_path("hookshot_frames.csv").c_str(), "w");   // (the game folder's logs/: vk_paths.h)
         if (f) fprintf(f, "frame,ms,pipe_waits,pipe_wait_ms,left_out,translate_ms,uploads,upload_mb,textures,memsync_ms,pipelines_ms,"
                           "uploads_ms,programs_ms,slot_wait_ms,gpu_behind_ms,draw_ms,desc_ms,cmds_ms,tex_lookup_ms,textures_gone,"
                           "late_wait_ms,readback_wait_ms,tex_frame_ms\n");

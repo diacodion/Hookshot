@@ -64,17 +64,17 @@ int main(void) {
                     expected = damage >= old ? 0 : old - damage;
                 }
                 protection = 0;
-                assert(hos_oot_damage(old, next) == expected);
+                assert(hos_oot_damage(old, next, old - next) == expected);
                 protection = 1;
-                assert(hos_oot_damage(old, next) == (next < old ? old : next));
+                assert(hos_oot_damage(old, next, old - next) == (next < old ? old : next));
             }
         }
         protection = 0;
-        assert(hos_oot_damage(1, 0) == 0); /* Even Half keeps a one-quarter hit. */
-        assert(hos_oot_damage(UINT32_MAX, 0) == (setting == 0 ? UINT32_MAX / 2 : 0));
+        assert(hos_oot_damage(1, 0, 1) == 0); /* Even Half keeps a one-quarter hit. */
+        assert(hos_oot_damage(UINT32_MAX, 0, UINT32_MAX) == (setting == 0 ? UINT32_MAX / 2 : 0));
         for (int which = 0; which < 2; which++) {
-            Ctx c = {{0}}; c.x[11] = 12; c.x[12] = 8; c.x[19] = 100; c.x[13] = 208;
-            site(&c, which); assert(c.x[12] == hos_oot_damage(12, 8));
+            Ctx c = {{0}}; c.x[9] = 4; c.x[11] = 12; c.x[12] = 8; c.x[19] = 100; c.x[13] = 208;
+            site(&c, which); assert(c.x[12] == hos_oot_damage(12, 8, 4));
             c.x[12] = 8; player = 0; site(&c, which); assert(c.x[12] == 8); player = 1;
             c.x[13] = 209; site(&c, which); assert(c.x[12] == 8); c.x[13] = 208;
             protection = 1; site(&c, which); assert(c.x[12] == 12); protection = 0;
@@ -82,8 +82,41 @@ int main(void) {
         }
     }
     protection = 0;
-    setting = -1; assert(hos_oot_damage(12, 8) == 8);
-    setting = 4; assert(hos_oot_damage(12, 8) == 8);
+    setting = 0;
+    Ctx lethal = {{0}};
+    lethal.x[9] = 4; lethal.x[11] = 2; lethal.x[12] = 0;
+    lethal.x[19] = 100; lethal.x[13] = 208;
+    site(&lethal, 1); /* Damage site's raw four-unit hit, with only two units left. */
+    assert(lethal.x[12] == 0); /* Half of four is two: still lethal. */
+    /* Test every lethal and nonlethal raw hit, including zero and odd quarters. */
+    for (setting = 0; setting < 4; setting++) {
+        for (uint32_t old = 0; old <= 80; old++) {
+            for (uint32_t hit = 0; hit <= 160; hit++) {
+                uint32_t next = hit >= old ? 0 : old - hit;
+                uint32_t scaled = setting == 0 ? (hit + 1) / 2 : hit * (1u << (setting - 1));
+                uint32_t expected = scaled >= old ? 0 : old - scaled;
+                assert(hos_oot_damage(old, next, hit) == expected);
+                lethal.x[9] = hit; lethal.x[11] = old; lethal.x[12] = next;
+                site(&lethal, 1); assert(lethal.x[12] == expected);
+                assert(lethal.x[9] == hit); /* Hook must not modify the retry's raw hit. */
+                lethal.x[12] = next; /* A failed CAS recomputes next from old and hit. */
+                site(&lethal, 1); assert(lethal.x[12] == expected);
+            }
+        }
+    }
+    setting = 0;
+    lethal.x[9] = UINT32_MAX; lethal.x[11] = 2; lethal.x[12] = 0;
+    site(&lethal, 1); assert(lethal.x[12] == 0);
+    lethal.x[12] = 4; site(&lethal, 0); assert(lethal.x[12] == 4); /* Heal ignores x9. */
+    protection = 1; lethal.x[12] = 0; site(&lethal, 1); assert(lethal.x[12] == 2);
+    protection = 0;
+    /* A failed CAS can supply a different old life, but must not shrink the hit. */
+    lethal.x[9] = 4; lethal.x[11] = 6; lethal.x[12] = 2;
+    site(&lethal, 1); assert(lethal.x[12] == 4 && lethal.x[9] == 4);
+    lethal.x[11] = 2; lethal.x[12] = 0;
+    site(&lethal, 1); assert(lethal.x[12] == 0 && lethal.x[9] == 4);
+    setting = -1; assert(hos_oot_damage(12, 8, 4) == 8);
+    setting = 4; assert(hos_oot_damage(12, 8, 4) == 8);
     puts("PASS: damage arithmetic, lethal/quarter hits, healing, protection, both player guards and option wiring");
 }
 '''

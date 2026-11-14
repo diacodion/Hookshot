@@ -5,7 +5,7 @@
 // and storage images as views of vk_texture.cpp's images, texel buffers), passes kept open while the targets stay,
 // and the draws themselves.
 //
-// Pipelines persist in a VkPipelineCache next to the executable (mkw_vk_pipelines.bin).
+// Pipelines persist in a VkPipelineCache in the game folder's cache/ (hookshot_vk_pipelines.bin).
 #include <algorithm>
 #include <filesystem>
 #include <iterator>
@@ -19,6 +19,7 @@
 #include <deque>
 #include <exception>
 #include <mutex>
+#include <shared_mutex>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -749,14 +750,78 @@ PipelineCacheFile pcache_file_read(const std::string& path) {
 }
 std::string pcache_dir;
 
+// (hookshot) Intel's Windows driver faults in vkGetPipelineCacheData (igvk64.dll+0x79ddf3, an access violation) when it fetches
+// a cache's data while other threads build pipelines with that cache: the game closes with no message
+// (https://github.com/NotRexed/Hookshot/issues/999: the Arc 140V, and 4 runs of 6 on a Core Ultra 7 155H, driver 101.9175).
+// Vulkan allows it; on Intel the fetches and the builds take turns: a build holds this shared, a fetch alone.
+// The fetch holds it around the vkGetPipelineCacheData calls only, never across a file's write nor across a wait for the
+// builds (play_cache_save's wait for a generation's users: a builder counted in there may be between two of its builds, waiting
+// for this lock, and would never count itself out). The background save does not queue behind the builds: it tries a while,
+// then leaves the save to the next one; after kFetchPutOffs saves put off in a row it queues, for a bounded time. With the lock
+// on, the window's close waits a bounded time too: a build stuck in the driver costs the play file, not the close. With it off,
+// every wait is as before (a build on AMD's Windows driver can take 5-13 s: the close waits for it rather than lose the file).
+// RX_VK_PCACHE_FETCH_LOCK=0: off, =1: on any GPU
+std::shared_timed_mutex pcache_fetch_mu;
+bool pcache_fetch_lock_on() {
+    static const bool on = [] {
+        const char* e = getenv("RX_VK_PCACHE_FETCH_LOCK");
+#ifdef _WIN32
+        return e ? env_on("RX_VK_PCACHE_FETCH_LOCK") : dev.props.vendorID == 0x8086;
+#else
+        return e && env_on("RX_VK_PCACHE_FETCH_LOCK");
+#endif
+    }();
+    return on;
+}
+thread_local int pcache_fetch_depth = 0;   // (a fetch inside a fetch on the same thread: pcache_saved_now's save)
+constexpr int kFetchPollMs = 2000;    // (the background save's patience, polled)
+constexpr int kFetchPutOffs = 3;      // (saves put off in a row before the next one queues)
+constexpr int kFetchQueueMs = 10000;  // (how long a queued fetch waits: the window's close, a save put off kFetchPutOffs times)
+/// A fetch of a pipeline cache's data, the builds held off while it lasts (held() says whether it was had).
+/// wait_ms < 0: waits until the builds under way are done. queue: waits in the lock, as a writer (new builds wait behind it), at
+/// most wait_ms; not queue: polled for wait_ms, had only at a moment no build is under way (a writer waiting in the lock would
+/// stall the builds behind it, the replay thread's draw-time asks among them)
+struct PcacheFetch {
+    bool owns = false, outer = true;
+    explicit PcacheFetch(int wait_ms, bool queue = true) {
+        if (!pcache_fetch_lock_on()) return;
+        if (pcache_fetch_depth > 0) {
+            outer = false, pcache_fetch_depth++;
+            return;
+        }
+        if (wait_ms < 0) pcache_fetch_mu.lock(), owns = true;
+        else if (queue) owns = pcache_fetch_mu.try_lock_for(std::chrono::milliseconds(wait_ms));
+        else
+            for (const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(wait_ms);
+                 !(owns = pcache_fetch_mu.try_lock()) && std::chrono::steady_clock::now() < until;)
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        if (owns) pcache_fetch_depth = 1;
+    }
+    ~PcacheFetch() {
+        if (!outer) pcache_fetch_depth--;
+        else if (owns) pcache_fetch_depth = 0, pcache_fetch_mu.unlock();
+    }
+    bool held() const { return !pcache_fetch_lock_on() || !outer || owns; }
+};
+/// A pipeline built with a cache, while no fetch of one is under way (PcacheFetch)
+struct PcacheUse {
+    bool on = false;
+    explicit PcacheUse(VkPipelineCache cache) : on(cache && pcache_fetch_lock_on() && pcache_fetch_depth == 0) {
+        if (on) pcache_fetch_mu.lock_shared();
+    }
+    ~PcacheUse() {
+        if (on) pcache_fetch_mu.unlock_shared();
+    }
+};
+
 // ---- (hookshot) What play makes goes into a cache of its own, one per save ----
 // pcache takes what the start-up builds and is then left as it was read. Every save in play wrote it whole again for what play had
 // added: NVIDIA's driver copies into the cache a pipeline is made with each pipeline it takes from its own disk cache, so a first
 // visit grew it at each new pipeline, and the save every 32 of them wrote 0.5-1.2 GB to add a few MB (497-539 MB written six times
 // in a 4-minute walk, 1.4-3.2 s each, 3 GB in all to keep 42 MB). In play a pipeline goes into the generation's own cache (or comes
-// from pcache, create_cached), and a save writes that generation alone, to mkw_vk_pipelines_play_<n>.bin, while play goes on into
+// from pcache, create_cached), and a save writes that generation alone, to hookshot_vk_pipelines_play_<n>.bin, while play goes on into
 // a new one. The next start merges those files into pcache as it reads it; at kPlayFilesKept of them they are written into
-// mkw_vk_pipelines.bin there, once, and removed. RX_VK_PLAY_CACHE=0: everything into pcache, as before
+// hookshot_vk_pipelines.bin there, once, and removed. RX_VK_PLAY_CACHE=0: everything into pcache, as before
 struct PlayCache {
     VkPipelineCache cache = VK_NULL_HANDLE;
     std::atomic<int> users{0};       // (pipelines being made with it now)
@@ -768,14 +833,22 @@ std::atomic<PlayCache*> play_cache{nullptr};   // (null before play, and without
 uint32_t play_seq = 0;                         // (the highest play file number read or written)
 constexpr size_t kPlayFilesKept = 16;
 std::string play_path(uint32_t n) {
-    return pcache_dir + "mkw_vk_pipelines_play_" + std::to_string(n) + ".bin";
+    return pcache_dir + "hookshot_vk_pipelines_play_" + std::to_string(n) + ".bin";
 }
-/// A cache's data written whole to path, through a .tmp moved over it: its size, 0 when it is not in place
-size_t play_file_write(VkPipelineCache cache, const std::string& path) {
+/// A cache's data written whole to path, through a .tmp moved over it: its size, 0 when it is not in place (also when the
+/// fetch lock was not had within wait_ms, PcacheFetch: the file's write is outside it)
+size_t play_file_write(VkPipelineCache cache, const std::string& path, int wait_ms = -1, bool queue = true) {
     size_t n = 0;
-    if (vkGetPipelineCacheData(dev.device, cache, &n, nullptr) != VK_SUCCESS || !n) return 0;
+    {
+        PcacheFetch fetch(wait_ms, queue);
+        if (!fetch.held() || vkGetPipelineCacheData(dev.device, cache, &n, nullptr) != VK_SUCCESS || !n) return 0;
+    }
     auto data = PipelineCacheFile::writable(path, n);
-    if (data.empty() || vkGetPipelineCacheData(dev.device, cache, &n, data.data()) != VK_SUCCESS) return 0;
+    if (data.empty()) return 0;
+    {   // (a cache grown since its size was asked does not fit: not written, tried again at the next save)
+        PcacheFetch fetch(wait_ms, queue);
+        if (!fetch.held() || vkGetPipelineCacheData(dev.device, cache, &n, data.data()) != VK_SUCCESS) return 0;
+    }
     return data.publish(n) ? n : 0;
 }
 /// (pcache_init, before any other thread has pcache) the play files the last starts wrote, merged into pcache; at kPlayFilesKept
@@ -789,7 +862,7 @@ size_t play_files_merge() {
     VkPipelineCacheCreateInfo tci{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
     if (vkCreatePipelineCache(dev.device, &tci, nullptr, &together) != VK_SUCCESS) together = VK_NULL_HANDLE;
     std::error_code ec;
-    static const std::string pre = "mkw_vk_pipelines_play_", suf = ".bin";
+    static const std::string pre = "hookshot_vk_pipelines_play_", suf = ".bin";
     for (const auto& e : std::filesystem::directory_iterator(pcache_dir, ec)) {
         const std::string name = e.path().filename().string();
         if (name.size() <= pre.size() + suf.size() || name.compare(0, pre.size(), pre) ||
@@ -854,8 +927,12 @@ void play_cache_begin() {
 }
 void predicted_use_log();   // (below, with the predicted pipelines)
 /// (pipeline_cache_save's thread, or the window's close) play's generation taken away once nothing is being made with it, a new one
-/// in its place, and written alone. One not written is kept and tried again at the next save
-void play_cache_save() {
+/// in its place, and written alone. One not written is kept and tried again at the next save. wait_ms and queue: the fetch lock's
+/// (PcacheFetch), which is never held across the wait for a generation's users. With the fetch lock on, a bounded save (the
+/// window's close, the background save's poll) waits for the users that long too: a build stuck in the driver leaves its
+/// generation for a next save, and neither the save nor a close behind it (mu) hangs. With the lock off the users are waited
+/// for as before. The close's worst case: wait_ms for the users, then wait_ms for each of play_file_write's two fetches
+void play_cache_save(int wait_ms = -1, bool queue = true) {
     static std::mutex mu;   // (a save's thread and the window's close, pipeline_cache_close)
     std::lock_guard lk(mu);
     static std::vector<PlayCache*> unsaved;
@@ -869,10 +946,18 @@ void play_cache_save() {
         unsaved.reserve(unsaved.size() + 1);   // (before it is taken away: it cannot then be lost to a failed allocation)
         if (PlayCache* next = play_cache_make()) {
             play_cache.store(next);
-            while (g->users.load()) Sleep(1);
             unsaved.push_back(g);
         }
     }
+    const bool bounded = pcache_fetch_lock_on() && wait_ms >= 0;   // (queue or not: a polled save holds mu too)
+    const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(bounded ? wait_ms : 0);
+    const auto idle = [&](PlayCache* old) {   // (written once nothing is being made with it)
+        while (old->users.load() && (!bounded || std::chrono::steady_clock::now() < until)) Sleep(1);
+        if (!old->users.load()) return true;
+        static std::atomic<int> told{0};
+        if (told++ < 4) logf("vk: pipeline cache: a play file not written yet: a pipeline was still being built in it");
+        return false;
+    };
     if (!session && !unsaved.empty()) {
         VkPipelineCacheCreateInfo ci{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
         if (vkCreatePipelineCache(dev.device, &ci, nullptr, &session) != VK_SUCCESS) session = VK_NULL_HANDLE;
@@ -880,7 +965,7 @@ void play_cache_save() {
     bool grew = false;
     for (auto it = unsaved.begin(); session && it != unsaved.end();) {   // (each generation into the session's cache, then let go)
         PlayCache* old = *it;
-        if (vkMergePipelineCaches(dev.device, session, 1, &old->cache) != VK_SUCCESS) {
+        if (!idle(old) || vkMergePipelineCaches(dev.device, session, 1, &old->cache) != VK_SUCCESS) {
             ++it;
             continue;
         }
@@ -895,17 +980,22 @@ void play_cache_save() {
     }
     if (session && (grew || unwritten)) {   // (one not written stays in the session's cache: written with the next save)
         if (!session_n) session_n = play_seq + 1;
-        const size_t wrote = play_file_write(session, play_path(session_n));
+        const size_t wrote = play_file_write(session, play_path(session_n), wait_ms, queue);
         unwritten = !wrote;
         if (wrote) {
             play_seq = std::max(play_seq, session_n);
             logf("vk: pipeline cache: play file %u saved (%zu KB, %lld pipelines this session)", session_n, wrote >> 10,
                  (long long)session_built);
+            predicted_use_log();
         }
     }
     for (auto it = unsaved.begin(); !session && it != unsaved.end();) {   // (no session cache: a file each, as before)
         PlayCache* old = *it;
-        if (const size_t wrote = play_file_write(old->cache, play_path(play_seq + 1))) {
+        if (!idle(old)) {
+            ++it;
+            continue;
+        }
+        if (const size_t wrote = play_file_write(old->cache, play_path(play_seq + 1), wait_ms, queue)) {
             play_seq++;
             logf("vk: pipeline cache: play file %u saved (%zu KB): %lld pipelines, %lld from the driver's cache, %lld compiled; %lld "
                  "more from the start's cache",
@@ -1005,10 +1095,7 @@ bool pcache_drop_stale() {
     static const bool dropped = [] {
         static const bool by_stamp = [] { const char* e = getenv("RX_VK_PCACHE_STAMP"); return !e || !env_value_off(e); }();
         if (pcache_load_off() || !by_stamp) return false;
-        char exe[MAX_PATH];
-        const DWORD n = game_module_path(exe, MAX_PATH);
-        std::string dir(exe, n);
-        dir = dir.substr(0, dir.find_last_of("\\/") + 1);
+        const std::string dir = cache_path("");   // (where pcache_init keeps them: the game folder's cache/, vk_paths.h)
         const pcache_stamp::Dropped gone = pcache_stamp::check(dir, program_cache_stamp());
         if (gone.files)
             logf("vk: pipeline cache: %zu files made for another translator dropped (%llu MB); it starts empty", gone.files,
@@ -1019,13 +1106,10 @@ bool pcache_drop_stale() {
 }
 void pcache_init() {
     if (pcache) return;
-    char exe[MAX_PATH];
-    const DWORD n = game_module_path(exe, MAX_PATH);
-    std::string dir(exe, n);
-    pcache_dir = dir = dir.substr(0, dir.find_last_of("\\/") + 1);
+    const std::string dir = pcache_dir = cache_path("");   // (the game folder's cache/, with its separator: vk_paths.h)
     if (const size_t removed = PipelineCacheFile::cleanup_temporaries(dir))
         logf("vk: pipeline cache: %zu old temporary files removed", removed);
-    pcache_path = dir + "mkw_vk_pipelines.bin";
+    pcache_path = dir + "hookshot_vk_pipelines.bin";
     const bool off = pcache_load_off();
     pcache_no_save = off;
     pcache_drop_stale();   // (before the files are read)
@@ -1042,6 +1126,7 @@ void pcache_init() {
     if (pcache) play_files_merge();
     // (what it holds as read, the play files too: a save of data that size has nothing to add to the files)
     size_t held = 0;
+    PcacheFetch fetch(-1);
     if (pcache && vkGetPipelineCacheData(dev.device, pcache, &held, nullptr) == VK_SUCCESS) pcache_saved_size = held;
 }
 
@@ -1150,12 +1235,7 @@ int driver_faults_mode() {
     return mode;
 }
 bool driver_faults_on() { return driver_faults_mode() != 0; }
-std::string driver_faults_path() {
-    char exe[MAX_PATH];
-    const DWORD n = game_module_path(exe, MAX_PATH);
-    std::string dir(exe, n);
-    return dir.substr(0, dir.find_last_of("\\/") + 1) + "hookshot_driver_faults.txt";
-}
+std::string driver_faults_path() { return cache_path("hookshot_driver_faults.txt"); }
 driver_faults::Quarantine& fault_quarantine() {
     static driver_faults::Quarantine q;
     static std::once_flag once;
@@ -1294,6 +1374,36 @@ bool gpl_libs_cached() {
     static const bool on = !env_on("RX_VK_GPL_NO_CACHE");
     return on;
 }
+// (hookshot) vkCreateShaderModule has no guard of its own. Translation workers call it, and on Windows their stack into
+// igvk64 is short: an access violation there is not the pipeline guards' "driver faulted compiling" line, and it ends
+// the process. The same answer as those guards: that program is left out.
+#ifdef _WIN32
+__declspec(noinline) VkResult guarded_shader_module(const VkShaderModuleCreateInfo* ci, VkShaderModule* m) {
+    __try {
+        return vkCreateShaderModule(dev.device, ci, nullptr, m);
+    } __except (1) {
+        *m = VK_NULL_HANDLE;   // (whatever the driver wrote before it faulted is not a module)
+        note_driver_fault();
+        logf("vk: the driver faulted creating a shader module (exception %#lx): that program is left out",
+             (unsigned long)GetExceptionCode());
+        return (VkResult)-77;
+    }
+}
+#else
+VkResult guarded_shader_module(const VkShaderModuleCreateInfo* ci, VkShaderModule* m) {
+    install_driver_fault_guard();
+    if (sigsetjmp(fault_jmp, 1) != 0) {
+        *m = VK_NULL_HANDLE;
+        note_driver_fault();
+        logf("vk: the driver faulted creating a shader module: that program is left out");
+        return (VkResult)-77;
+    }
+    fault_armed = 1;
+    const VkResult r = vkCreateShaderModule(dev.device, ci, nullptr, m);
+    fault_armed = 0;
+    return r;
+}
+#endif
 thread_local bool driver_cache_only = false;   // (predict_run's: pipelines for the driver's own cache, not into ours)
 thread_local bool quick_build = false;   // (hookshot: quick_pipeline's, without the driver's optimizer and into no cache)
 thread_local bool gate_busy = false;   // (hookshot: set by build_graphics when the driver-fault gate answered kBusy: quick_pipeline's)
@@ -1314,11 +1424,36 @@ int test_slow_ms() {
 // (with driver_cache_only: the cache handed to the driver instead of none, predicted_check's empty one, as play hands its generation's)
 thread_local VkPipelineCache driver_ask_cache = VK_NULL_HANDLE;
 /// (with the pipeline cache: from it, or in play into the play generation's, create_cached)
+/// (the guards with the cache held from a fetch, PcacheFetch)
+VkResult guarded_graphics_held(VkPipelineCache cache, const VkGraphicsPipelineCreateInfo* ci, VkPipeline* pl) {
+    PcacheUse use(cache);
+    return guarded_graphics(cache, ci, pl);
+}
+VkResult guarded_compute_held(VkPipelineCache cache, const VkComputePipelineCreateInfo* ci, VkPipeline* pl) {
+    PcacheUse use(cache);
+    return guarded_compute(cache, ci, pl);
+}
+bool compiles_nothing(VkPipelineCreateFlags flags) { return (flags & VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT) != 0; }
+/// (hookshot) Windows Intel: an ask, or a dispatch's module, left to a worker because another thread held Intel's compiler gate
+/// (IntelDriverGate: a worker's compile). There is no lookup of the driver's cache or ours that does not enter the driver, so
+/// the pipeline may be in a cache all the same: its draw or dispatch is left out, as a cold one is, until a worker has made it.
+/// Counted and logged (the first 8, then at each power of two), so the Intel runs show how often it happens
+std::atomic<int64_t> st_intel_gate_busy{0};
+VkResult intel_gate_busy() {
+    const int64_t n = ++st_intel_gate_busy;
+    if (n <= 8 || (n & (n - 1)) == 0)
+        logf("vk: asked cold: Intel's gate busy (a worker compiles); left to a worker, %lld so far", (long long)n);
+    return VK_PIPELINE_COMPILE_REQUIRED;
+}
 VkResult cached_graphics(const VkGraphicsPipelineCreateInfo* ci, VkPipeline* pl) {
-    return create_cached(guarded_graphics, ci, pl);
+    IntelDriverGate gate(compiles_nothing(ci->flags));
+    if (gate.busy) return intel_gate_busy();
+    return create_cached(guarded_graphics_held, ci, pl);
 }
 VkResult cached_compute(const VkComputePipelineCreateInfo* ci, VkPipeline* pl) {
-    return create_cached(guarded_compute, ci, pl);
+    IntelDriverGate gate(compiles_nothing(ci->flags));
+    if (gate.busy) return intel_gate_busy();
+    return create_cached(guarded_compute_held, ci, pl);
 }
 /// (hookshot) What a compute program's pipeline is made from: its one stage, pinned to 32 lanes where the GPU can, and its
 /// layout (ensure_layout first). noopt: RX_VK_NOOPT is followed, as play's builds follow it (the precompile's do not)
@@ -1345,7 +1480,10 @@ VkPipeline compute_pipeline_cached(const Program& q, bool noopt) {
 }
 /// (a graphics pipeline made with the cache chosen for it: pcache through the play caches, another or none as it is)
 VkResult graphics_with(VkPipelineCache cache, const VkGraphicsPipelineCreateInfo* ci, VkPipeline* pl) {
-    return cache && cache == pcache ? cached_graphics(ci, pl) : guarded_graphics(cache, ci, pl);
+    if (cache && cache == pcache) return cached_graphics(ci, pl);
+    IntelDriverGate gate(compiles_nothing(ci->flags));
+    if (gate.busy) return intel_gate_busy();
+    return guarded_graphics_held(cache, ci, pl);
 }
 
 /// A target's write mask: the state's channel mask, nothing for a target the fragment shader leaves unwritten
@@ -1381,18 +1519,13 @@ uint64_t program_wm_sig(const Program& p) {
 
 // ---- (hookshot) The precompile, as TotK Recomp's (runtime/vk_pipeline.c vk_pipeline_prewarm, keys in pipeline-keys.bin): each
 // pipeline the game asks for is noted in hookshot_pipelines.bin, by what built it; a release build, before the game starts,
-// makes every kept program ready and builds every noted pipeline on all the CPUs (the driver's own cache, mkw_vk_pipelines.bin,
+// makes every kept program ready and builds every noted pipeline on all the CPUs (the driver's own cache, hookshot_vk_pipelines.bin,
 // makes that quick), so that nothing is built during play. RX_VK_PRECOMPILE=1: in any build; =0: off. A build with
 // RX_RELEASE=1 (nx2/build.py) has it on. The notes are written in every build ----
 std::mutex note_mu;
 FILE* note_file = nullptr;
 std::unordered_set<uint64_t> noted;   // (a pipeline once in the file, however many runs meet it)
-std::string pipe_notes_path() {
-    char exe[MAX_PATH];
-    const DWORD n = game_module_path(exe, MAX_PATH);
-    std::string dir(exe, n);
-    return dir.substr(0, dir.find_last_of("\\/") + 1) + "hookshot_pipelines.bin";
-}
+std::string pipe_notes_path() { return cache_path("hookshot_pipelines.bin"); }
 /// (hookshot) hookshot_pipelines.bin.built: a precompile that got to its end built every note there was into the pipeline cache
 /// (its stamp, and how many). RX_VK_LOAD=create loads pipelines from the caches alone, and only once this says they are there.
 /// What adds notes without building them (state_list_prepare) removes it; a note play adds was built by play, into its cache
@@ -1546,12 +1679,7 @@ constexpr char kComputesMagic[8] = {'H', 'K', 'C', 'O', 'M', 'P', '1', 0};
 std::mutex compute_note_mu;
 FILE* compute_note_file = nullptr;
 std::unordered_set<uint64_t> computes_noted;
-std::string computes_path() {
-    char exe[MAX_PATH];
-    const DWORD n = game_module_path(exe, MAX_PATH);
-    std::string dir(exe, n);
-    return dir.substr(0, dir.find_last_of("\\/") + 1) + "hookshot_computes.bin";
-}
+std::string computes_path() { return cache_path("hookshot_computes.bin"); }
 std::unordered_set<uint64_t> computes_read() {
     std::unordered_set<uint64_t> keys;
     if (FILE* f = fopen(computes_path().c_str(), "rb")) {
@@ -1675,10 +1803,8 @@ struct StateRec2 {
 };
 static_assert(sizeof(StateRec2) == 552 && std::is_trivially_copyable_v<StateRec2>, "the state list's record is a file format");
 std::string state_list_path(const char* name) {
-    char exe[MAX_PATH];
-    const DWORD n = game_module_path(exe, MAX_PATH);
-    std::string dir(exe, n);
-    return dir.substr(0, dir.find_last_of("\\/") + 1) + name;
+    // (the shipped list is the build's, beside the game; the ones play adds to are this PC's, in the game folder's cache/)
+    return strstr(name, "_shipped") ? game_folder_path() + name : cache_path(name);
 }
 template <class R>
 uint64_t state_hash(const R& r) {
@@ -2171,7 +2297,8 @@ VkPipeline gpl_link(const Program& p, const NvnState& s, const Targets& at, VkPr
     ci.pNext = &li;
     ci.layout = p.layout;
     VkPipeline pl = VK_NULL_HANDLE;
-    if (vkCreateGraphicsPipelines(dev.device, VK_NULL_HANDLE, 1, &ci, nullptr, &pl) != VK_SUCCESS) return VK_NULL_HANDLE;
+    IntelDriverGate gate;
+    if (guarded_graphics(VK_NULL_HANDLE, &ci, &pl) != VK_SUCCESS) return VK_NULL_HANDLE;
     return pl;
 }
 
@@ -4032,7 +4159,7 @@ TLS_OBJECT(pushed, std::array<Pushed, 2>)   // [graphics, compute]
 } // namespace
 std::string state_list_snapshot(bool* present) { return state_list_bytes(present); }   // (vk_draw.h: the menu's)
 /// (hookshot) A compute pipeline of the back end's own, made elsewhere (vk_fsr3.cpp), through the pipeline cache the game's are kept
-/// in across runs (mkw_vk_pipelines.bin), as theirs are: in play through the play caches (create_cached), so that it does not grow
+/// in across runs (hookshot_vk_pipelines.bin), as theirs are: in play through the play caches (create_cached), so that it does not grow
 /// the start's cache; before the cache is loaded, with none. (Outside the unnamed namespace: vk_fsr3.cpp links to it)
 VkResult shared_compute_pipeline(const VkComputePipelineCreateInfo* ci, VkPipeline* out) {
     return cached_compute(ci, out);
@@ -4040,6 +4167,27 @@ VkResult shared_compute_pipeline(const VkComputePipelineCreateInfo* ci, VkPipeli
 /// (hookshot) The driver faults the pipeline compiles caught so far (guarded_graphics, guarded_compute): the preparation's
 /// watchdog says so (vk_main.cpp). Outside the unnamed namespace: vk_main.cpp links to it
 int driver_faults() { return st_driver_faults.load(std::memory_order_relaxed); }
+/// (hookshot) The guarded driver calls, for vk_shader.cpp and vk_temporal.cpp. Declaring guarded_* itself in the header
+/// is a second function (the definitions sit in the unnamed namespace) and every call in this file is ambiguous.
+VkResult extern_guarded_graphics(VkPipelineCache cache, const VkGraphicsPipelineCreateInfo* ci, VkPipeline* pl) {
+    return guarded_graphics(cache, ci, pl);
+}
+VkResult extern_guarded_compute(VkPipelineCache cache, const VkComputePipelineCreateInfo* ci, VkPipeline* pl) {
+    return guarded_compute(cache, ci, pl);
+}
+VkResult extern_guarded_shader_module(const VkShaderModuleCreateInfo* ci, VkShaderModule* m) {
+    return guarded_shader_module(ci, m);
+}
+/// (hookshot) A program whose shader module the driver faulted on (vk_shader.cpp make_module) is kept out as one whose pipeline
+/// it faulted on: not asked of it again in this run, nor in later runs on the same driver (driver_faults.h)
+bool driver_faulted_program(uint64_t key) { return key && driver_faults_on() && fault_quarantine().contains(key); }
+void driver_faulted_module(uint64_t key) {
+    if (!key || !driver_faults_on() || fault_quarantine().contains(key)) return;
+    fault_quarantine().load({key});
+    logf("vk: the driver faulted making a shader module of %016llx: that program is not asked of it again (%s)",
+         (unsigned long long)key, driver_faults_path().c_str());
+    driver_fault_note(key);
+}
 /// (hookshot) Whether predict_run or precompile_run went on and left workers inside the driver: the pipeline cache's save can wait
 /// on them, and so can exit() unloading the driver (vk_main.cpp, the --prepare-shaders run)
 std::atomic<bool> st_left_workers{false};
@@ -4993,11 +5141,15 @@ VkPipeline clear_pipeline(const Targets& at, int index, uint32_t mask, int kind)
     const std::vector<uint32_t> frag = spirv_location(fw, fn, (uint32_t)index);
     VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
     VkShaderModule vm = VK_NULL_HANDLE, fm = VK_NULL_HANDLE;
-    mi.codeSize = sizeof CLEAR_VERT_SPV, mi.pCode = CLEAR_VERT_SPV;
-    const VkResult vr = vkCreateShaderModule(dev.device, &mi, nullptr, &vm);
-    if (vr != VK_SUCCESS || !vm) return fail("vertex module", vr);
-    mi.codeSize = frag.size() * 4, mi.pCode = frag.data();
-    const VkResult fr = vkCreateShaderModule(dev.device, &mi, nullptr, &fm);
+    VkResult vr = VK_ERROR_UNKNOWN, fr = VK_ERROR_UNKNOWN;
+    {
+        IntelDriverGate gate;   // (released before cached_graphics, which takes the same lock)
+        mi.codeSize = sizeof CLEAR_VERT_SPV, mi.pCode = CLEAR_VERT_SPV;
+        vr = guarded_shader_module(&mi, &vm);
+        if (vr != VK_SUCCESS || !vm) return fail("vertex module", vr);
+        mi.codeSize = frag.size() * 4, mi.pCode = frag.data();
+        fr = guarded_shader_module(&mi, &fm);
+    }
     if (fr != VK_SUCCESS || !fm) {
         vkDestroyShaderModule(dev.device, vm, nullptr);
         return fail("fragment module", fr);
@@ -5260,8 +5412,11 @@ void draw_begin_recording(int slot, VkCommandBuffer cmd, uint64_t value) {
     if (!r.pool) {
         r.pool = make_pool();
     } else {
-        vkResetDescriptorPool(dev.device, r.pool, 0);
-        for (VkDescriptorPool p : r.extra) vkDestroyDescriptorPool(dev.device, p, nullptr);
+        {
+            rec::OwnSlot own;   // (RX_VK_RECORDER_OWN: the slot's own pools, vk_recorder.h; begin_recording's slot_begin)
+            vkResetDescriptorPool(dev.device, r.pool, 0);
+            for (VkDescriptorPool p : r.extra) vkDestroyDescriptorPool(dev.device, p, nullptr);
+        }
         r.extra.clear();
         // (the streams the last recording of the slot grew into: given back after 120 recordings that stayed in the first, the
         // slot's last one being done (recording_wait). RX_VK_STREAM_KEEP=1: kept)
@@ -6958,11 +7113,12 @@ void mask_stabilize(VkCommandBuffer cmd, Texture* tex, uint32_t level, uint32_t 
         VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
         mi.codeSize = sizeof SHADOW_STAB_COMP_SPV, mi.pCode = SHADOW_STAB_COMP_SPV;
         VkShaderModule m{};
-        vkCreateShaderModule(dev.device, &mi, nullptr, &m);
+        IntelDriverGate gate;
+        if (guarded_shader_module(&mi, &m) != VK_SUCCESS) m = VK_NULL_HANDLE;
         VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
         ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, m, "main", nullptr};
         ci.layout = layout;
-        if (vkCreateComputePipelines(dev.device, VK_NULL_HANDLE, 1, &ci, nullptr, &pipe) != VK_SUCCESS) pipe = VK_NULL_HANDLE;
+        if (!m || guarded_compute(VK_NULL_HANDLE, &ci, &pipe) != VK_SUCCESS) pipe = VK_NULL_HANDLE;
         vkDestroyShaderModule(dev.device, m, nullptr);
         logf("vk: tree-shadow mask blend %s", pipe ? "ready" : "not made");
     }
@@ -7928,11 +8084,12 @@ bool movie_upscale(VkCommandBuffer cmd, uint32_t in_handle, uint32_t out_handle,
         VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
         mi.codeSize = sizeof MOVIE_UPSCALE_COMP_SPV, mi.pCode = MOVIE_UPSCALE_COMP_SPV;
         VkShaderModule m{};
-        vkCreateShaderModule(dev.device, &mi, nullptr, &m);
+        IntelDriverGate gate;
+        if (guarded_shader_module(&mi, &m) != VK_SUCCESS) m = VK_NULL_HANDLE;
         VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
         ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, m, "main", nullptr};
         ci.layout = layout;
-        if (vkCreateComputePipelines(dev.device, VK_NULL_HANDLE, 1, &ci, nullptr, &pipe) != VK_SUCCESS) pipe = VK_NULL_HANDLE;
+        if (!m || guarded_compute(VK_NULL_HANDLE, &ci, &pipe) != VK_SUCCESS) pipe = VK_NULL_HANDLE;
         vkDestroyShaderModule(dev.device, m, nullptr);
         VkSamplerCreateInfo si{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
         si.magFilter = si.minFilter = VK_FILTER_LINEAR;
@@ -8156,11 +8313,12 @@ static bool typed_upscale(VkCommandBuffer cmd, VkImageView input_view, VkImageVi
         VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
         mi.codeSize = sizeof TAAU_UPSCALE_COMP_SPV, mi.pCode = TAAU_UPSCALE_COMP_SPV;
         VkShaderModule m{};
-        vkCreateShaderModule(dev.device, &mi, nullptr, &m);
+        IntelDriverGate gate;
+        if (guarded_shader_module(&mi, &m) != VK_SUCCESS) m = VK_NULL_HANDLE;
         VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
         ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, m, "main", nullptr};
         ci.layout = layout;
-        if (vkCreateComputePipelines(dev.device, VK_NULL_HANDLE, 1, &ci, nullptr, &pipe) != VK_SUCCESS) pipe = VK_NULL_HANDLE;
+        if (!m || guarded_compute(VK_NULL_HANDLE, &ci, &pipe) != VK_SUCCESS) pipe = VK_NULL_HANDLE;
         vkDestroyShaderModule(dev.device, m, nullptr);
         VkSamplerCreateInfo si{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
         si.magFilter = si.minFilter = VK_FILTER_LINEAR;
@@ -8384,12 +8542,7 @@ std::atomic<bool> prepare_halt{false};
 }
 void prepare_stop() { prepare_halt.store(true); }
 bool prepare_stopped() { return prepare_halt.load(std::memory_order_relaxed); }
-std::string prepared_path() {
-    char exe[MAX_PATH];
-    const DWORD exe_n = game_module_path(exe, MAX_PATH);
-    std::string path(exe, exe_n);
-    return path.substr(0, path.find_last_of("\\/") + 1) + "hookshot_prepared.bin";
-}
+std::string prepared_path() { return cache_path("hookshot_prepared.bin"); }
 // (hookshot) What the last prepare here was made for, in hookshot_prepared.bin: the translator (program_cache_stamp), and since the
 // seed grows apart from it (4221050d: networks, the movie upscaler, the particle sets, 19 compute programs more) the seed it went
 // through (hookshot_shaders.bin), by a hash of its contents. By the translator alone, a folder prepared before such an update never
@@ -8560,7 +8713,11 @@ bool prepare_is_update() {
 /// before the stamp says they are: a start that ended before the save would otherwise find them cold for good)
 bool pcache_saved_now() {
     size_t before = 0;
-    if (!pcache || vkGetPipelineCacheData(dev.device, pcache, &before, nullptr) != VK_SUCCESS) return false;
+    if (!pcache) return false;
+    {
+        PcacheFetch fetch(-1);
+        if (vkGetPipelineCacheData(dev.device, pcache, &before, nullptr) != VK_SUCCESS) return false;
+    }
     pipeline_cache_save(true);
     std::error_code ec;
     const auto size = std::filesystem::file_size(pcache_path, ec);
@@ -8740,9 +8897,10 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background, b
         ci.layout = p.layout;
         if (env_on("RX_VK_NOOPT")) ci.flags |= VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT;
         VkPipeline pl = VK_NULL_HANDLE;
-        // (into the app's pipeline cache, saved to mkw_vk_pipelines.bin: without it the next start compiled them again in play
+        // (into the app's pipeline cache, saved to hookshot_vk_pipelines.bin: without it the next start compiled them again in play
         // where the driver's own cache missed them, AMD's 15 s culling compiles each time)
-        if (guarded_compute(pcache, &ci, &pl) == VK_SUCCESS && pl) {
+        IntelDriverGate gate;
+        if (guarded_compute_held(pcache, &ci, &pl) == VK_SUCCESS && pl) {
             vkDestroyPipeline(dev.device, pl, nullptr);
             libs++;
             pcache_built_since_save++;
@@ -9230,7 +9388,7 @@ void precompile_run(void (*progress)(size_t done, size_t total)) {
 }
 
 // (hookshot) The pipelines the notes predict for the programs no note names (vk_predict.cpp), after a prepare that prepared: each built
-// once for the driver's own cache and let go. Not into ours (mkw_vk_pipelines.bin, read whole at every start: ~40000 more pipelines made
+// once for the driver's own cache and let go. Not into ours (hookshot_vk_pipelines.bin, read whole at every start: ~40000 more pipelines made
 // it 1.7 GB), nor kept: each program is borrowed from hookshot_programs.bin for its pipelines and let go
 /// (hookshot) The preparation's three parts as the files on disk count them before it runs: PrepareBar's guesses, so that the bar
 /// has every part in its total from the start. The seed's programs (its header); the pipelines the notes will predict, about one and
@@ -9761,9 +9919,17 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
     if (!compute_wait && !p.compute_pipeline && !taau_key(p.key) && p.compute_state.load(std::memory_order_acquire) != 2) {
         int none = 0;
         // (a program read from the cache without its code, vk_progcache.cpp: its module made now, by the dispatch that starts its
-        // pipeline. One whose code does not read is failed, and left out below)
+        // pipeline. One whose code does not read is failed, and left out below. On Windows Intel the compiler's gate is only
+        // tried for it (program_cache_complete_ask, IntelDriverGate): free, the module is made here and the pipeline asked of
+        // the caches below, as on other GPUs; held by a worker's compile, both are left to the worker (on_worker) rather than
+        // waited for here. Its code is looked at once the CAS is won, under the cache's lock: before that, a worker started by
+        // another dispatch may be clearing it, complete_from)
+        bool on_worker = false;
         const bool fresh = p.compute_state.compare_exchange_strong(none, 1) &&
-                           (program_cache_complete(p) || (p.compute_state.store(2, std::memory_order_release), false));
+                           (program_cache_complete_ask(p, &on_worker) || on_worker ||
+                            (p.compute_state.store(2, std::memory_order_release), false));
+        if (on_worker) intel_gate_busy();
+        std::shared_ptr<std::atomic<uint8_t>> made_how;   // (on_worker: how the worker made it, for the census)
         if (fresh) {
             { ParLock lk; pcache_init(); }
             const Program* job = &p;
@@ -9772,9 +9938,26 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
                                                                      : dev.props.vendorID == 0x8086;
             // (one the prepare left in our cache is only asked for here: it comes back at once. Queued, it waited for a worker
             // behind their graphics builds, and its dispatch was left out)
-            const VkPipeline cached = compute_pipeline_cached(p, true);
-            auto build = [job] {
+            const VkPipeline cached = on_worker ? VK_NULL_HANDLE : compute_pipeline_cached(p, true);
+            if (on_worker) made_how = std::make_shared<std::atomic<uint8_t>>(0);
+            auto build = [job, on_worker, made_how] {
                 Program& q = const_cast<Program&>(*job);
+                use_counters.made_how = 0;
+                if (on_worker) {
+                    if (!program_cache_complete(q)) {
+                        q.failed = true;
+                        q.compute_state.store(2, std::memory_order_release);
+                        return;
+                    }
+                    if (const VkPipeline c = compute_pipeline_cached(q, true)) {
+                        q.compute_pipeline = c;
+                        st_pipelines++;
+                        // (from a cache: the play caches say which, create_cached; before play, the start's, as below)
+                        made_how->store(use_counters.made_how ? use_counters.made_how : 2, std::memory_order_relaxed);
+                        q.compute_state.store(2, std::memory_order_release);
+                        return;
+                    }
+                }
                 VkComputePipelineCreateInfo ci = compute_pipeline_info(q, true);
                 const auto t0 = std::chrono::steady_clock::now();
                 static const bool trace = env_on("RX_VK_PIPELINE_TRACE");
@@ -9792,9 +9975,12 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
                 st_pipeline_us += ms * 1000;
                 st_pipelines++;
                 pcache_built_since_save++;
+                if (made_how) made_how->store(use_counters.made_how ? use_counters.made_how : 3, std::memory_order_relaxed);
                 q.compute_state.store(2, std::memory_order_release);
             };
-            if (use.on) use.pipeline(false, true), use.pipeline_made(cached ? 2 : 3);   // (from a cache, or compiled on a worker)
+            // (from a cache, or compiled on a worker; on_worker: as the worker made it, once it has, below)
+            if (use.on) use.pipeline(false, true);
+            if (use.on && !on_worker) use.pipeline_made(cached ? 2 : 3);
             if (cached) {
                 p.compute_pipeline = cached;
                 st_pipelines++;
@@ -9816,6 +10002,8 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
         while (fresh && p.compute_state.load(std::memory_order_acquire) != 2 &&
                std::chrono::steady_clock::now() - t0 < std::chrono::milliseconds(50))
             std::this_thread::sleep_for(std::chrono::microseconds(200));
+        if (use.on && made_how && p.compute_state.load(std::memory_order_acquire) == 2)
+            use.pipeline_made(made_how->load(std::memory_order_relaxed));
         if (p.compute_state.load(std::memory_order_acquire) != 2) {
             static std::atomic<int> told{0};
             if (told++ < 40) logf_at(log_debug, "vk: dispatch of %016llx left out: its compute pipeline is still compiling", (unsigned long long)p.key);
@@ -10263,8 +10451,8 @@ std::string load_fallback_path() {
 void program_layout(Program& p) { ensure_layout(p); }
 std::vector<std::pair<uint64_t, uint64_t>> compute_variants_learned() { return compute_variants_read(); }
 void pipeline_cache_close() {
-    try {
-        if (play_cache.load()) play_cache_save();
+    try {   // (with the fetch lock on, bounded: a build stuck in the driver costs the play file, not the close)
+        if (play_cache.load()) play_cache_save(kFetchQueueMs);
     } catch (const std::exception& e) {
         logf("vk: pipeline cache save failed: %s", e.what());
     }
@@ -10281,7 +10469,7 @@ void pipeline_cache_save_play() {
 
 void pipeline_cache_save(bool force) {
     if (!pcache || pcache_no_save || (!force && pcache_built_since_save < 32)) return;
-    pcache_built_since_save = 0;
+    const int64_t built = pcache_built_since_save.exchange(0);
     // (on a thread of its own unless forced, at exit: ~100 MB fetched and written took the replay thread 100+ ms at
     // each scene change; the cache is internally synchronized, pipelines go on being built meanwhile)
     static std::atomic<bool> busy{false};
@@ -10290,8 +10478,20 @@ void pipeline_cache_save(bool force) {
         while (busy.load()) Sleep(1);   // (the one under way, then this one)
         busy = true;
     }
-    auto save = [force] {
+    auto save = [force, built] {
         struct Done { ~Done() { busy = false; } } done;
+        // (Intel: no build under way while the caches' data is fetched, PcacheFetch, the lock held around each fetch alone. A
+        // forced save waits for the builds; the background one polls, and is put off when builds ran throughout; after
+        // kFetchPutOffs of those in a row it queues for kFetchQueueMs, so a stretch of back-to-back builds cannot put it off for good)
+        static std::atomic<int> put_off{0};
+        const bool queue = force || put_off.load() >= kFetchPutOffs;
+        const int wait_ms = force ? -1 : queue ? kFetchQueueMs : kFetchPollMs;
+        bool had = true;
+        auto fetch = [&](size_t* n, void* data) {
+            PcacheFetch lock(wait_ms, queue);
+            had = lock.held();
+            return had && vkGetPipelineCacheData(dev.device, pcache, n, data) == VK_SUCCESS;
+        };
         try {
             size_t n = 0;
             // (the size last read or written: nothing new, not fetched nor written again; see pcache_saved_size)
@@ -10301,7 +10501,14 @@ void pipeline_cache_save(bool force) {
             // so a folder prepared before the warm pass keeps its libraries through a crash. The window's close does not write it
             // (pipeline_cache_close saves the generation only); a forced save does: Restart now, the prepare. RX_VK_PLAY_SAVE_START_MB=<n>: the growth it is written at in play (64; 0: any, as before))
             static const size_t play_grown = (size_t)(getenv("RX_VK_PLAY_SAVE_START_MB") ? std::max<long long>(0, atoll(getenv("RX_VK_PLAY_SAVE_START_MB"))) : 64) << 20;
-            bool write = vkGetPipelineCacheData(dev.device, pcache, &n, nullptr) == VK_SUCCESS && n && n != pcache_saved_size;
+            const auto put_off_now = [&] {
+                const int times = ++put_off;
+                if (times <= 4 || times % 16 == 0)
+                    logf("vk: pipeline cache save put off (%d in a row): pipelines were being built throughout", times);
+                pcache_built_since_save += built;   // (still to save: the next request writes them, not only after 32 more)
+            };
+            bool write = fetch(&n, nullptr) && n && n != pcache_saved_size;
+            if (!had) return put_off_now();
             if (write && !force && play_grown && play_cache_in_use() && n < pcache_saved_size + play_grown) {
                 write = false;
                 static std::atomic<int> told{0};
@@ -10311,16 +10518,19 @@ void pipeline_cache_save(bool force) {
             }
             if (write) {
                 auto data = PipelineCacheFile::writable(pcache_path, n);
-                if (!data.empty() && vkGetPipelineCacheData(dev.device, pcache, &n, data.data()) == VK_SUCCESS && data.publish(n)) {
+                if (!data.empty() && fetch(&n, data.data()) && data.publish(n)) {
                     pcache_saved_size = n;
                     logf("vk: pipeline cache saved (%zu KB)", n >> 10);
+                } else if (!had) {
+                    return put_off_now();   // (the size had, the data not: put off as well, not lost)
                 }
             }
+            put_off = 0;
         } catch (const std::exception& e) {
             logf("vk: pipeline cache save failed: %s", e.what());
         }
         try {
-            play_cache_save();   // (what play made since the last save, alone)
+            play_cache_save(wait_ms, queue);   // (what play made since the last save, alone)
         } catch (const std::exception& e) {
             logf("vk: pipeline cache save failed: %s", e.what());
         }

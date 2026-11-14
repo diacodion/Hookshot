@@ -30,7 +30,7 @@ constexpr int kWhere = 6;   // (left for the player to fill in)
 inline long long check_list(const std::string& bytes, bool present, std::string* why) {
     auto no = [&](const std::string& text) { return *why = text, -1LL; };
     if (!present)
-        return no(std::string("No pipeline list yet: ") + kListName + " is not in the game folder. The game writes it as you play: "
+        return no(std::string("No pipeline list yet: ") + kListName + " is not in the game folder's cache folder. The game writes it as you play: "
                   "play a while, then save it again.");
     uint32_t size = 0;
     if (bytes.size() >= 12) std::memcpy(&size, bytes.data() + 8, 4);

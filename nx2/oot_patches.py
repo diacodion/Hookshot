@@ -90,10 +90,14 @@ def patch_life(source):
     guard = ("    if ((uint32_t)c->x[12] < (uint32_t)c->x[11] &&\n"
              "        hos_oot_is_player(c, c->x[19]) &&\n"
              "        c->x[13] == recomp_load64(c,c->x[19] + 7184) + 8)\n"
-             "        c->x[12] = hos_oot_damage((uint32_t)c->x[11], (uint32_t)c->x[12]);\n")
-    body = source[start:end].replace(LIFE_CAS, guard + LIFE_CAS)
+             "        c->x[12] = hos_oot_damage((uint32_t)c->x[11], (uint32_t)c->x[12], {hit});\n")
+    # The first CAS is damage: x9 still holds the full hit, before life was clamped.
+    # The second is healing: x9 has another meaning there; keep its guarded delta.
+    sites = source[start:end].split(LIFE_CAS)
+    body = (sites[0] + guard.replace("{hit}", "(uint32_t)c->x[9]") + LIFE_CAS + sites[1] +
+            guard.replace("{hit}", "(uint32_t)c->x[11] - (uint32_t)c->x[12]") + LIFE_CAS + sites[2])
     return (source[:start] + body + source[end:]).replace(
-        '#include "a64.h"\n', '#include "a64.h"\nextern uint32_t hos_oot_damage(uint32_t old, uint32_t next);\n'
+        '#include "a64.h"\n', '#include "a64.h"\nextern uint32_t hos_oot_damage(uint32_t old, uint32_t next, uint32_t hit);\n'
         'extern int hos_oot_is_player(Ctx *c, uint64_t actor);\n', 1)
 
 
