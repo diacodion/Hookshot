@@ -55,6 +55,7 @@
 #include "hookshot_env.h"
 #endif
 #include "vk_programs.h"
+#include "readback_late.h"
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 
 namespace mkwvk {
@@ -2884,6 +2885,64 @@ bool readback_wait_value(uint64_t v) {
              (unsigned long long)q_values.load());
     return false;
 }
+/// (hookshot) RX_VK_READBACK_LATE (readback_late.h): whether a readback of that size, written by the newest submission or
+/// not, is read without its wait. Off unless the switch is set
+bool readback_late_wanted(uint64_t size, bool newest) {
+    static const readback_late::Rules rules = [] {
+        const char* e = getenv("RX_VK_READBACK_LATE");
+        const readback_late::Rules r = readback_late::parse(e);
+        if (r.any()) logf("vk: readbacks read without their wait: RX_VK_READBACK_LATE=%s (newest %d, %d sizes)", e, (int)r.newest, (int)r.sizes.size());
+        return r;
+    }();
+    return readback_late::wanted(rules, size, newest);
+}
+/// (hookshot) RX_VK_LOG_READBACK_RANGES=1: the readbacks by range, in the log every 3000 calls: how many waited and for how
+/// long, how many had the newest submission as their writer, how many were read without their wait (RX_VK_READBACK_LATE).
+/// How the ranges worth a rule are found on a given PC
+struct RbRange {
+    uint64_t gpu, size;
+    int64_t calls, waits, ns, newest, late;
+};
+std::mutex rb_ranges_mu;
+std::vector<RbRange> rb_ranges;
+void rb_range_note(uint64_t gpu, uint64_t size, bool waited, int64_t ns, bool newest, bool late) {
+    std::lock_guard lk(rb_ranges_mu);
+    for (auto& r : rb_ranges)
+        if (r.gpu == gpu && r.size == size) {
+            r.calls++;
+            r.waits += waited;
+            r.ns += ns;
+            r.newest += newest;
+            r.late += late;
+            return;
+        }
+    if (rb_ranges.size() < 256) rb_ranges.push_back({gpu, size, 1, waited, ns, newest, late});
+}
+void rb_ranges_log() {
+    static std::atomic<int> logged{0};
+    std::vector<RbRange> top;
+    {
+        std::lock_guard lk(rb_ranges_mu);
+        top = rb_ranges;
+        rb_ranges.clear();
+    }
+    if (logged++ >= 400) return;
+    std::sort(top.begin(), top.end(), [](const RbRange& a, const RbRange& b) {
+        return a.ns + a.late * 5000000 > b.ns + b.late * 5000000;
+    });
+    int64_t late = 0;
+    for (const auto& r : top) late += r.late;
+    std::string s;
+    for (size_t i = 0; i < top.size() && i < 8; i++) {
+        char b[200];
+        snprintf(b, sizeof b, " | %#llx +%#llx: %lld calls, %lld waited %.1f ms, %lld newest, %lld late",
+                 (unsigned long long)top[i].gpu, (unsigned long long)top[i].size, (long long)top[i].calls,
+                 (long long)top[i].waits, top[i].ns / 1e6, (long long)top[i].newest, (long long)top[i].late);
+        s += b;
+    }
+    logf("vk: readback ranges at present %lld: %d ranges, %lld read late%s", (long long)presents_now, (int)top.size(),
+         (long long)late, s.c_str());
+}
 void invalidate(uint64_t gpu, uint64_t size) {
     static const bool log_inv = env_on("RX_VK_LOG_INVALIDATE");
     static std::atomic<int> logged{0};
@@ -2965,7 +3024,9 @@ void invalidate(uint64_t gpu, uint64_t size) {
                 if (!part_rec.empty()) l_sent = part_rec.rbegin()->second;
                 vkGetSemaphoreCounterValue(dev.device, rec_timeline, &l_done);
             }
-            if (v > completed()) {
+            const bool pending = v > completed(), newest = pending && v >= f0;
+            const bool late = pending && readback_late_wanted(size, newest);   // (RX_VK_READBACK_LATE: read without its wait)
+            if (pending && !late) {
                 int ok = 0;
                 // (and not when a part after it reads guest memory in place, on a card whose pools are not all mirrored
                 // or whose mirrors take pages no capture holds: the game, let go after the first part, would write what
@@ -2993,7 +3054,13 @@ void invalidate(uint64_t gpu, uint64_t size) {
                          (unsigned long long)f0, (unsigned long long)c0, (int)behind0, (unsigned long long)l_part,
                          (unsigned long long)l_last, (unsigned long long)whole, (unsigned long long)l_sent, (unsigned long long)l_done);
             }
+            static const bool log_ranges = env_on("RX_VK_LOG_READBACK_RANGES");
+            if (log_ranges)
+                rb_range_note(gpu, size, w,
+                              w ? std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - w0).count() : 0,
+                              newest, late);
             if (++calls % 3000 == 0) {
+                if (log_ranges) rb_ranges_log();
                 const int64_t n = waited.exchange(0);
                 logf("vk: readbacks of GPU results: %lld of 3000 waited for their write-back, %.2f ms each; %lld looked at the "
                      "stopped queues first, %lld waited for their submission's last part (guest memory read in place after theirs)",
