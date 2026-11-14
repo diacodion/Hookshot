@@ -622,8 +622,11 @@ The other rows are 0 Off and 1 On. Some are read at the start, before the menu e
 (`gpu/vk/vk_main.cpp`) and the controls (`host/nn_hid.c`).
 
 `HOS_CONTROL=<socket path>` turns on the control bridge: a local socket a tool or coding agent drives the running game
-through (inputs timed in frames, screenshots, waits for the game's state, the Insert menu's settings, quit), with
-`scripts/hookshot_ctl.py` as its client. Off unless set; see [control.md](control.md).
+through (inputs timed in frames, screenshots, waits, the Insert menu's settings, quit), with `scripts/hookshot_ctl.py`
+as its client. `status.game` holds Link's position/facing, the camera's yaw, event/loading/age, life, maximum life,
+rupees, A-button prompt and music. `subscribe` with `events:["oot"]`, `every`, `flags` and `changes` streams those
+samples and optional watched/changed flags. There is no separate state file; off unless `HOS_CONTROL` is set.
+See [control.md](control.md) for the fields, sampling, bounds and examples.
 
 ## Layout
 
