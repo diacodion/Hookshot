@@ -1247,14 +1247,23 @@ def drop_stale_objects(work):
 
 def seed_pipelines(out):
     """The pipelines recorded on the development PC (hookshot_pipelines_seed.bin in the tools: program keys and draw states, no game
-    code), as the game folder's list, so its first start builds them before the title, as TotK Recomp's shipped shader list does,
-    instead of compiling each when it is first drawn (the stutter of a first visit). Each release ships the list its own build
-    made: the file's first 8 bytes are that build's stamp, and a list the folder has from the same build is kept (it grows as
-    the player plays)"""
+    code), as the game folder's list (cache/hookshot_pipelines.bin, where the game keeps its notes: gpu/vk/vk_draw.cpp
+    pipe_notes_path), so its first start builds them before the title, as TotK Recomp's shipped shader list does, instead of
+    compiling each when it is first drawn (the stutter of a first visit). Each release ships the list its own build made: the
+    file's first 8 bytes are that build's stamp, and a list the folder has from the same build is kept (it grows as the player
+    plays). One loose beside the game goes into cache/ first, as the game's own start moves it (host/game_layout.c)"""
     seed = os.path.join(ROOT, "hookshot_pipelines_seed.bin")
-    dst = os.path.join(out, "hookshot_pipelines.bin")
+    cache = os.path.join(out, "cache")
+    dst = os.path.join(cache, "hookshot_pipelines.bin")
     if not os.path.isfile(seed):
         return
+    os.makedirs(cache, exist_ok=True)
+    loose = os.path.join(out, "hookshot_pipelines.bin")
+    if os.path.isfile(loose) and not os.path.exists(dst):
+        try:
+            os.replace(loose, dst)
+        except OSError:
+            pass
     with open(seed, "rb") as f:
         stamp = f.read(8)
     try:

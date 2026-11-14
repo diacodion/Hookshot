@@ -999,12 +999,7 @@ HWND main_window = nullptr;
 // "@@progress" lines on stdout. A skip there leaves hookshot_prepare_skipped beside the game: its own starts then
 // leave the work out too (what was not prepared is built when first drawn), until a --prepare-shaders run ends it
 bool prepare_only() { return env_on("HOOKSHOT_PREPARE_ONLY"); }
-std::string skipped_path() {
-    char exe[MAX_PATH];
-    const DWORD n = game_module_path(exe, MAX_PATH);
-    std::string path(exe, n);
-    return path.substr(0, path.find_last_of("\\/") + 1) + "hookshot_prepare_skipped";
-}
+std::string skipped_path() { return cache_path("hookshot_prepare_skipped"); }
 // (hookshot) The --prepare-shaders run's watchdog, for any GPU and any part of it.
 // - What it waits on, in the log the builder shows: every 30 s that nothing has moved, the part, its count, and whether the
 //   GPU driver faulted; a driver fault as soon as it is caught. (The pipeline steps log their own progress every 10 s,

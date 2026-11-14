@@ -24,7 +24,7 @@ struct Inputs {
                             // answer after options, under a line of their own, not counted as changes
     std::string system;    // CPU, RAM and system (system_text)
     std::vector<std::string> env;   // the environment, NAME=VALUE: the game's switches set, and software hooked in
-    std::string game_dir;  // the game folder, its separator at the end: the logs are there, and the report's folder goes there
+    std::string game_dir;  // the game folder, its separator at the end: the logs are in its logs/, and the report's folder goes there
     std::string current_log;   // the file this run logs to (stderr), "" when that is no file (a terminal, a pipe)
     std::string home, user;    // taken out of the logs: the home folder and the user's name
     bool windows = false;      // paths as Windows writes them: either slash, and case does not matter

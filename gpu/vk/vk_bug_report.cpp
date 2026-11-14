@@ -461,7 +461,8 @@ std::string write(const Inputs& in) {
     const bool asked = in.ask_picture && in.ask_picture(picture_path.c_str(), ticket);
 
     // the logs: this run's, and the run before's (its own after a start from the icon, which moves the last one to .1)
-    const std::string g0 = in.game_dir + "hookshot_log.txt", g1 = in.game_dir + "hookshot_log.1.txt";
+    const std::string log_dir = in.game_dir + "logs" + sep;   // (the game folder's logs/: host/game_layout.c)
+    const std::string g0 = log_dir + "hookshot_log.txt", g1 = log_dir + "hookshot_log.1.txt";
     const std::string before = same_file(in.current_log, g0, in.windows) ? g1 : exists(g0) ? g0 : g1;
     LogFacts now, last;
     if (!in.current_log.empty()) now = copy_log(in.current_log, dir + "hookshot_log.txt", in);

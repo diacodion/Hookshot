@@ -430,20 +430,20 @@ int run(const std::string& name) {
         CHECK(play_files_merge() == 1 && has(pcache, 40));
     } else if (name == "merge") {
         pcache = cache_of({1});
-        write_file(at("mkw_vk_pipelines_play_3.bin"), "FAKE", {40});
-        write_file(at("mkw_vk_pipelines_play_7.bin"), "FAKE", {41, 1});
-        write_file(at("mkw_vk_pipelines_play_5.bin"), "OTHR", {42});      // (another driver's: removed)
-        write_file(at("mkw_vk_pipelines_play_.bin"), "FAKE", {43});       // (not a play file's name: left alone)
-        write_file(at("mkw_vk_pipelines_play_x1.bin"), "FAKE", {44});
-        write_file(at("mkw_vk_pipelines_play_9.bin.tmp"), "FAKE", {45});
-        write_file(at("mkw_vk_pipelines_play_1234567890.bin"), "FAKE", {46});
+        write_file(at("hookshot_vk_pipelines_play_3.bin"), "FAKE", {40});
+        write_file(at("hookshot_vk_pipelines_play_7.bin"), "FAKE", {41, 1});
+        write_file(at("hookshot_vk_pipelines_play_5.bin"), "OTHR", {42});      // (another driver's: removed)
+        write_file(at("hookshot_vk_pipelines_play_.bin"), "FAKE", {43});       // (not a play file's name: left alone)
+        write_file(at("hookshot_vk_pipelines_play_x1.bin"), "FAKE", {44});
+        write_file(at("hookshot_vk_pipelines_play_9.bin.tmp"), "FAKE", {45});
+        write_file(at("hookshot_vk_pipelines_play_1234567890.bin"), "FAKE", {46});
         write_file(pcache_path, "FAKE", {1});
         CHECK(play_files_merge() == 2);
         CHECK(keys_of(pcache) == (std::set<uint64_t>{1, 40, 41}) && play_seq == 7);
-        CHECK(!exists(at("mkw_vk_pipelines_play_5.bin")) && exists(at("mkw_vk_pipelines_play_.bin")));
-        CHECK(exists(at("mkw_vk_pipelines_play_x1.bin")) && exists(at("mkw_vk_pipelines_play_9.bin.tmp")));
-        CHECK(exists(at("mkw_vk_pipelines_play_1234567890.bin")));
-        CHECK(exists(at("mkw_vk_pipelines_play_3.bin")) && exists(at("mkw_vk_pipelines_play_7.bin")));   // (kept: under 16)
+        CHECK(!exists(at("hookshot_vk_pipelines_play_5.bin")) && exists(at("hookshot_vk_pipelines_play_.bin")));
+        CHECK(exists(at("hookshot_vk_pipelines_play_x1.bin")) && exists(at("hookshot_vk_pipelines_play_9.bin.tmp")));
+        CHECK(exists(at("hookshot_vk_pipelines_play_1234567890.bin")));
+        CHECK(exists(at("hookshot_vk_pipelines_play_3.bin")) && exists(at("hookshot_vk_pipelines_play_7.bin")));   // (kept: under 16)
         CHECK(file_keys(pcache_path) == std::set<uint64_t>{1});   // (the start's file as it was)
         play_cache_begin();
         CHECK(make(40) == VK_SUCCESS && play_cache.load()->from_start == 1);   // (merged: from the start's cache)
@@ -485,6 +485,6 @@ int run(const std::string& name) {
 int main(int argc, char** argv) {
     if (argc != 3) return 2;
     pcache_dir = std::string(argv[2]) + "/";
-    pcache_path = pcache_dir + "mkw_vk_pipelines.bin";
+    pcache_path = pcache_dir + "hookshot_vk_pipelines.bin";
     return run(argv[1]);
 }

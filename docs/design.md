@@ -257,13 +257,13 @@ dump, the runtime made game-neutral, the stage-1 tools checked on MKW's dump as 
   slower, narrow barriers no change, RX_VK_WAIT_GPU no help.
 - Tools: RX_VK_FRAMELOG + scripts/framelog.py (every frame shown), RX_VK_PROBE=2 (the passes at speed), RX_VK_SLOW_LOG, HOS_WATCH.
 - A release build (`RX_RELEASE=1` at build time) precompiles before the game starts; test builds do not unless RX_VK_PRECOMPILE=1.
-  hookshot_programs.bin (with hookshot_programs.idx, the list of its records), hookshot_pipelines.bin and mkw_vk_pipelines.bin go
-  beside the executable.
+  hookshot_programs.bin (with hookshot_programs.idx, the list of its records), hookshot_pipelines.bin and hookshot_vk_pipelines.bin go
+  in the game folder's cache/ (gpu/vk/vk_paths.h cache_path; host/game_layout.c makes it), the logs in its logs/.
 - A program the driver's compiler faulted on (guarded_graphics) is never asked of the driver again (gpu/vk/driver_faults.h). On AMD's Windows
   driver the caught fault left the program's compile unfinished inside it, and every later build of that program waited there
   forever: the pause-menu freeze of issue 996, seen in a full dump. On AMD one program's builds also go to the driver one at a
   time (RX_VK_DRIVER_FAULTS=2: on every driver); other drivers keep building a program's variants side by side.
-  The faults are kept per driver version in hookshot_driver_faults.txt beside the executable.
+  The faults are kept per driver version in hookshot_driver_faults.txt in the game folder's cache/.
 
 ## 11. Findings, 2026-11-06, day
 

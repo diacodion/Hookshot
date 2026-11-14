@@ -416,6 +416,23 @@ def check_drawn_only():
     assert all("state_record_compute(" not in text for text in others.values()), "another file writes compute records"
 
 
+def check_game_layout(tmp):
+    """A game folder in host/game_layout.c's layout: the list in cache/, the log in logs/ (the options stay beside the game):
+    both found, and the zip and the template as from a loose folder"""
+    t = Path(tmp)
+    data = v2_list(2)
+    g = game_folder(t, data)
+    (g / "cache").mkdir()
+    (g / share.LIST).rename(g / "cache" / share.LIST)
+    (g / "logs").mkdir()
+    (g / "hookshot_log.txt").rename(g / "logs" / "hookshot_log.txt")
+    assert share.list_path(str(g)) == str(g / "cache" / share.LIST)
+    path, text, n = share.make_zip(str(g), str(t / "out"), day=share.datetime.date(2026, 11, 14))
+    assert n == 2 and "Output resolution: 2560x1440" in text and "v2.2.0-rc.1-5-gabcdef1" in text, text
+    with zipfile.ZipFile(path) as z:
+        assert z.read(share.LIST) == data
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--cxx", default="g++")
@@ -424,6 +441,8 @@ def main():
     check_drawn_only()
     with tempfile.TemporaryDirectory() as tmp:
         check_python(tmp)
+    with tempfile.TemporaryDirectory() as tmp:
+        check_game_layout(tmp)
     with tempfile.TemporaryDirectory() as tmp:
         check_cxx(a.cxx, tmp)
     print("pipeline share: ok")

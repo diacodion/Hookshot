@@ -2,7 +2,7 @@
 
 In play every save wrote the whole pipeline cache again (0.5-1.2 GB) for what play had added: NVIDIA copies into the cache a
 pipeline is made with each pipeline it takes from its own disk cache. Now what play makes goes into a cache of its own, one per
-save, written alone to mkw_vk_pipelines_play_<n>.bin, and the next start merges those files.
+save, written alone to hookshot_vk_pipelines_play_<n>.bin, and the next start merges those files.
 
 Checked: in play the start's cache is left as it was read, one it holds comes from it, one the driver has goes into the generation,
 one nothing has is compiled into the generation; a save writes the generation alone and goes on into a new one; a write that did not

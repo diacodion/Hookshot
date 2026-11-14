@@ -71,7 +71,7 @@ download is genuine.
    [#614](https://github.com/NotRexed/Hookshot/issues/614)). To try the other drawing path, add the line
    `RX_VK_MESH_SHADERS=compute` to `hookshot_env.txt` in the game folder (usually a little slower; delete the line to
    undo it).
-4. **Read the end of the log.** `hookshot_log.txt` in the game folder has the last run; its last lines usually say what
+4. **Read the end of the log.** `hookshot_log.txt` in the game folder's `logs` folder has the last run; its last lines usually say what
    failed.
 
 [Search crash reports](https://hookshot.magicbean.dev/progress/#problem-search?q=crash) · [Search black-screen reports](https://hookshot.magicbean.dev/progress/#problem-search?q=black+screen)
@@ -86,7 +86,7 @@ download is genuine.
 
 ### Linux: Play closed before the game's log appeared
 
-Wait for the game to exit, then open `hookshot_startup.log` in the game folder: it has up to 64 KiB of the game's
+Wait for the game to exit, then open `hookshot_startup.log` in the game folder's `logs` folder: it has up to 64 KiB of the game's
 startup errors and its exit status. Started from a terminal, the game prints there instead.
 
 [Search startup reports](https://hookshot.magicbean.dev/progress/#problem-search?q=startup)
@@ -226,7 +226,7 @@ means a guess, not a known virus.
 1. **Make a bug report.** Open the menu (<kbd>F1</kbd>), go to **Gameplay** and choose **Bug report**. It saves a folder
    in `bug-reports` in the game folder with the log, a picture and `report.txt`, which ends with a link that opens the
    report form already filled in. Your home folder and user name are taken out.
-2. **Or find the log yourself,** if the game doesn't get that far: `hookshot_log.txt` in the game folder is the last
+2. **Or find the log yourself,** if the game doesn't get that far: `hookshot_log.txt` in the game folder's `logs` folder is the last
    run, and `hookshot_log.1.txt` to `.4.txt` the four before it. On Linux, `hookshot_startup.log` has the startup
    errors.
 3. **Search the reports.** [Someone may have had it already](https://hookshot.magicbean.dev/progress/#problem-search),
