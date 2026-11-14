@@ -374,7 +374,17 @@ HLE(_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci) {
       if (!want_write && hos_ultrawide_redirect(g, alt, sizeof alt)) snprintf(path, sizeof path, "%s", alt); }
     if (!want_write && hos_blank_cached_icon(g, path)) { if (away) hos_vcore_back(); RET(R_PATH_NOT_FOUND); return; }
     {   /* HOS_FS_OVERLAY=<folder> (a test): a file of the game's data found there is read in place of the game's own */
-        const char *ov = getenv("HOS_FS_OVERLAY");
+        /* (read once: every OpenFile asked the environment; one atomic pointer, "" until read, so a thread sees the
+           value or reads it itself) */
+        static const char *overlay = "";
+        const char *ov = __atomic_load_n(&overlay, __ATOMIC_RELAXED);
+        if (ov && !*ov) {
+            ov = getenv("HOS_FS_OVERLAY");
+            /* (set but empty: no overlay. This changed: before, an empty one (only Linux can set it; Windows'
+               _putenv("HOS_FS_OVERLAY=") unsets it) made alt "/<path>", each file looked up at the filesystem root) */
+            if (ov && !*ov) ov = NULL;
+            __atomic_store_n(&overlay, ov, __ATOMIC_RELAXED);
+        }
         const char *rel = !want_write && ov ? strstr(g, ":/") : NULL;
         if (rel) {
             char alt[HOS_FS_PATH];
