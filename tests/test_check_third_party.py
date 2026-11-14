@@ -50,8 +50,11 @@ class ThirdParty(unittest.TestCase):
         self.assertRegex((self.dir / "third_party/libfoo/PROVENANCE.md").read_text(), r"\ntree-sha256: [0-9a-f]{64}\n$")
         # (build output the repository ignores is not part of it)
         (self.dir / "third_party/libfoo/src/foo.dll").write_bytes(b"MZ")
+        # (and one with a non-ASCII name: without -z git quotes it in its answer, and it was hashed with the part)
+        (self.dir / "third_party/libfoo/src/\N{LATIN SMALL LETTER E WITH ACUTE}.dll").write_bytes(b"MZ")
         self.git("init", "-q")
-        self.assertEqual(run("--root", self.dir)[0], 0)
+        code, out = run("--root", self.dir)
+        self.assertEqual(code, 0, out)
 
     def test_a_modified_file_fails(self):
         (self.dir / "third_party/libfoo/src/foo.c").write_text("int foo(void) { return 2; }\n")
