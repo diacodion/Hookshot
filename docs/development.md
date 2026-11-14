@@ -566,9 +566,16 @@ menu's order, with its choices and default: `tests/test_readme_menu_rows.py` fai
 `hookshot_options.ini`, in the game folder, holds the Insert menu's rows as `<key>=<number>`: the row's name in lower
 case with `_` for spaces (`frame_generation=2`, `invert_camera_x=1`), except Output resolution, which is `output_res`.
 `gpu/vk/vk_menu.cpp` writes the whole file at every change (`save`), with `options_version=5`,
-`microphone_device=<name>` when a microphone is chosen by name, and the controls (`pad_<button>` and `key_<button>`:
+`microphone_device=<name>` when a microphone is chosen by name, and the controls (`pad_<button>`, `key_<button>` and `toggle_<button>`:
 the README's [Controls](../README.md#controls)). A value outside a row's range is clamped when it is read. Where the
 number is not the obvious one:
+
+`toggle_<button>=0|1` is the Controls page's Toggle column: 0 Off (default), 1 press once to hold and again to release.
+It applies after remapping to either pad binding, keys and mouse buttons. Only Switch buttons accept it, excluding
+Plus and Minus; directions and ocarina notes do not. Other values mean Off. Saving keeps the flags, not live latches.
+Opening Insert, Plus/Minus, focus loss, rebinding and Reset to defaults clear latches. Background pad presses can
+latch again when Controller in background permits them. Linux's other game dialogs are not guaranteed resets;
+Insert always releases the latch.
 
 | Key | Values |
 |---|---|

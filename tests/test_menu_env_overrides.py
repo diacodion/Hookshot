@@ -87,7 +87,7 @@ constexpr int HOS_KEY_N = 1, HOS_SW_N = 1, HOS_BIND_PAD = 0, HOS_BIND_KEY = 1;
 constexpr int HOS_KEY_OC_NOTE_L = 1, HOS_KEY_OC_NOTE_X = 1;   /* (the note rows: past this stub's one row) */
 const char* const bind_names[1] = {"a"};
 struct Host { int (*binding)(int, int, int); } host_value{nullptr}, *host = &host_value;
-bool can_bind() { return false; }
+bool can_bind() { return host->binding != nullptr; }
 /* INI_KEY */
 /* SAVE */
 void env_part() {
@@ -108,6 +108,10 @@ int main(int argc, char** argv) {
     CHECK(argc == 2);
     ini_file = argv[1];
     setenv("HOS_DISPLAY_MODES", "1920x1080,2560x1440", 1);   // (the screen's sizes: the game's own, these, 16:9's common ones)
+    FILE* initial = std::fopen(ini_file.c_str(), "w");
+    CHECK(initial);
+    std::fputs("pad_a=1,17\nkey_a=69,0\ntoggle_a=1\n", initial);
+    std::fclose(initial);
     // The player's own: pace off, Per frame, 75%, Bilinear, 3x, a size of their own
     opts.pace = 0, opts.realtime = 0, opts.resolution = 2, opts.upscale = 0, opts.framegen = 3;
     opts.output_res = parse_output("3000x1688");
@@ -128,6 +132,7 @@ int main(int argc, char** argv) {
     opts.sharpness = 40;
     save();
     CHECK(has("sharpness=40\n"));
+    CHECK(has("pad_a=1,17\n") && has("key_a=69,0\n") && has("toggle_a=1\n"));
     CHECK(has("frame_pacing=0\n"));
     CHECK(has("game_speed=0\n"));
     CHECK(has("resolution=2\n"));
@@ -155,6 +160,15 @@ int main(int argc, char** argv) {
     env_release(&opts.realtime);
     save();
     CHECK(has("game_speed=1\n"));
+    host->binding = [](int set, int, int slot) {
+        return set == HOS_BIND_PAD ? (slot ? 17 : 1) : (slot ? 0 : 69);
+    };
+    save();
+    CHECK(has("pad_a=1,17\n") && has("key_a=69,0\n") && has("toggle_a=0\n"));
+    CHECK(!has("toggle_a=1\n"));   // the old flag must not overwrite the new one on reload
+    opts.hold_toggle = 1;
+    save();
+    CHECK(has("toggle_a=1\n") && !has("toggle_a=0\n"));
     std::puts("PASS: the environment's rows last for the run; the options file keeps the player's");
 }
 """

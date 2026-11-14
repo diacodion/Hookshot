@@ -1,6 +1,8 @@
 #define _Static_assert static_assert
 #include "host/display_pointer.h"
 #include "host/hos_sdl.h"
+static int toggle_clears;
+static void hos_input_clear_toggles(void) { ++toggle_clears; }
 #include <atomic>
 #include <cmath>
 #include <climits>
@@ -243,7 +245,9 @@ int main() {
     CHECK(win::hos_mouse_game_pointer(&gx,&gy,&gw,&gh,&pressed,&wheel)==1 && wheel==1);
     CHECK(win::hos_mouse_pointer(&out) && !out.wheel);
     win::game_menu_press(MAKELPARAM(30,40),HOS_MOUSE_LEFT);
+    toggle_clears = 0;
     win::menus_mouse(win::hwnd,1,1);
+    CHECK(toggle_clears == 1);   // Insert opens over a game menu too, with no HID poll needed
     CHECK(!win::hos_mouse_game_pointer(&gx,&gy,&gw,&gh,&pressed,&wheel) && !pressed);
     win::wheel_event(win::hwnd,MAKEWPARAM(0,120));
     CHECK(win::hos_mouse_pointer(&out) && out.wheel==1);
@@ -290,8 +294,10 @@ int main() {
     CHECK(sdl::hos_mouse_pointer(&out) && !out.pressed && !out.wheel && out.x==2418);
     sdl::request_menu(false,false);
     sdl::esc_had_capture=1;
+    toggle_clears = 0;
     sdl::request_menu(true,false);
     sdl::request_menu(false,false);
+    CHECK(toggle_clears == 1);   // open and close between HID polls still clears the latch
     CHECK(!sdl::mouse_captured);
     sdl::esc_had_capture=1;
     sdl::request_menu(true,true);

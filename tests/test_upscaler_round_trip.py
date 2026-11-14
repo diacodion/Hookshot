@@ -100,7 +100,7 @@ std::string mic_key(const char* v) { return v; }
 void mic_tell_host() {}
 void refresh_mics() {}
 int rumble_step(int v) { return v; }
-constexpr int HOS_KEY_N = 1, HOS_SW_N = 1, HOS_BIND_PAD = 0, HOS_BIND_KEY = 1;
+constexpr int HOS_KEY_N = 1, HOS_SW_N = 1, HOS_SW_PLUS = 10, HOS_SW_MINUS = 11, HOS_BIND_PAD = 0, HOS_BIND_KEY = 1;
 constexpr int HOS_KEY_OC_NOTE_L = 1, HOS_KEY_OC_NOTE_X = 1;
 const char* bind_names[1] = {"a"};
 struct Host { int (*binding)(int, int, int); float (*aspect_ratio)(); } *host = nullptr;

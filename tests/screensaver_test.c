@@ -1,5 +1,6 @@
 /* All APIs are mocks: no window, screen saver, security or power setting is accessed. */
 #include <stdint.h>
+static void hos_input_clear_toggles(void) {}
 #include <stdio.h>
 #include <stdlib.h>
 

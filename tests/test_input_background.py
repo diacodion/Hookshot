@@ -27,7 +27,7 @@ RUN_ALL_ARGS = ["--cc", "gcc"]
 ROOT = Path(__file__).resolve().parents[1]
 CASES = ("foreground", "script-background", "headless", "noactivate", "live-background",
          "no-script-background", "exclusive-foreground", "exclusive-background", "pads-env", "pads-menu", "pads-off",
-         "frame-hold", "live-frame", "reuse-frame", "wall", "zero", "empty")
+         "frame-hold", "live-frame", "reuse-frame", "wall", "zero", "empty", "hold-toggle", "hold-mouse", "hold-background")
 
 
 def block(text, marker):
@@ -67,6 +67,7 @@ def main():
     constants = block(hid, "enum { B_A") + ";\n" + block(api, "enum { HOS_SW_A") + ";\n"
     constants += block(api, "enum { HOS_KEY_MOVE_UP") + ";\n"   # (the keys-only controls)
     constants += block(api, "enum { HOS_OPT_CHEAT_HEARTS") + ";\n"
+    constants += block(api, "enum { HOS_OPT_HOLD_TOGGLE") + ";\n"
     constants += block(api, "enum { HOS_BIND_PAD") + ";\n"   # (the live input's !bind)
     for name in ("STATE_SIZE", "NPAD_NO1", "ATTR_CONNECTED"):
         matches = re.findall(r"^#define " + name + r"\s+[^\n]+", hid, re.M)
@@ -90,7 +91,7 @@ static void host_stick_read(int32_t stick[4]) { (void)stick; }
 static void host_drag_read(int32_t stick[4]) { (void)stick; }
 static void player_used(void) {}
 """
-    actual = "\n".join((cheat_state, cheat_spies, host_spies, block(hid, "static int key("), block(hid, "static int kmap_down("),
+    actual = "\n".join(("static HoldToggle toggles;", cheat_state, cheat_spies, host_spies, block(hid, "static int key("), block(hid, "static int kmap_down("),
         block(hid, "static int game_in_front("), hid[start:end], block(hid, "static void stick_max("),
         block(hid, "static int pads_in_background("),
         # (the bound keys' helpers read_input calls: a mouse button counts only while the mouse is captured)
@@ -124,7 +125,7 @@ static void player_used(void) {}
              "-I" + str(folder), str(ROOT / "tests/input_background_test.c"), "-o", str(exe)])
         for case in ((a.case,) if a.case else CASES):
             case_env = dict(env)
-            if case not in ("live-background", "no-script-background", "live-frame", "reuse-frame"):
+            if case not in ("live-background", "no-script-background", "live-frame", "reuse-frame", "hold-toggle", "hold-mouse", "hold-background"):
                 case_env["HOS_INPUT_SCRIPT"] = "0:A+LUP/200"
             if case in ("frame-hold", "live-frame", "reuse-frame"):
                 case_env["HOS_INPUT_FRAME_CLOCK"] = "1"

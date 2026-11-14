@@ -11,6 +11,7 @@
    while one of the game's own menus is open (host/oot_menu.c: hos_mouse_game_menu each frame it runs), its clicks and
    wheel for that menu (hos_mouse_game_pointer). */
 #include "hos.h"
+void hos_input_clear_toggles(void);
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -191,6 +192,7 @@ static void gm_cursor_off(HWND w) {
    back, if the window still has the focus */
 static void menus_mouse(HWND w, int insert_open, int game_open) {
     const int was = menu_open || game_menu_open, now = insert_open || game_open, game_was = game_menu_open;
+    if ((insert_open && !menu_open) || (game_open && !game_was)) hos_input_clear_toggles();
     menu_open = insert_open, game_menu_open = game_open;
     /* (hidden till used; a menu back within a second, a moment between its screens, keeps the cursor as it was) */
     static int64_t game_closed_ns;
@@ -398,6 +400,7 @@ static LRESULT CALLBACK wndproc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
         break;
     case WM_KILLFOCUS:
     case WM_CANCELMODE:
+        hos_input_clear_toggles();
         esc_had_capture = 0;
         mouse_capture(w, 0);
         hos_pointer_reset(&pointer);
