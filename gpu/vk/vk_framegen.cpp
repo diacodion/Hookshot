@@ -40,6 +40,7 @@
 #ifndef HOOKSHOT_ENV_H   // (env_on: the switches' one rule)
 #include "hookshot_env.h"
 #endif
+#include "vk_draw.h"   // (extern_guarded_shader_module, extern_guarded_compute)
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 
 #ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION   // (older Windows SDKs lack it: Windows 10 1803 and later take it)
@@ -197,15 +198,19 @@ bool make_pipe(Pipe& p, const uint32_t* code, size_t bytes, std::initializer_lis
     mi.codeSize = bytes;
     mi.pCode = code;
     VkShaderModule m = VK_NULL_HANDLE;
-    if (vkCreateShaderModule(dev.device, &mi, nullptr, &m) != VK_SUCCESS) return undo();
-    VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
-    ci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-    ci.stage.module = m;
-    ci.stage.pName = "main";
-    ci.stage.pSpecializationInfo = spec;
-    ci.layout = made.layout;
-    const VkResult r = vkCreateComputePipelines(dev.device, VK_NULL_HANDLE, 1, &ci, nullptr, &made.pipe);
+    VkResult r;
+    {
+        IntelDriverGate gate;
+        if (extern_guarded_shader_module(&mi, &m) != VK_SUCCESS) return undo();
+        VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+        ci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        ci.stage.module = m;
+        ci.stage.pName = "main";
+        ci.stage.pSpecializationInfo = spec;
+        ci.layout = made.layout;
+        r = extern_guarded_compute(VK_NULL_HANDLE, &ci, &made.pipe);
+    }
     vkDestroyShaderModule(dev.device, m, nullptr);
     if (r != VK_SUCCESS) return undo();
     p = made;

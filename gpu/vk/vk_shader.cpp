@@ -717,12 +717,23 @@ std::unique_ptr<Translation> translate(Env& env, bool graphics, bool one_exit = 
 
 } // namespace
 
-VkShaderModule make_module(const std::vector<uint32_t>& spirv) {
+thread_local uint64_t module_program = 0;   // (translate_into's program, for make_module's callers that do not name it)
+VkShaderModule make_module(const std::vector<uint32_t>& spirv, uint64_t program, bool* busy) {
+    if (!program) program = module_program;
+    if (driver_faulted_program(program)) return VK_NULL_HANDLE;
     VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
     ci.codeSize = spirv.size() * 4;
     ci.pCode = spirv.data();
     VkShaderModule m = VK_NULL_HANDLE;
-    vkCreateShaderModule(dev.device, &ci, nullptr, &m);
+    IntelDriverGate gate(busy != nullptr);   // (busy given: Intel's gate only tried, the dispatch's program_cache_complete_ask)
+    if (gate.busy) {
+        *busy = true;
+        return VK_NULL_HANDLE;
+    }
+    if (const VkResult r = extern_guarded_shader_module(&ci, &m); r != VK_SUCCESS) {
+        if (r == (VkResult)-77) driver_faulted_module(program);
+        return VK_NULL_HANDLE;
+    }
     return m;
 }
 
@@ -1305,7 +1316,12 @@ void translate_into(Program& p, const NvnState& s, const Code* vsc, const Code* 
     const auto t0 = std::chrono::steady_clock::now();
     QuestionsNoted noted{p};
     ptr_diag_reset();
+    struct ModuleProgram {
+        explicit ModuleProgram(uint64_t key) { module_program = key; }
+        ~ModuleProgram() { module_program = 0; }
+    } module_for{p.key};
     try {
+        if (driver_faulted_program(p.key)) throw std::runtime_error("the driver faulted on this program before: not asked of it again");
         Shader::Backend::Bindings bindings{};
         int questions = 0;
         std::vector<std::vector<uint32_t>> kept;   // (each stage's SPIR-V, for the program cache)

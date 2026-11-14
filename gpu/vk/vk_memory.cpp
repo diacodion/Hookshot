@@ -50,6 +50,7 @@
 #ifndef HOOKSHOT_ENV_H   // (env_on: the switches' one rule)
 #include "hookshot_env.h"
 #endif
+#include "vk_draw.h"   // (extern_guarded_shader_module, extern_guarded_compute)
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 
 namespace mkwvk {
@@ -2176,14 +2177,15 @@ bool late_fix_pipe_ready() {
         mi.codeSize = sizeof LATE_FIX_COMP_SPV;
         mi.pCode = LATE_FIX_COMP_SPV;
         VkShaderModule m = VK_NULL_HANDLE;
-        if (vkCreateShaderModule(dev.device, &mi, nullptr, &m) == VK_SUCCESS) {
+        IntelDriverGate gate;   // (as wbd_pipe_ready's: Intel's compiler on Windows, one thread at a time, and the fault guard)
+        if (extern_guarded_shader_module(&mi, &m) == VK_SUCCESS) {
             VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
             ci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
             ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
             ci.stage.module = m;
             ci.stage.pName = "main";
             ci.layout = late_fix_pipe.layout;
-            if (vkCreateComputePipelines(dev.device, VK_NULL_HANDLE, 1, &ci, nullptr, &late_fix_pipe.pipe) != VK_SUCCESS)
+            if (extern_guarded_compute(VK_NULL_HANDLE, &ci, &late_fix_pipe.pipe) != VK_SUCCESS)
                 late_fix_pipe.pipe = VK_NULL_HANDLE;
             vkDestroyShaderModule(dev.device, m, nullptr);
         }
@@ -4647,14 +4649,15 @@ bool wbd_pipe_ready() {
         VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
         mi.codeSize = sizeof WB_DIFF_COMP_SPV;
         mi.pCode = WB_DIFF_COMP_SPV;
-        if (vkCreateShaderModule(dev.device, &mi, nullptr, &m) == VK_SUCCESS) {
+        IntelDriverGate gate;
+        if (extern_guarded_shader_module(&mi, &m) == VK_SUCCESS) {
             VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
             ci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
             ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
             ci.stage.module = m;
             ci.stage.pName = "main";
             ci.layout = wbd_pipe.layout;
-            if (vkCreateComputePipelines(dev.device, VK_NULL_HANDLE, 1, &ci, nullptr, &wbd_pipe.pipe) != VK_SUCCESS)
+            if (extern_guarded_compute(VK_NULL_HANDLE, &ci, &wbd_pipe.pipe) != VK_SUCCESS)
                 wbd_pipe.pipe = VK_NULL_HANDLE;
             vkDestroyShaderModule(dev.device, m, nullptr);
         }

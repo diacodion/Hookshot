@@ -1310,6 +1310,36 @@ bool gpl_libs_cached() {
     static const bool on = !env_on("RX_VK_GPL_NO_CACHE");
     return on;
 }
+// (hookshot) vkCreateShaderModule has no guard of its own. Translation workers call it, and on Windows their stack into
+// igvk64 is short: an access violation there is not the pipeline guards' "driver faulted compiling" line, and it ends
+// the process. The same answer as those guards: that program is left out.
+#ifdef _WIN32
+__declspec(noinline) VkResult guarded_shader_module(const VkShaderModuleCreateInfo* ci, VkShaderModule* m) {
+    __try {
+        return vkCreateShaderModule(dev.device, ci, nullptr, m);
+    } __except (1) {
+        *m = VK_NULL_HANDLE;   // (whatever the driver wrote before it faulted is not a module)
+        note_driver_fault();
+        logf("vk: the driver faulted creating a shader module (exception %#lx): that program is left out",
+             (unsigned long)GetExceptionCode());
+        return (VkResult)-77;
+    }
+}
+#else
+VkResult guarded_shader_module(const VkShaderModuleCreateInfo* ci, VkShaderModule* m) {
+    install_driver_fault_guard();
+    if (sigsetjmp(fault_jmp, 1) != 0) {
+        *m = VK_NULL_HANDLE;
+        note_driver_fault();
+        logf("vk: the driver faulted creating a shader module: that program is left out");
+        return (VkResult)-77;
+    }
+    fault_armed = 1;
+    const VkResult r = vkCreateShaderModule(dev.device, ci, nullptr, m);
+    fault_armed = 0;
+    return r;
+}
+#endif
 thread_local bool driver_cache_only = false;   // (predict_run's: pipelines for the driver's own cache, not into ours)
 thread_local bool quick_build = false;   // (hookshot: quick_pipeline's, without the driver's optimizer and into no cache)
 thread_local bool gate_busy = false;   // (hookshot: set by build_graphics when the driver-fault gate answered kBusy: quick_pipeline's)
@@ -1339,10 +1369,26 @@ VkResult guarded_compute_held(VkPipelineCache cache, const VkComputePipelineCrea
     PcacheUse use(cache);
     return guarded_compute(cache, ci, pl);
 }
+bool compiles_nothing(VkPipelineCreateFlags flags) { return (flags & VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT) != 0; }
+/// (hookshot) Windows Intel: an ask, or a dispatch's module, left to a worker because another thread held Intel's compiler gate
+/// (IntelDriverGate: a worker's compile). There is no lookup of the driver's cache or ours that does not enter the driver, so
+/// the pipeline may be in a cache all the same: its draw or dispatch is left out, as a cold one is, until a worker has made it.
+/// Counted and logged (the first 8, then at each power of two), so the Intel runs show how often it happens
+std::atomic<int64_t> st_intel_gate_busy{0};
+VkResult intel_gate_busy() {
+    const int64_t n = ++st_intel_gate_busy;
+    if (n <= 8 || (n & (n - 1)) == 0)
+        logf("vk: asked cold: Intel's gate busy (a worker compiles); left to a worker, %lld so far", (long long)n);
+    return VK_PIPELINE_COMPILE_REQUIRED;
+}
 VkResult cached_graphics(const VkGraphicsPipelineCreateInfo* ci, VkPipeline* pl) {
+    IntelDriverGate gate(compiles_nothing(ci->flags));
+    if (gate.busy) return intel_gate_busy();
     return create_cached(guarded_graphics_held, ci, pl);
 }
 VkResult cached_compute(const VkComputePipelineCreateInfo* ci, VkPipeline* pl) {
+    IntelDriverGate gate(compiles_nothing(ci->flags));
+    if (gate.busy) return intel_gate_busy();
     return create_cached(guarded_compute_held, ci, pl);
 }
 /// (hookshot) What a compute program's pipeline is made from: its one stage, pinned to 32 lanes where the GPU can, and its
@@ -1370,7 +1416,10 @@ VkPipeline compute_pipeline_cached(const Program& q, bool noopt) {
 }
 /// (a graphics pipeline made with the cache chosen for it: pcache through the play caches, another or none as it is)
 VkResult graphics_with(VkPipelineCache cache, const VkGraphicsPipelineCreateInfo* ci, VkPipeline* pl) {
-    return cache && cache == pcache ? cached_graphics(ci, pl) : guarded_graphics_held(cache, ci, pl);
+    if (cache && cache == pcache) return cached_graphics(ci, pl);
+    IntelDriverGate gate(compiles_nothing(ci->flags));
+    if (gate.busy) return intel_gate_busy();
+    return guarded_graphics_held(cache, ci, pl);
 }
 
 /// A target's write mask: the state's channel mask, nothing for a target the fragment shader leaves unwritten
@@ -2171,7 +2220,8 @@ VkPipeline gpl_link(const Program& p, const NvnState& s, const Targets& at, VkPr
     ci.pNext = &li;
     ci.layout = p.layout;
     VkPipeline pl = VK_NULL_HANDLE;
-    if (vkCreateGraphicsPipelines(dev.device, VK_NULL_HANDLE, 1, &ci, nullptr, &pl) != VK_SUCCESS) return VK_NULL_HANDLE;
+    IntelDriverGate gate;
+    if (guarded_graphics(VK_NULL_HANDLE, &ci, &pl) != VK_SUCCESS) return VK_NULL_HANDLE;
     return pl;
 }
 
@@ -3982,6 +4032,27 @@ VkResult shared_compute_pipeline(const VkComputePipelineCreateInfo* ci, VkPipeli
 /// (hookshot) The driver faults the pipeline compiles caught so far (guarded_graphics, guarded_compute): the preparation's
 /// watchdog says so (vk_main.cpp). Outside the unnamed namespace: vk_main.cpp links to it
 int driver_faults() { return st_driver_faults.load(std::memory_order_relaxed); }
+/// (hookshot) The guarded driver calls, for vk_shader.cpp and vk_temporal.cpp. Declaring guarded_* itself in the header
+/// is a second function (the definitions sit in the unnamed namespace) and every call in this file is ambiguous.
+VkResult extern_guarded_graphics(VkPipelineCache cache, const VkGraphicsPipelineCreateInfo* ci, VkPipeline* pl) {
+    return guarded_graphics(cache, ci, pl);
+}
+VkResult extern_guarded_compute(VkPipelineCache cache, const VkComputePipelineCreateInfo* ci, VkPipeline* pl) {
+    return guarded_compute(cache, ci, pl);
+}
+VkResult extern_guarded_shader_module(const VkShaderModuleCreateInfo* ci, VkShaderModule* m) {
+    return guarded_shader_module(ci, m);
+}
+/// (hookshot) A program whose shader module the driver faulted on (vk_shader.cpp make_module) is kept out as one whose pipeline
+/// it faulted on: not asked of it again in this run, nor in later runs on the same driver (driver_faults.h)
+bool driver_faulted_program(uint64_t key) { return key && driver_faults_on() && fault_quarantine().contains(key); }
+void driver_faulted_module(uint64_t key) {
+    if (!key || !driver_faults_on() || fault_quarantine().contains(key)) return;
+    fault_quarantine().load({key});
+    logf("vk: the driver faulted making a shader module of %016llx: that program is not asked of it again (%s)",
+         (unsigned long long)key, driver_faults_path().c_str());
+    driver_fault_note(key);
+}
 /// (hookshot) Whether predict_run or precompile_run went on and left workers inside the driver: the pipeline cache's save can wait
 /// on them, and so can exit() unloading the driver (vk_main.cpp, the --prepare-shaders run)
 std::atomic<bool> st_left_workers{false};
@@ -4933,11 +5004,15 @@ VkPipeline clear_pipeline(const Targets& at, int index, uint32_t mask, int kind)
     const std::vector<uint32_t> frag = spirv_location(fw, fn, (uint32_t)index);
     VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
     VkShaderModule vm = VK_NULL_HANDLE, fm = VK_NULL_HANDLE;
-    mi.codeSize = sizeof CLEAR_VERT_SPV, mi.pCode = CLEAR_VERT_SPV;
-    const VkResult vr = vkCreateShaderModule(dev.device, &mi, nullptr, &vm);
-    if (vr != VK_SUCCESS || !vm) return fail("vertex module", vr);
-    mi.codeSize = frag.size() * 4, mi.pCode = frag.data();
-    const VkResult fr = vkCreateShaderModule(dev.device, &mi, nullptr, &fm);
+    VkResult vr = VK_ERROR_UNKNOWN, fr = VK_ERROR_UNKNOWN;
+    {
+        IntelDriverGate gate;   // (released before cached_graphics, which takes the same lock)
+        mi.codeSize = sizeof CLEAR_VERT_SPV, mi.pCode = CLEAR_VERT_SPV;
+        vr = guarded_shader_module(&mi, &vm);
+        if (vr != VK_SUCCESS || !vm) return fail("vertex module", vr);
+        mi.codeSize = frag.size() * 4, mi.pCode = frag.data();
+        fr = guarded_shader_module(&mi, &fm);
+    }
     if (fr != VK_SUCCESS || !fm) {
         vkDestroyShaderModule(dev.device, vm, nullptr);
         return fail("fragment module", fr);
@@ -6879,11 +6954,12 @@ void mask_stabilize(VkCommandBuffer cmd, Texture* tex, uint32_t level, uint32_t 
         VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
         mi.codeSize = sizeof SHADOW_STAB_COMP_SPV, mi.pCode = SHADOW_STAB_COMP_SPV;
         VkShaderModule m{};
-        vkCreateShaderModule(dev.device, &mi, nullptr, &m);
+        IntelDriverGate gate;
+        if (guarded_shader_module(&mi, &m) != VK_SUCCESS) m = VK_NULL_HANDLE;
         VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
         ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, m, "main", nullptr};
         ci.layout = layout;
-        if (vkCreateComputePipelines(dev.device, VK_NULL_HANDLE, 1, &ci, nullptr, &pipe) != VK_SUCCESS) pipe = VK_NULL_HANDLE;
+        if (!m || guarded_compute(VK_NULL_HANDLE, &ci, &pipe) != VK_SUCCESS) pipe = VK_NULL_HANDLE;
         vkDestroyShaderModule(dev.device, m, nullptr);
         logf("vk: tree-shadow mask blend %s", pipe ? "ready" : "not made");
     }
@@ -7849,11 +7925,12 @@ bool movie_upscale(VkCommandBuffer cmd, uint32_t in_handle, uint32_t out_handle,
         VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
         mi.codeSize = sizeof MOVIE_UPSCALE_COMP_SPV, mi.pCode = MOVIE_UPSCALE_COMP_SPV;
         VkShaderModule m{};
-        vkCreateShaderModule(dev.device, &mi, nullptr, &m);
+        IntelDriverGate gate;
+        if (guarded_shader_module(&mi, &m) != VK_SUCCESS) m = VK_NULL_HANDLE;
         VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
         ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, m, "main", nullptr};
         ci.layout = layout;
-        if (vkCreateComputePipelines(dev.device, VK_NULL_HANDLE, 1, &ci, nullptr, &pipe) != VK_SUCCESS) pipe = VK_NULL_HANDLE;
+        if (!m || guarded_compute(VK_NULL_HANDLE, &ci, &pipe) != VK_SUCCESS) pipe = VK_NULL_HANDLE;
         vkDestroyShaderModule(dev.device, m, nullptr);
         VkSamplerCreateInfo si{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
         si.magFilter = si.minFilter = VK_FILTER_LINEAR;
@@ -8077,11 +8154,12 @@ static bool typed_upscale(VkCommandBuffer cmd, VkImageView input_view, VkImageVi
         VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
         mi.codeSize = sizeof TAAU_UPSCALE_COMP_SPV, mi.pCode = TAAU_UPSCALE_COMP_SPV;
         VkShaderModule m{};
-        vkCreateShaderModule(dev.device, &mi, nullptr, &m);
+        IntelDriverGate gate;
+        if (guarded_shader_module(&mi, &m) != VK_SUCCESS) m = VK_NULL_HANDLE;
         VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
         ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, m, "main", nullptr};
         ci.layout = layout;
-        if (vkCreateComputePipelines(dev.device, VK_NULL_HANDLE, 1, &ci, nullptr, &pipe) != VK_SUCCESS) pipe = VK_NULL_HANDLE;
+        if (!m || guarded_compute(VK_NULL_HANDLE, &ci, &pipe) != VK_SUCCESS) pipe = VK_NULL_HANDLE;
         vkDestroyShaderModule(dev.device, m, nullptr);
         VkSamplerCreateInfo si{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
         si.magFilter = si.minFilter = VK_FILTER_LINEAR;
@@ -8662,6 +8740,7 @@ bool prepare_run(void (*progress)(size_t done, size_t total), bool background, b
         VkPipeline pl = VK_NULL_HANDLE;
         // (into the app's pipeline cache, saved to hookshot_vk_pipelines.bin: without it the next start compiled them again in play
         // where the driver's own cache missed them, AMD's 15 s culling compiles each time)
+        IntelDriverGate gate;
         if (guarded_compute_held(pcache, &ci, &pl) == VK_SUCCESS && pl) {
             vkDestroyPipeline(dev.device, pl, nullptr);
             libs++;
@@ -9682,9 +9761,17 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
     if (!compute_wait && !p.compute_pipeline && !taau_key(p.key) && p.compute_state.load(std::memory_order_acquire) != 2) {
         int none = 0;
         // (a program read from the cache without its code, vk_progcache.cpp: its module made now, by the dispatch that starts its
-        // pipeline. One whose code does not read is failed, and left out below)
+        // pipeline. One whose code does not read is failed, and left out below. On Windows Intel the compiler's gate is only
+        // tried for it (program_cache_complete_ask, IntelDriverGate): free, the module is made here and the pipeline asked of
+        // the caches below, as on other GPUs; held by a worker's compile, both are left to the worker (on_worker) rather than
+        // waited for here. Its code is looked at once the CAS is won, under the cache's lock: before that, a worker started by
+        // another dispatch may be clearing it, complete_from)
+        bool on_worker = false;
         const bool fresh = p.compute_state.compare_exchange_strong(none, 1) &&
-                           (program_cache_complete(p) || (p.compute_state.store(2, std::memory_order_release), false));
+                           (program_cache_complete_ask(p, &on_worker) || on_worker ||
+                            (p.compute_state.store(2, std::memory_order_release), false));
+        if (on_worker) intel_gate_busy();
+        std::shared_ptr<std::atomic<uint8_t>> made_how;   // (on_worker: how the worker made it, for the census)
         if (fresh) {
             { ParLock lk; pcache_init(); }
             const Program* job = &p;
@@ -9693,9 +9780,26 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
                                                                      : dev.props.vendorID == 0x8086;
             // (one the prepare left in our cache is only asked for here: it comes back at once. Queued, it waited for a worker
             // behind their graphics builds, and its dispatch was left out)
-            const VkPipeline cached = compute_pipeline_cached(p, true);
-            auto build = [job] {
+            const VkPipeline cached = on_worker ? VK_NULL_HANDLE : compute_pipeline_cached(p, true);
+            if (on_worker) made_how = std::make_shared<std::atomic<uint8_t>>(0);
+            auto build = [job, on_worker, made_how] {
                 Program& q = const_cast<Program&>(*job);
+                use_counters.made_how = 0;
+                if (on_worker) {
+                    if (!program_cache_complete(q)) {
+                        q.failed = true;
+                        q.compute_state.store(2, std::memory_order_release);
+                        return;
+                    }
+                    if (const VkPipeline c = compute_pipeline_cached(q, true)) {
+                        q.compute_pipeline = c;
+                        st_pipelines++;
+                        // (from a cache: the play caches say which, create_cached; before play, the start's, as below)
+                        made_how->store(use_counters.made_how ? use_counters.made_how : 2, std::memory_order_relaxed);
+                        q.compute_state.store(2, std::memory_order_release);
+                        return;
+                    }
+                }
                 VkComputePipelineCreateInfo ci = compute_pipeline_info(q, true);
                 const auto t0 = std::chrono::steady_clock::now();
                 VkPipeline made = VK_NULL_HANDLE;
@@ -9711,9 +9815,12 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
                 st_pipeline_us += ms * 1000;
                 st_pipelines++;
                 pcache_built_since_save++;
+                if (made_how) made_how->store(use_counters.made_how ? use_counters.made_how : 3, std::memory_order_relaxed);
                 q.compute_state.store(2, std::memory_order_release);
             };
-            if (use.on) use.pipeline(false, true), use.pipeline_made(cached ? 2 : 3);   // (from a cache, or compiled on a worker)
+            // (from a cache, or compiled on a worker; on_worker: as the worker made it, once it has, below)
+            if (use.on) use.pipeline(false, true);
+            if (use.on && !on_worker) use.pipeline_made(cached ? 2 : 3);
             if (cached) {
                 p.compute_pipeline = cached;
                 st_pipelines++;
@@ -9735,6 +9842,8 @@ void dispatch(VkCommandBuffer cmd, NvnState& s, uint32_t x, uint32_t y, uint32_t
         while (fresh && p.compute_state.load(std::memory_order_acquire) != 2 &&
                std::chrono::steady_clock::now() - t0 < std::chrono::milliseconds(50))
             std::this_thread::sleep_for(std::chrono::microseconds(200));
+        if (use.on && made_how && p.compute_state.load(std::memory_order_acquire) == 2)
+            use.pipeline_made(made_how->load(std::memory_order_relaxed));
         if (p.compute_state.load(std::memory_order_acquire) != 2) {
             static std::atomic<int> told{0};
             if (told++ < 40) logf_at(log_debug, "vk: dispatch of %016llx left out: its compute pipeline is still compiling", (unsigned long long)p.key);

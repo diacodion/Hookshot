@@ -119,6 +119,43 @@ struct Device {
 };
 extern Device dev;
 
+/// (hookshot) Windows Intel's compiler (igvk64, UHD and Arc) faults when two threads hand it shaders at once. An Arc
+/// A750 froze the PC on four compute pipelines (issue 496). An Intel UHD on Windows read address 0x170 inside igvk64
+/// during the first scene's compiles (two frames in hookshot_vk.dll, and no "driver faulted compiling" line, so the
+/// call was not inside guarded_graphics). One thread enters vkCreateShaderModule and vkCreate*Pipelines.
+/// Other vendors, and Intel on other systems, are not held. The Intel shader compiles row's Side by side, or
+/// RX_VK_NO_INTEL_SERIAL=1 over it: side by side, as before.
+/// ask: a create that compiles nothing (VK_PIPELINE_CREATE_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT), on the replay thread so a
+/// draw or dispatch never waits for a compile. It never waits here either: while a worker holds the gate, busy is set and
+/// the caller answers VK_PIPELINE_COMPILE_REQUIRED (cold) without asking the driver.
+bool intel_compiles_side_by_side();   // (vk_menu.cpp: the row as this run started with it)
+inline bool intel_gate_on() {
+#ifdef _WIN32
+    static const bool on = !intel_compiles_side_by_side() && dev.props.vendorID == 0x8086;
+    return on;
+#else
+    return false;
+#endif
+}
+struct IntelDriverGate {
+    std::unique_lock<std::mutex> hold;
+    bool busy = false;
+    explicit IntelDriverGate(bool ask = false) {
+        if (!intel_gate_on()) return;
+        static std::mutex mu;
+        static std::once_flag once;
+        std::call_once(once, [] {
+            logf("vk: Intel's compiler is entered by one thread (Intel shader compiles row, RX_VK_NO_INTEL_SERIAL: side by side)");
+        });
+        if (ask) {
+            hold = std::unique_lock<std::mutex>(mu, std::try_to_lock);
+            busy = !hold.owns_lock();
+        } else {
+            hold = std::unique_lock<std::mutex>(mu);
+        }
+    }
+};
+
 /// (hookshot) Where a storage buffer binding starts: the address rounded down to this, the shaders' offsets counted from there
 /// (vk_shader.cpp make_profile / host_info, the translator's ssbo_align_mask; vk_draw.cpp's descriptor writer). At least 16
 /// bytes, whatever the device allows: the translator reads 8- and 16-byte accesses through vector views (offset >> 3, >> 4),

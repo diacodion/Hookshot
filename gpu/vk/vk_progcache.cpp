@@ -500,7 +500,7 @@ void program_cache_read(FILE* in, std::mutex* mu, uint64_t key, const std::vecto
                 ok = false;
                 break;
             }
-            st.module = make_module(spirv);
+            st.module = make_module(spirv, key, nullptr);
             st.phis = fallback_size::spirv_phis(spirv.data(), spirv.size());
             ok = ok && st.module;
         }
@@ -595,11 +595,13 @@ std::unique_ptr<Program> program_cache_read_light(FILE* in, std::mutex* mu, uint
     return p;
 }
 namespace {
-/// (in: a handle on the cache's file, used under mu when given) the code read and the module made
-bool complete_from(Program& p, FILE* in, std::mutex* mu) {
+/// (in: a handle on the cache's file, used under mu when given) the code read and the module made. busy: Intel's compiler
+/// gate only tried (make_module); while another thread holds it, *busy is set, false comes back and the program is as it was
+bool complete_from(Program& p, FILE* in, std::mutex* mu, bool* busy = nullptr) {
     if (!p.code_words) return !p.failed;
     const int64_t code_at = p.code_at;
-    std::vector<uint32_t> spirv((size_t)p.code_words);
+    const uint64_t words = p.code_words;
+    std::vector<uint32_t> spirv((size_t)words);
     p.code_words = 0;
     bool ok = in != nullptr;
     if (ok) {
@@ -609,7 +611,11 @@ bool complete_from(Program& p, FILE* in, std::mutex* mu) {
         ok = fread(spirv.data(), 4, spirv.size(), in) == spirv.size();
     }
     Stage& st = p.stages[0];
-    if (ok) st.module = make_module(spirv);
+    if (ok) st.module = make_module(spirv, p.key, busy);
+    if (ok && !st.module && busy && *busy) {   // (not made yet, not failed: a worker completes it, behind the gate)
+        p.code_at = code_at, p.code_words = words;
+        return false;
+    }
     if (!ok || !st.module) {
         static std::atomic<int> logged{0};
         if (logged++ < 20)
@@ -626,6 +632,13 @@ bool complete_from(Program& p, FILE* in, std::mutex* mu) {
 bool program_cache_complete(Program& p) {
     std::lock_guard lk(light_mu);
     return complete_from(p, disk_in, &disk_mu);
+}
+/// (the dispatch's, on the replay thread) program_cache_complete with Intel's compiler gate only tried: while a worker holds
+/// it, *busy is set, false comes back and the program is left as it was, for a worker to complete (vk_draw.cpp dispatch)
+bool program_cache_complete_ask(Program& p, bool* busy) {
+    *busy = false;
+    std::lock_guard lk(light_mu);
+    return complete_from(p, disk_in, &disk_mu, busy);
 }
 /// (the load at a program's create call, vk_programs.cpp) the same for a program no other thread has yet, with the worker's
 /// own handle on the file: neither light_mu nor disk_mu is held through its read, which a dispatch on the replay's thread

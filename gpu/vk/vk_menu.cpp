@@ -682,7 +682,8 @@ bool row_fixed(const int* value) {
     return (value == &opts.dlss && ur::upscaler_fixed(upscalers_available())) ||
            (value == &opts.resolution && ur::render_fixed(upscaler())) || (value == &opts.upscale && !filter_needed()) ||
            (value == &opts.dlss_model && ur::model_fixed(upscaler(), dlss_preset_env() != nullptr)) ||
-           (value == &opts.astc_rgba8 && getenv("RX_VK_ASTC_RGBA8"));   // (set for the run: vk_texture.cpp reads it first)
+           (value == &opts.astc_rgba8 && getenv("RX_VK_ASTC_RGBA8")) ||   // (set for the run: vk_texture.cpp reads it first)
+           (value == &opts.intel_compiles && getenv("RX_VK_NO_INTEL_SERIAL"));
 }
 const char* tx_output_res(int v) {
     static char b[40];
@@ -1120,6 +1121,17 @@ const char* hn_astc_rgba8(int, int variant) {
     return variant <= 0 && getenv("RX_VK_ASTC_RGBA8") ? "Set by RX_VK_ASTC_RGBA8 (hookshot_env.txt or the environment): remove that line to choose here."
                                        : nullptr;
 }
+const char* tx_intel_compiles(int v) { return v ? "Side by side" : "One at a time"; }
+/// (the Intel shader compiles row's line: RX_VK_NO_INTEL_SERIAL holds it, as RX_VK_ASTC_RGBA8 the ASTC row)
+const char* hn_intel_compiles(int v, int variant) {
+    if (variant <= 0 && getenv("RX_VK_NO_INTEL_SERIAL"))
+        return "Set by RX_VK_NO_INTEL_SERIAL (hookshot_env.txt or the environment): remove that line to choose here.";
+    static const char* const t[] = {"The safe choice, and the best on a CPU with 4 cores or fewer: a shader Intel's compiler "
+                                    "faults on is left out instead of closing the game.",
+                                    "Shaders are built faster on a CPU with many cores, but Intel's driver can crash the game "
+                                    "while it builds them."};
+    return hint_in(t, 2, 0, v, variant);
+}
 MENU_HINTS(hn_robust, 0, "On, on every card.", "Can be faster on some NVIDIA cards.", "Always on.")
 MENU_HINTS(hn_fps, 0, nullptr, "The frame rate. With frame generation on, the game's own rate too.",
            "And the game's frame time, with its 1% low: the rate of its slowest 1% of frames over the last 10 seconds.",
@@ -1398,6 +1410,9 @@ Row rows[] = {
     {TAB_DEBUG, "ASTC as RGBA8", &opts.astc_rgba8, 0, 1, 1, tx_onoff,
      "Big ASTC textures kept as decoded RGBA8 instead of re-encoded to BC3: a workaround for texture artifacts seen on some AMD "
      "cards (issues 57 and 1006). Takes far more video memory. Applies after restart.", hn_astc_rgba8, true, true},
+    // (hookshot, Intel graphics on Windows only: row_shown) IntelDriverGate, vk_internal.h
+    {TAB_DEBUG, "Intel shader compiles", &opts.intel_compiles, 0, 1, 1, tx_intel_compiles,
+     "Intel graphics: how many shaders Intel's compiler is given at once. Applies after a restart.", hn_intel_compiles, true, true},
     // (hookshot) the Gameplay tab's Bug report (vk_bug_report.h): A or Enter writes the report's folder; the help says what is in it
     {TAB_GAMEPLAY, "Bug report", nullptr, 0, 0, 0, nullptr,
      "Saves what an issue needs in a new folder, bug-reports in the game folder: report.txt with the issue form's answers (this "
@@ -1664,10 +1679,18 @@ int ask_sel = 0;   // (the restart question's choice: 0 Later, 1 Restart now)
 /// runs); HDR's paper white, peak brightness and contrast only with HDR on. A row that comes or goes moves those after it: the
 /// selection is a place on its tab (tab_selected), so a row hidden after the selected one leaves the selection where it is,
 /// and menu_tick brings back one past the end
+/// (hookshot) The Intel shader compiles row: Intel graphics on Windows, the only place IntelDriverGate holds the compiler
+bool intel_compiler_row() {
+#ifdef _WIN32
+    return dev.props.vendorID == 0x8086;
+#else
+    return false;
+#endif
+}
 bool row_shown(int i) {
     const int* v = rows[i].value;
     return ((rows[i].cheat < 0 && v != &opts.damage_taken) || cheats_on()) && (v != &opts.reflex || reflex_available()) &&
-           (v != &opts.antilag || antilag_available()) &&
+           (v != &opts.antilag || antilag_available()) && (v != &opts.intel_compiles || intel_compiler_row()) &&
            (v != &opts.dlss || ur::upscaler_shown(upscalers_available())) &&
            (v != &opts.dlss_model || ur::model_shown(dlss_why() == DLSS_OK)) &&
            ((v != &opts.hdr_white && v != &opts.hdr_peak && v != &opts.hdr_contrast) || opts.hdr != 0) &&
@@ -4222,6 +4245,7 @@ void menu_init() {
     if (const char* e = getenv("HOS_SKIP_OPENING")) env_override(&opts.skip_opening, !env_value_off(e));
     // (vk_texture.cpp reads RX_VK_ASTC_RGBA8 over the row: the row shows it, fixed (row_fixed), and the ini keeps the player's)
     if (const char* e = getenv("RX_VK_ASTC_RGBA8")) env_override(&opts.astc_rgba8, !env_value_off(e));
+    if (const char* e = getenv("RX_VK_NO_INTEL_SERIAL")) env_override(&opts.intel_compiles, !env_value_off(e));
     if (const char* e = getenv("HOS_OUTPUT_RES")) {
         player_custom_output = custom_output;   // (parse_output replaces the player's own size with the environment's)
         env_override(&opts.output_res, parse_output(e));
@@ -4276,6 +4300,7 @@ void menu_auto_for_gpu(const VkPhysicalDeviceProperties& props, ::auto_settings:
 
 // (the switches read once, at the first present: they are for the whole run, and each present asked twice)
 int menu_vsync() { static const int run = env_on("RX_VK_FIFO") ? 1 : env_on("RX_VK_IMMEDIATE") ? 2 : 0; return run ? run : opts.vsync; }
+bool intel_compiles_side_by_side() { return opts.intel_compiles != 0; }   // (RX_VK_NO_INTEL_SERIAL in it: menu_init)
 bool resolution_auto() { return opts.resolution == 0; }
 int resolution_scale() {
     const float s = upscaler_rows::percent(ur::snap_render(upscaler(), opts.resolution)) / 100.0f;
