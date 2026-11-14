@@ -886,6 +886,7 @@ void gpu_write(VkCommandBuffer cmd, uint64_t gpu, const void* data, uint64_t n) 
         if (!b || (b.offset & 3) || (k & 3)) {   // (unaligned or outside the pools: on the CPU, as before)
             guest_cpu_write(gpu, d, k);
         } else {
+            full_barrier(cmd);   // overlapping inline writes must reach memory in stream order
             vkCmdUpdateBuffer(cmd, b.buffer, b.offset, k, d);
         }
         gpu += k, d += k, n -= k;
