@@ -604,6 +604,7 @@ Insert always releases the latch.
 | `mouse_sensitivity` | hundredths: 100 is 1.00 |
 | `field_of_view` | 50 to 150 percent of the current vertical gameplay FOV; 100 is the original. Applies immediately, before projection and culling. The resulting vertical angle stays within 5 to 140 degrees |
 | `robust_buffers` | 0 Auto (on), 1 Off, 2 On |
+| `damage_taken` | 0 Half, 1 Normal (default), 2 Double, 3 Quadruple; Debug tools Off uses Normal without changing the saved choice. Half rounds the full hit up to a quarter heart, even on lethal hits; Heart protection wins |
 | `game_speed` | 0 Per frame, 1 Real time |
 | `text_speed` | 0 Normal, 1 2x, 2 4x, 3 Instant |
 | `microphone` | 0 Off, 1 Default, 2 and up a microphone (the name in `microphone_device` decides which) |
