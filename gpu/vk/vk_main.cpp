@@ -261,12 +261,16 @@ bool pick_device() {
 
 /// (hookshot) Whether the shaders' float adds to storage buffers are asked to be the GPU's own atomic (create_device):
 /// RX_VK_NATIVE_FADD by the switches' rule (hookshot_env.h env_value_off: 0, false, off, no or empty is off, any other
-/// value on); unset, only with NVIDIA's driver, the one the native add was tried on in the game (an RTX 4090 in Kakariko
-/// and on Death Mountain Trail). AMD's RDNA 3 and later and Intel's Arc report the feature too but were not tried: they
-/// keep the loop unless the switch asks, until runs on them say otherwise
-static bool native_fadd_wanted(const char* env, VkDriverId driver) {
+/// value on); unset, with NVIDIA's driver (an RTX 4090 in Kakariko and on Death Mountain Trail) and with Intel's Windows
+/// driver on the GPU family it was run on: the Xe-LPG iGPUs of Meteor Lake and Arrow Lake (PCI device 0x7Dxx; run on a
+/// 0x7D55 in Kokiri Forest, Kakariko and on Death Mountain Trail), from that driver, 101.9175, on (Intel's Windows
+/// driverVersion is 101 << 14 | 9175). Intel's other GPUs on Windows (Iris Xe and UHD, Arc discrete, Lunar Lake), older
+/// drivers, AMD's RDNA 3 and later and Mesa's Intel driver report the feature too but were not tried: they keep the loop
+/// unless the switch asks, until runs on them say otherwise
+static bool native_fadd_wanted(const char* env, VkDriverId driver, uint32_t device, uint32_t version) {
     if (env) return !env_value_off(env);
-    return driver == VK_DRIVER_ID_NVIDIA_PROPRIETARY;
+    if (driver == VK_DRIVER_ID_NVIDIA_PROPRIETARY) return true;
+    return driver == VK_DRIVER_ID_INTEL_PROPRIETARY_WINDOWS && (device & 0xFF00u) == 0x7D00u && version >= (101u << 14 | 9175u);
 }
 
 bool create_device() {
@@ -354,8 +358,9 @@ bool create_device() {
     optional(VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME, dev.coop_matrix);
     // (hookshot) the GPU's own float add on storage buffers: the game's RED/ATOM.ADD.F32 become one OpAtomicFAddEXT instead
     // of a compare-exchange loop, which gives up after CAS_LOOP_MAX_TRIES attempts and loses that add (eden
-    // spirv_emit_context.cpp DefineStorageBuffers). By default with NVIDIA's driver only (native_fadd_wanted);
-    // RX_VK_NATIVE_FADD=1 asks for it on any GPU, =0 keeps the loop on every one, the extension not even enabled
+    // spirv_emit_context.cpp DefineStorageBuffers). By default with NVIDIA's driver, and Intel's Windows driver on the
+    // Meteor Lake and Arrow Lake iGPUs (native_fadd_wanted); RX_VK_NATIVE_FADD=1 asks for it on any GPU, =0 keeps the loop
+    // on every one, the extension not even enabled
     const char* const fadd_env = getenv("RX_VK_NATIVE_FADD");
     VkPhysicalDeviceDriverProperties fadd_driver{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
     {
@@ -363,7 +368,7 @@ bool create_device() {
         p2.pNext = &fadd_driver;
         vkGetPhysicalDeviceProperties2(dev.physical, &p2);
     }
-    const bool fadd_wanted = native_fadd_wanted(fadd_env, fadd_driver.driverID);
+    const bool fadd_wanted = native_fadd_wanted(fadd_env, fadd_driver.driverID, dev.props.deviceID, dev.props.driverVersion);
     bool atomic_float = false;
     if (fadd_wanted) optional(VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME, atomic_float);
     optional(VK_KHR_SWAPCHAIN_MUTABLE_FORMAT_EXTENSION_NAME, dev.swap_mutable);   // (hookshot: the overlays, vk_imgui.cpp)
@@ -517,7 +522,10 @@ bool create_device() {
                                                      : "compare-exchange loop (no VK_EXT_shader_atomic_float)";
         if (fadd_env) logf("vk: float atomic add on storage buffers: %s, RX_VK_NATIVE_FADD=%s", how, fadd_env);
         else logf("vk: float atomic add on storage buffers: %s, %s", how,
-                  fadd_wanted ? "NVIDIA's driver" : "by default only with NVIDIA's driver (RX_VK_NATIVE_FADD=1: native where the GPU has it)");
+                  !fadd_wanted ? "by default only with NVIDIA's driver and Intel's Windows driver on Meteor Lake and Arrow Lake "
+                                 "(RX_VK_NATIVE_FADD=1: native where the GPU has it)"
+                  : fadd_driver.driverID == VK_DRIVER_ID_NVIDIA_PROPRIETARY ? "NVIDIA's driver"
+                                                                            : "Intel's Windows driver, Meteor Lake or Arrow Lake");
     }
     // (bounds-checked buffer access: an out-of-range access dropped instead of faulting the device. On by default: the GPU
     // culling pass 53caac5f faulted the device while a save loaded, about one start in three, and the scene's lighting read garbage
