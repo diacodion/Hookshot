@@ -593,10 +593,13 @@ bool wide_sides_possible() { return wide_possible.load(std::memory_order_relaxed
 VkImage framegen_scale(VkCommandBuffer cmd, VkImageView src, VkImage image, uint32_t sw, uint32_t sh, const int crop[4], uint32_t dw, uint32_t dh,
                        bool pq) {
     const WideSides wide = wide_now.load(std::memory_order_relaxed);   // (wide_sides_tick, each present)
-    if (!opts.upscale && !opts.sharpness && !wide.side) return VK_NULL_HANDLE;
     if (!src || !image || !sw || !sh || !dw || !dh) return VK_NULL_HANDLE;
     const PresentSourceRect source = present_source_rect(sw, sh, crop);
     if (!source.w || !source.h) return VK_NULL_HANDLE;
+    // (a picture larger than the window takes the pass even with the filter Off: the blit's linear filter reads 2 x 2 of the
+    // picture whatever the shrink, and fine detail shimmered)
+    const bool shrink = source.w > dw || source.h > dh;
+    if (!opts.upscale && !opts.sharpness && !wide.side && !shrink) return VK_NULL_HANDLE;
     if (!init_scale()) return VK_NULL_HANDLE;
     // (pq: the game's own HDR10 picture (Native HDR), PQ codes in RGB10A2. Scaled into RGB10A2 images by fg_scale_pq: through
     // the RGBA8 ones its codes lost two bits, banding in the dark. Without that pass it is shown unscaled. The images made for
