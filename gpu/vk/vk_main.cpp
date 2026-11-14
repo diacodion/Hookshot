@@ -1591,7 +1591,12 @@ const MkwVkRenderer* mkwvk_init(const MkwVkHost* h) {
     }
     host = h;
     if (!load_global()) {
+#ifdef _WIN32
         logf("vk: load_global failed (Vulkan loader library or vkCreateInstance missing)");
+#else   // (linux: why libvulkan.so.1 did not load, kept by LoadLibraryA, which read the one message; "" if it loaded)
+        const char* why = hos_load_error();
+        logf("vk: load_global failed (Vulkan loader library or vkCreateInstance missing)%s%s", *why ? ": " : "", why);
+#endif
         return nullptr;
     }
     if (!create_instance()) {
