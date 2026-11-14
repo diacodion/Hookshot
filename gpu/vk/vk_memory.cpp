@@ -668,7 +668,27 @@ void stamp_page(uint64_t p, uint32_t g) {
 }
 } // namespace
 
-namespace { void cap_view_bump(); }   // (defined with cap_view_gen below, in this file's anonymous namespace)
+namespace {
+/// (hookshot) Whether addresses asked in ascending order fall in sorted, disjoint [lo, hi) ranges: a cursor that only
+/// moves forward, one pass over the ranges for a whole scan, where a binary search for every page cost log2(ranges)
+/// compares each (the collections give their pages in address order: host/rx_backend.c's collect_in walks sorted, merged
+/// ranges, hos_gpu_guest_ranges' for memory_collect_written, and capture_make's own `mirrored` list for the pages of a
+/// Capture, which capture_make's staging and take_capture walk). An address below the last one asked searches again: any
+/// order, the same answer
+struct RangeWalk {
+    const std::vector<std::pair<uint64_t, uint64_t>>& r;
+    size_t next = 0;   // (the first range that starts past the last address asked)
+    uint64_t last = 0;
+    bool in(uint64_t a) {
+        if (a < last) next = (size_t)(std::upper_bound(r.begin(), r.end(), std::make_pair(a, ~uint64_t(0))) - r.begin());
+        else
+            while (next < r.size() && r[next].first <= a) next++;
+        last = a;
+        return next && a < r[next - 1].second;
+    }
+};
+void cap_view_bump();   // (defined with cap_view_gen below)
+}
 const std::vector<std::pair<uint64_t, uint64_t>>& capture_ranges_merged();
 void shadow_written(const uint32_t* pages, int64_t n);   // (the write-back's diff, below: pages the captures took)
 void shadow_written_collected(const uint32_t* pages, int64_t n);   // (the write-back's diff, below: pages the collection found)
@@ -679,14 +699,10 @@ void memory_collect_written() {
         const uint32_t g = ++gen_now;
         // (the captured ranges once a call: a lock, a pool-list refresh and three searches for every dirty page cost the
         // replay thousands of lock cycles a submit, the cost that retired gpu_pages' lock below)
-        const auto& owned = capture_ranges_merged();
-        const auto in_capture = [&owned](uint64_t guest) {
-            auto it = std::upper_bound(owned.begin(), owned.end(), std::make_pair(guest, ~uint64_t(0)));
-            return it != owned.begin() && guest < std::prev(it)->second;
-        };
+        RangeWalk in_capture{capture_ranges_merged()};
         for (int64_t i = 0; i < n; i++) {
             const uint64_t guest = (uint64_t)pages[i] << kPageShift;
-            if (!owned.empty() && in_capture(guest)) {   // (written after its submit's capture: the next capture takes it, as it is then)
+            if (in_capture.in(guest)) {   // (written after its submit's capture: the next capture takes it, as it is then)
                 uint64_t avail = 0;
                 if (const uint8_t* q = host->gpu_ptr(guest, &avail)) host->mark_written(q, 4096);
                 continue;
@@ -1166,10 +1182,6 @@ std::vector<std::pair<uint64_t, uint64_t>> tex_merged;          // (tex_spans me
 bool tex_spans_changed = false;
 uint64_t tex_merged_bytes = 0;
 
-bool in_tex_merged(uint64_t guest) {   // (shadow_mu held)
-    auto it = std::upper_bound(tex_merged.begin(), tex_merged.end(), std::make_pair(guest, ~uint64_t(0)));
-    return it != tex_merged.begin() && guest < std::prev(it)->second;
-}
 void shadow_erase(uint32_t page) {   // (shadow_mu held)
     if (!shadow.erase(page)) return;
     auto r = shadow_regions.find(page >> 9);
@@ -1802,12 +1814,12 @@ std::unique_ptr<Capture> capture_make() {
                 c->sidx.assign((size_t)n, -1);
                 int32_t tn = 0;
                 size_t lj = 0;
+                RangeWalk in_texr{texr};   // (pages in address order: collect_in over `mirrored`)
                 for (int64_t i = 0; i < n; i++) {
                     while (lj < c->late.size() && c->late[lj] < (uint32_t)i) lj++;
                     if (lj < c->late.size() && c->late[lj] == (uint32_t)i) continue;
                     const uint64_t g = (uint64_t)pages[i] << kPageShift;
-                    auto it = std::upper_bound(texr.begin(), texr.end(), std::make_pair(g, ~uint64_t(0)));
-                    if (it != texr.begin() && g < std::prev(it)->second) c->sidx[(size_t)i] = tn++;
+                    if (in_texr.in(g)) c->sidx[(size_t)i] = tn++;
                 }
                 if (!tn || !stage_get(*c, (size_t)tn * 4096)) c->sidx.clear();
             }
@@ -1959,6 +1971,7 @@ bool take_capture(std::unique_ptr<Capture> c, uint64_t value, uint64_t completed
             // inserting the copied ones again was a free, an allocation and two hash operations a page, for the pages the
             // game rewrites every frame. c->slots[i] is the index in c->pages of c->copied[i], in order)
             {
+                RangeWalk in_tex{tex_merged};
                 size_t j = 0;
                 for (size_t i = 0; i < c->pages.size(); i++) {
                     if (j < c->slots.size() && c->slots[j] == i) {
@@ -1966,7 +1979,7 @@ bool take_capture(std::unique_ptr<Capture> c, uint64_t value, uint64_t completed
                         continue;
                     }
                     const uint32_t p = c->pages[i];
-                    if (in_tex_merged((uint64_t)p << 12)) shadow_erase(p);
+                    if (in_tex.in((uint64_t)p << 12)) shadow_erase(p);
                 }
             }
             bool swept = false;
@@ -1975,9 +1988,10 @@ bool take_capture(std::unique_ptr<Capture> c, uint64_t value, uint64_t completed
             static thread_local std::vector<CopyPair> pairs;   // (the copies, made together once the slots are known)
             pairs.clear();
             size_t i = 0;
+            RangeWalk in_tex{tex_merged};   // (c->copied in address order too: a subset of c->pages)
             for (; i < c->copied.size(); i++) {
                 const uint32_t p = c->copied[i];
-                if (!in_tex_merged((uint64_t)p << 12)) continue;
+                if (!in_tex.in((uint64_t)p << 12)) continue;
                 if (shadow_n.load(std::memory_order_relaxed) >= kShadowMax && !shadow.count(p)) {
                     if (swept) break;
                     swept = true;
@@ -2012,7 +2026,7 @@ bool take_capture(std::unique_ptr<Capture> c, uint64_t value, uint64_t completed
                 st_from_stage = st_from_map = 0, st_cached = 0;
             }
             for (; i < c->copied.size(); i++)   // (the shadow full: the copied pages not replaced lose their old copies)
-                if (in_tex_merged((uint64_t)c->copied[i] << 12)) shadow_erase(c->copied[i]);
+                if (in_tex.in((uint64_t)c->copied[i] << 12)) shadow_erase(c->copied[i]);
         }
     }
     const auto tk1 = std::chrono::steady_clock::now();
