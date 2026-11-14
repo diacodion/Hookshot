@@ -84,7 +84,7 @@ int wmain(int argc, wchar_t **argv) {
                         "-municode", "-I" + str(ROOT / "builder/setup"), str(c), "-o", str(exe)], check=True)
         tree = root / "Portable ü, tree"
         tree.mkdir()
-        home = tree / "HookshotBuilder"
+        home = tree / "HookshotBuilder-data"   # (not HookshotBuilder: the builder the zip carries, beside the setup)
         profile = root / "authored AppData"
         setup = tree / "Setup.exe"
         import os
@@ -100,7 +100,7 @@ int wmain(int argc, wchar_t **argv) {
         run(root / "downloaded-setup.exe", home, 0, {"HOOKSHOT_SETUP_BASE": str(home), "HOOKSHOT_BUILDER_PORTABLE": "1"})
         moved = root / "Relocated ü, tree"
         tree.rename(moved)
-        home = moved / "HookshotBuilder"
+        home = moved / "HookshotBuilder-data"
         run(moved / "Setup.exe", home, 0)
         run(root / "standard-setup.exe", profile / "HookshotBuilder", 3)
         run(root / "downloaded-setup.exe", home, 2, {"HOOKSHOT_SETUP_BASE": "relative"})

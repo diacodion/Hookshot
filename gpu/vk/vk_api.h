@@ -58,6 +58,10 @@ enum { HOS_OPT_AUTO_RUN = 55 };
 enum { HOS_OPT_FPS_CAP = 53 };
 /* Damage taken: 0 Half, 1 Normal (unchanged), 2 Double, 3 Quadruple. (56: Hookshot's Auto run has 55) */
 enum { HOS_OPT_DAMAGE_TAKEN = 56 };
+/* Hold-to-toggle's enabled Switch buttons, 1 << HOS_SW_*. Off (zero) by default; the existing option callback. */
+enum { HOS_OPT_HOLD_TOGGLE = 54 };
+/* Audio output: 0 Auto, 1 Stereo, 2 5.1, 3 Mono. Only Mono averages final stereo output live. */
+enum { HOS_OPT_AUDIO_OUTPUT = 57 };
 
 /* (hookshot) the controls' names (host/nn_hid.c, host/pad_sdl.c, the pad_ and key_ lines of hookshot_options.ini):
    the Switch's buttons in nn::hid's bit order, and a gamepad's inputs by position (the bottom face button first:

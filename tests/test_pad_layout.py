@@ -45,6 +45,7 @@ HID = r"""
 #include <string.h>
 #include <stdint.h>
 #include "vk_api.h"
+#include "hold_toggle.h"   /* (host/: the hold-to-toggle state the code cut from nn_hid.c keeps) */
 typedef long LONG;
 typedef unsigned long DWORD;
 typedef int SRWLOCK;
@@ -168,7 +169,7 @@ class PadLayoutTests(unittest.TestCase):
             (tmp / "menu.cpp").write_text(fixture, encoding="utf-8")
             binary = tmp / ("t.exe" if sys.platform == "win32" else "t")
             build = subprocess.run([cc, "-std=gnu11", "-Wall", "-Wno-unused-function", "-Wno-unused-variable", "-I", str(ROOT / "gpu" / "vk"),
-                                    "-I", str(ROOT / "gpu"),
+                                    "-I", str(ROOT / "gpu"), "-I", str(ROOT / "host"),
                                     "-c", str(tmp / "hid.c"), "-o", str(tmp / "hid.o")], text=True, capture_output=True)
             self.assertEqual(build.returncode, 0, build.stderr)
             build = subprocess.run([cxx, "-std=c++20", "-Wall", "-Wextra", str(tmp / "menu.cpp"), str(tmp / "hid.o"), "-o", str(binary)],

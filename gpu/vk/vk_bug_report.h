@@ -20,6 +20,8 @@ struct Inputs {
     std::string version;   // HOOKSHOT_VERSION, as the log's first line has it
     std::string gpu;       // the device the game runs on and its driver, as the form asks: "NVIDIA GeForce RTX 4090, NVIDIA 580.95.05"
     std::string options;   // the menu's rows that are not at their defaults, a "Name: value (default: value)" line each
+    std::string pc_options; // the rows whose defaults depend on this PC, "Name: value (default depends on this PC)": in the same
+                            // answer after options, under a line of their own, not counted as changes
     std::string system;    // CPU, RAM and system (system_text)
     std::vector<std::string> env;   // the environment, NAME=VALUE: the game's switches set, and software hooked in
     std::string game_dir;  // the game folder, its separator at the end: the logs are there, and the report's folder goes there

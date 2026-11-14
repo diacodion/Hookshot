@@ -96,6 +96,43 @@ true, and dead code elimination removes the grid walk, so every meshlet is drawn
 screen. It costs some GPU time on cards that cull quickly, so it is off unless set. The log says
 "culling off, every meshlet drawn" for each task shader it changed.
 
+The game culls by occlusion: its z-prepass draws each candidate object's bounds between a samples-passed reset and a
+report, reads the reports back on the CPU a frame or two later, and leaves out the objects whose count was 0. The
+replay writes every report as 4096 ("visible") as it is recorded and gives each depth-only draw from a reset to its
+report a Vulkan occlusion query; as each recording begins, it reads every waiting report's queries at once (no wait)
+and writes the sum over the reports whose queries have all ended. A count not known for sure stays "visible": a late
+or unknown count costs culling, a wrong 0 would hide an object in view. So a report stays 4096 when its run has a draw
+that writes colour or more than 256 draws, when one of its draws did not draw (it returned before its draw command,
+its vertex input could not all be bound, or the mesh fallback split it into task batches: its query is never begun),
+when another queue's queries came in the middle of its run (the queries are numbered from one counter for all the
+game's queues), and when the slot was reported into again before the count came. Work held back at an event wait has
+its reports written as 4096 at once, so the game never reads an older count there before the replay gets to it.
+`RX_VK_OCC_QUERIES=0` turns this off (every report reads 4096, as before), as does setting `RX_VK_OCC_FIXED=<n>`
+(every report reads n, whatever `RX_VK_OCC_QUERIES` says) or `RX_VK_ASYNC=1` (a replay running behind the game);
+`RX_VK_OCC_QUERIES=2` counts the runs with colour draws too (a query around a real draw cost ~0.9 ms of GPU time a
+frame in the Market on an RTX 3090, for a few more objects left out).
+`RX_VK_OCC_LOG` (set) logs every ~5,000 reports how many read 0, how many were left visible and why, how late they
+were written and what the reading cost;
+`RX_VK_OCC_DRY` (set, a test) makes and reads the queries but leaves the reports at 4096, to time the queries alone.
+`HOOKSHOT_OCCLUSION_OFF=1` makes the game itself skip its occlusion queries (`nx2/oot_occlusion.py`).
+
+A CPU read of GPU results waits for the write-back of the submission that writes them (`invalidate`, `vk_replay.cpp`).
+`RX_VK_READBACK_LATE=<rule>[,<rule>...]` names the ranges read without that wait, which then hold the frame before's
+values: `newest` (the range's writer is the newest submission handed out: the game reads it right after submitting the
+work that fills it, so it cannot count on that work being done) and a hex size (the ranges of exactly that many bytes);
+either rule is enough (`gpu/vk/readback_late.h`). Off unless set. On a Steam Deck OLED `newest` alone gives nearly all of
+the gain (a heavy view: 24.3 fps with no rule, 30.1 with `newest`, 24.9 with `3980`, 30.3 with both): two 0x3980-byte
+ranges are 40 to 45% of the readbacks' wait there, larger ranges the rest. It is not a rule for every range: the exposure
+meter read late is the white flashes the wait is there for. `RX_VK_LOG_READBACK_RANGES=1` logs the readbacks by range
+every 3,000 calls (calls, waits and their time, how many had the newest submission as their writer, how many were read
+late), which is how the ranges worth a rule are found on a PC.
+
+`RX_VK_PSYCHOV35_DLSS=1` enables the experimental RGBA16F scene path for DLSS/DLAA and AMD FSR 4 (and its Native AA)
+with Native HDR and PsychoV35. The successful upscale supplies NVIDIA frame generation with depth, camera and actor
+motion as usual. It requires the engine's native-HDR context: DLSS's HDR feature (`RX_VK_DLSS_HDR=0` prevents this
+path) or FSR 4's HDR context (`RX_VK_FSR4_HDR=0` prevents it). FSR 3.1 and TAAU are not enabled by this switch.
+See [the format and history rules](temporal-history.md#psychov35-with-dlssdlaa-and-fsr-4-opt-in) for validation and shader regeneration.
+
 ### Running a test
 
 | Switch | What it does |
@@ -210,7 +247,7 @@ Pipeline-cache file ownership, temporary storage and failure behavior are descri
 | `RX_VK_FETCH_BOUNDS=0` or `1`, `RX_VK_NAN_BITS=0` or `1`, `RX_VK_GATHER_OFFSET=0` or `1` | The translation's vendor and driver workarounds (`gpu/vk/vk_vendor.h`) off or on for one run, whatever the GPU; the log's `vk: vendor fixes` line says which are on. By default: out-of-bounds texel fetches answered with 0 on every GPU but NVIDIA's; NaN tests on a value's bits on AMD's older Windows shader compiler (RX 5000 and RX 6000); gathers nudged by 1/512 of a texel on AMD's and Intel's drivers. They change the shaders' translation (one preparation of the shaders) |
 | `RX_VK_NATIVE_FADD=0` or `1` | The shaders' float adds to storage buffers: 1 the GPU's own atomic where it has `VK_EXT_shader_atomic_float`'s `shaderBufferFloat32AtomicAdd`, 0 a compare-exchange loop on every GPU, the extension not enabled. By default the GPU's own on NVIDIA's driver only, the one it was tried on in the game; on AMD and Intel the loop until runs there show the native add works (the log's `vk: float atomic add on storage buffers:` line says which, and why). The loop gives up after 1024 attempts, and an add that gives up is lost |
 | `RX_VK_UB_WORD_HASH=0` | A/B test: use the old low-address-bit index for cached uniform words (default: mix upper address bits to reduce aligned-buffer collisions) |
-| `RX_VK_MIRROR=0`, `RX_VK_MIRROR_MB=<MB>` | No VRAM mirrors of the game's memory pools (on for discrete cards); their budget |
+| `RX_VK_MIRROR=0`, `RX_VK_MIRROR_MB=<MB>` | No VRAM mirrors of the game's memory pools (on for discrete cards); their budget (by default a quarter of the card, at most 3 GB, an eighth on cards of 4.5 GB or less, and a Quality preset's never more than that: `gpu/vk/mirror_budget.h`) |
 | `RX_VK_MIRROR_TRIM=0` | An import whose mirror is mostly outside every game pool is no longer made again smaller (it is while VRAM is over 80% full: the previous scene's large pools otherwise keep their mirrors for the session; `gpu/vk/mirror_trim.h`) |
 | `RX_VK_CAPTURE_KEEP_OLD=1`, `RX_VK_CAP_BLOCKS=1` | A/B switches for capture buffers: keep the former size classes and 64 MB reuse limit; allocate large buffers from shared blocks instead of dedicated memory. Both are off by default and follow the on/off rule above, including `0`, `false`, `off` and `no` |
 | `RX_VK_VRAM_MB=<MB>` | The texture cache's budget in MiB, over a preset's and over the default (70% of what the driver allows the process, 45% where that is 8.5 GB or less, at most 6 GB; on an integrated GPU less, by the system's RAM: 1 GB with 8 GB of RAM, 2 GB with 12, 2.5 GB with 16, 3.5 GB with 24, 4 GB with 32, and up to 6 GB above that). What a texture counts: BC and natively sampled ASTC by whole blocks at each mip level, partial blocks included; decoded ASTC by its output format; and never less than the allocator's size (`RX_VK_COUNT_BY_ESTIMATE=1`: the estimate alone). The log prints these MiB as `MB` |
@@ -479,7 +516,16 @@ case with `_` for spaces (`frame_generation=2`, `invert_camera_x=1`), except Out
 `gpu/vk/vk_menu.cpp` writes the whole file at every change (`save`), with `options_version=5`,
 `microphone_device=<name>` when a microphone is chosen by name, and the controls (`pad_<button>` and `key_<button>`:
 the README's [Controls](../readme.md#controls)). A value outside a row's range is clamped when it is read. Where the
+`microphone_device=<name>` when a microphone is chosen by name, and the controls (`pad_<button>`, `key_<button>` and `toggle_<button>`:
+the README's [Controls](../README.md#controls)). A value outside a row's range is clamped when it is read. Where the
 number is not the obvious one:
+
+`toggle_<button>=0|1` is the Controls page's Toggle column: 0 Off (default), 1 press once to hold and again to release.
+It applies after remapping to either pad binding, keys and mouse buttons. Only Switch buttons accept it, excluding
+Plus and Minus; directions and ocarina notes do not. Other values mean Off. Saving keeps the flags, not live latches.
+Opening Insert, Plus/Minus, focus loss, rebinding and Reset to defaults clear latches. Background pad presses can
+latch again when Controller in background permits them. Linux's other game dialogs are not guaranteed resets;
+Insert always releases the latch.
 
 | Key | Values |
 |---|---|

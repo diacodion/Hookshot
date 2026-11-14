@@ -55,6 +55,7 @@
 #include "hookshot_env.h"
 #endif
 #include "vk_programs.h"
+#include "readback_late.h"
 #include "vk_work.h"   // (after the others: counts the commands that do GPU work, for full_barrier)
 
 namespace mkwvk {
@@ -917,6 +918,7 @@ void gpu_write(VkCommandBuffer cmd, uint64_t gpu, const void* data, uint64_t n) 
         if (!b || (b.offset & 3) || (k & 3)) {   // (unaligned or outside the pools: on the CPU, as before)
             guest_cpu_write(gpu, d, k);
         } else {
+            full_barrier(cmd);   // overlapping inline writes must reach memory in stream order
             vkCmdUpdateBuffer(cmd, b.buffer, b.offset, k, d);
         }
         gpu += k, d += k, n -= k;
@@ -2922,6 +2924,64 @@ bool readback_wait_value(uint64_t v) {
              (unsigned long long)q_values.load());
     return false;
 }
+/// (hookshot) RX_VK_READBACK_LATE (readback_late.h): whether a readback of that size, written by the newest submission or
+/// not, is read without its wait. Off unless the switch is set
+bool readback_late_wanted(uint64_t size, bool newest) {
+    static const readback_late::Rules rules = [] {
+        const char* e = getenv("RX_VK_READBACK_LATE");
+        const readback_late::Rules r = readback_late::parse(e);
+        if (r.any()) logf("vk: readbacks read without their wait: RX_VK_READBACK_LATE=%s (newest %d, %d sizes)", e, (int)r.newest, (int)r.sizes.size());
+        return r;
+    }();
+    return readback_late::wanted(rules, size, newest);
+}
+/// (hookshot) RX_VK_LOG_READBACK_RANGES=1: the readbacks by range, in the log every 3000 calls: how many waited and for how
+/// long, how many had the newest submission as their writer, how many were read without their wait (RX_VK_READBACK_LATE).
+/// How the ranges worth a rule are found on a given PC
+struct RbRange {
+    uint64_t gpu, size;
+    int64_t calls, waits, ns, newest, late;
+};
+std::mutex rb_ranges_mu;
+std::vector<RbRange> rb_ranges;
+void rb_range_note(uint64_t gpu, uint64_t size, bool waited, int64_t ns, bool newest, bool late) {
+    std::lock_guard lk(rb_ranges_mu);
+    for (auto& r : rb_ranges)
+        if (r.gpu == gpu && r.size == size) {
+            r.calls++;
+            r.waits += waited;
+            r.ns += ns;
+            r.newest += newest;
+            r.late += late;
+            return;
+        }
+    if (rb_ranges.size() < 256) rb_ranges.push_back({gpu, size, 1, waited, ns, newest, late});
+}
+void rb_ranges_log() {
+    static std::atomic<int> logged{0};
+    std::vector<RbRange> top;
+    {
+        std::lock_guard lk(rb_ranges_mu);
+        top = rb_ranges;
+        rb_ranges.clear();
+    }
+    if (logged++ >= 400) return;
+    std::sort(top.begin(), top.end(), [](const RbRange& a, const RbRange& b) {
+        return a.ns + a.late * 5000000 > b.ns + b.late * 5000000;
+    });
+    int64_t late = 0;
+    for (const auto& r : top) late += r.late;
+    std::string s;
+    for (size_t i = 0; i < top.size() && i < 8; i++) {
+        char b[200];
+        snprintf(b, sizeof b, " | %#llx +%#llx: %lld calls, %lld waited %.1f ms, %lld newest, %lld late",
+                 (unsigned long long)top[i].gpu, (unsigned long long)top[i].size, (long long)top[i].calls,
+                 (long long)top[i].waits, top[i].ns / 1e6, (long long)top[i].newest, (long long)top[i].late);
+        s += b;
+    }
+    logf("vk: readback ranges at present %lld: %d ranges, %lld read late%s", (long long)presents_now, (int)top.size(),
+         (long long)late, s.c_str());
+}
 void invalidate(uint64_t gpu, uint64_t size) {
     static const bool log_inv = env_on("RX_VK_LOG_INVALIDATE");
     static std::atomic<int> logged{0};
@@ -3008,7 +3068,9 @@ void invalidate(uint64_t gpu, uint64_t size) {
                 if (!part_rec.empty()) l_sent = part_rec.rbegin()->second;
                 vkGetSemaphoreCounterValue(dev.device, rec_timeline, &l_done);
             }
-            if (v > completed()) {
+            const bool pending = v > completed(), newest = pending && v >= f0;
+            const bool late = pending && readback_late_wanted(size, newest);   // (RX_VK_READBACK_LATE: read without its wait)
+            if (pending && !late) {
                 int ok = 0;
                 // (and not when a part after it reads guest memory in place, on a card whose pools are not all mirrored
                 // or whose mirrors take pages no capture holds: the game, let go after the first part, would write what
@@ -3036,7 +3098,13 @@ void invalidate(uint64_t gpu, uint64_t size) {
                          (unsigned long long)f0, (unsigned long long)c0, (int)behind0, (unsigned long long)l_part,
                          (unsigned long long)l_last, (unsigned long long)whole, (unsigned long long)l_sent, (unsigned long long)l_done);
             }
+            static const bool log_ranges = env_on("RX_VK_LOG_READBACK_RANGES");
+            if (log_ranges)
+                rb_range_note(gpu, size, w,
+                              w ? std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - w0).count() : 0,
+                              newest, late);
             if (++calls % 3000 == 0) {
+                if (log_ranges) rb_ranges_log();
                 const int64_t n = waited.exchange(0);
                 logf("vk: readbacks of GPU results: %lld of 3000 waited for their write-back, %.2f ms each; %lld looked at the "
                      "stopped queues first, %lld waited for their submission's last part (guest memory read in place after theirs)",
@@ -5495,6 +5563,7 @@ void fill_replay_table(MkwVkRenderer& t) {
         if (id == HOS_OPT_HDR_WHITE) return std::clamp(opts.hdr_white, 80, 500);
         if (id == HOS_OPT_DISCORD) return opts.discord != 0;
         if (id == HOS_OPT_VOLUME) return opts.volume;
+        if (id == HOS_OPT_AUDIO_OUTPUT) return opts.audio_output;
         if (id == HOS_OPT_MUTE_BACKGROUND) return opts.mute_background;
         if (id == HOS_OPT_DISABLE_CAMERA_CENTERING) return opts.disable_camera_centering;
         if (id == HOS_OPT_AUTO_RUN) return opts.auto_run;   // (host/nn_hid.c and host/auto_run.h)
@@ -5505,6 +5574,7 @@ void fill_replay_table(MkwVkRenderer& t) {
         if (id == HOS_OPT_DAMAGE_TAKEN) return menu_damage_taken();
         if (id == HOS_OPT_SKIP_OPENING) return opts.skip_opening;
         if (id == HOS_OPT_FPS_CAP) return opts.fps_cap;
+        if (id == HOS_OPT_HOLD_TOGGLE) return opts.hold_toggle;
         return id == 0 ? opts.realtime : id == 1 ? menu_is_open() : id == 2 ? resolution_auto() && !temporal_full_scale() : id == 3 ? (temporal_full_scale() ? 10000 : resolution_scale()) : id == 4 ? opts.pad_background : id == 5 ? opts.text_speed : id == 6 ? opts.mouse_native :
                id == 7 ? opts.mouse_sens : id == 8 ? opts.mouse_invert : id == 9 ? opts.rumble : id == 16 ? opts.invert_cam_x : id == 17 ? opts.invert_cam_y : id == HOS_OPT_GYRO ? opts.gyro : id == HOS_OPT_GYRO_SENS_X ? opts.gyro_sens_x : id == HOS_OPT_GYRO_SENS_Y ? opts.gyro_sens_y : id == HOS_OPT_GYRO_INV_X ? opts.gyro_inv_x : id == HOS_OPT_GYRO_INV_Y ? opts.gyro_inv_y : id == HOS_OPT_GYRO_DEADZONE ? opts.gyro_deadzone :
                id == HOS_OPT_DLSS_JITTER_W || id == HOS_OPT_DLSS_JITTER_H || id == HOS_OPT_DLSS_JITTER_PHASES ? jitter_option(id) : 0;
