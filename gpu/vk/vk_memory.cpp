@@ -20,6 +20,7 @@
 #include "vk_menu.h"
 #include <deque>
 #include <unordered_map>
+#include <unordered_set>
 #include <thread>
 
 #define NOMINMAX
@@ -44,6 +45,7 @@
 #include <unistd.h>
 #endif
 #include "shaders/wb_diff_comp_spv.h"
+#include "shaders/late_fix_comp_spv.h"
 #include "vram_pressure.h"
 #ifndef HOOKSHOT_ENV_H   // (env_on: the switches' one rule)
 #include "hookshot_env.h"
@@ -851,6 +853,7 @@ struct Capture {
     size_t nbytes = 0;
     std::vector<uint32_t> late;      // (indices into pages: copied again by the replay once late_value is done)
     uint64_t late_value = 0;
+    uint64_t late_done = 0;          // (the GPU's progress when it was made: the late pages' fix)
     // (hookshot) "shadow staging": the texture pages of this capture, copied from guest memory into ordinary cached RAM too, for
     // take_capture's texture shadow to read instead of the buffer above (often write-combined here: CPU reads ~0.3 GB/s).
     // sidx[i] = the staging slot of pages[i] (4 KB a slot), or -1: that page is read from the buffer. Empty sidx: no staging.
@@ -1006,6 +1009,13 @@ bool cap_prewarm_on() {
     }();
     return v;
 }
+bool late_fix_on();   // (below)
+// (hookshot: storage and an address too with the late pages' fix, which writes the write-backs' words into a capture's buffer)
+VkBufferUsageFlags cap_usage() {
+    static const VkBufferUsageFlags u = VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+        (late_fix_on() ? VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT : 0);
+    return u;
+}
 std::atomic<int> cap_prewarm_busy{0};
 std::atomic<int> cap_prewarm_class_busy[4]{};   // (32, 64, 128 and 192 MB spares being made)
 void cap_exit_note() {
@@ -1018,7 +1028,7 @@ void cap_spare_make(uint64_t size, int index) {
     VmaAllocation a = nullptr;
     void* m = nullptr;
     const auto t0 = std::chrono::steady_clock::now();
-    if (!cap_shutting_down.load() && create_buffer_cached(size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, b, a, &m, !env_on("RX_VK_CAP_BLOCKS")) && m) {
+    if (!cap_shutting_down.load() && create_buffer_cached(size, cap_usage(), b, a, &m, !env_on("RX_VK_CAP_BLOCKS")) && m) {
         static std::atomic<int> told{0};
         if (told++ < 8)
             logf("vk: a %llu MB capture buffer made ahead in %.1f ms, off the game's thread (RX_VK_CAP_PREWARM)", (unsigned long long)(size >> 20),
@@ -1072,7 +1082,7 @@ bool cap_buf_get(uint64_t need, VkBuffer& buffer, VmaAllocation& alloc, void*& m
     }
     size = cap_buf_size(need);
     map = nullptr;
-    return create_buffer_cached(size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, buffer, alloc, &map,
+    return create_buffer_cached(size, cap_usage(), buffer, alloc, &map,
                                 size >= (16ull << 20) && !env_on("RX_VK_CAP_BLOCKS")) && map;
 }
 std::vector<std::pair<uint64_t, uint64_t>> cap_ranges;   // (the mirrored pools the captures take, as of the last one)
@@ -1278,6 +1288,7 @@ inline SubmittedPage& submitted_page_for(uint64_t page) {   // (a page and its n
     return submitted_pages[one ? 0 : (page + (page >> 5) * 13) & (kSubmittedPages - 1)];
 }
 
+void late_fix_cpu_read(uint32_t page, VkBuffer buffer, uint8_t* slot);   // (pools_mu held: the late pages' fix, below)
 bool memory_read_as_submitted(uint64_t gpu, void* dst, uint64_t n) {
     // (once a capture exists, every uniform word took pools_mu to ask whether its page was in one. A page in none keeps
     // that answer until a stamp or a new capture)
@@ -1300,6 +1311,7 @@ bool memory_read_as_submitted(uint64_t gpu, void* dst, uint64_t n) {
             if (!e.gen || e.gen != page_gen(page)) continue;
             auto b = cap_bufs.find(e.gen);
             if (b == cap_bufs.end() || !b->second.map) continue;
+            late_fix_cpu_read((uint32_t)page, b->second.buffer, (uint8_t*)b->second.map + (uint64_t)e.slot * 4096);
             const uint64_t a = std::max(page << kPageShift, guest), z = std::min((page + 1) << kPageShift, guest + n);
             std::memcpy((uint8_t*)dst + (a - guest), (const uint8_t*)b->second.map + (uint64_t)e.slot * 4096 + (a - (page << kPageShift)), z - a);
             from++;
@@ -1443,6 +1455,9 @@ struct WbPages {
 // no mirror; the later parts of its submission may still read or write it in guest memory, so the read waits for all of it).
 // A page's part is replaced with its value, by every note: the two are of the same write
 WbPages wb_parts;
+// (hookshot) the pages' last write in place (part 0: note_direct_write), for the late pages' fix: no record of which words,
+// so a capture with such a page late waits, as before, whatever else writes it back
+WbPages wb_direct;
 void wb_pages_note(uint64_t guest_lo, uint64_t guest_hi, uint64_t value, uint64_t part) {
     static const bool off = env_on("RX_VK_NO_READBACK_WAIT");
     if (off || !value || guest_hi <= guest_lo) return;
@@ -1450,6 +1465,7 @@ void wb_pages_note(uint64_t guest_lo, uint64_t guest_hi, uint64_t value, uint64_
     for (uint64_t p = guest_lo >> kPageShift; p <= (guest_hi - 1) >> kPageShift; p++) {
         wb_pages.set(p, value);
         if (part || !wb_parts.empty()) wb_parts.set(p, part);
+        if (!part) wb_direct.set(p, value);
     }
 }
 } // namespace
@@ -1727,7 +1743,7 @@ std::unique_ptr<Capture> capture_make() {
         if (!spare.empty()) c = std::move(spare.back()), spare.pop_back();
     }
     if (!c) c = std::make_unique<Capture>();
-    c->pages.clear(), c->copied.clear(), c->slots.clear(), c->nbytes = 0, c->late.clear(), c->late_value = 0;
+    c->pages.clear(), c->copied.clear(), c->slots.clear(), c->nbytes = 0, c->late.clear(), c->late_value = 0, c->late_done = 0;
     if (c->map) cap_buf_free(c->buffer, c->alloc, c->map, c->bsize), c->buffer = VK_NULL_HANDLE, c->map = nullptr;
     stage_put(*c);
     // (only the pools mirrored in VRAM, the ones the mirrors are filled from, and only their part of the write marks:
@@ -1784,6 +1800,7 @@ std::unique_ptr<Capture> capture_make() {
         uint64_t v = 0;
         if (cap_wait) {
             const uint64_t done = vk_timeline_completed();
+            c->late_done = done;
             std::lock_guard lk(wb_pages_mu);
             if (!wb_pages.empty())
                 for (int64_t i = 0; i < n; i++) {
@@ -1915,9 +1932,577 @@ void memory_recording_value(uint64_t value, uint64_t completed) {
 /// played session could not be told from a slow copy
 std::atomic<int64_t> st_late_wait_ns{0};
 int64_t memory_late_wait_ns() { return st_late_wait_ns.load(std::memory_order_relaxed); }
+// ---- the late pages' fix (hookshot, 2026-11-13) ----
+// A capture's page that a submission still on the GPU writes back is late (capture_make). The replay waited for that
+// submission and copied those pages again from guest memory (RX_VK_CAPTURE_WAIT=2): ~4.8 ms of a 17.8 ms frame at Lon Lon
+// Ranch by day (an i7-14700K and an RTX 4070 SUPER: ~190 late pages a capture, the wait most of a frame's memory sync), for
+// what was almost always nothing: across 2,400 captures one page changed while they waited (~1 word: GPU events), and 32
+// others once each. Now the late pages are copied again with no wait, and a small pass (shaders/late_fix.comp), recorded in
+// the uploads before anything copies out of the capture's buffer on the GPU, writes into that copy the words the write-backs
+// still running wrote to guest memory: the wait's copy, word by word. Which words: the diff pass's stamps (a uint a word, the
+// submission's value, in 64 KB blocks made where late pages are found, 64 MB at most, counting for one shadow and for the
+// write-backs recorded after the block was filled); their values: the pool's write-back shadow, which holds what each
+// write-back wrote. (Not the mirror: the GPU writes some of it through pointers no written binding covers, words no
+// write-back ever puts in guest memory: a newer float, or scratch.) Every reader of the buffer on the GPU (mirror_sync,
+// mirror_make) then reads what the wait gave. The other readers: the texture shadow forgets a fixed page (textures read
+// it from guest memory, as any page with no copy); a read of one on the CPU (memory_read_as_submitted: none measured) waits
+// and copies it again, as before, and its fix is dropped. Pages written back whole (a pool with no shadow) take their
+// words from a 4 KB snapshot each whole copy also writes (from the second time the page is late); a pool of 16 MB or less
+// is given a shadow instead. A capture waits as before when any of its late pages was written in place by the GPU, has no
+// stamps or snapshot yet (the first time it is found), or is late for an earlier capture whose fix is not recorded yet.
+// RX_VK_LATE_FIX=0: the wait, as before
+namespace {
+bool late_fix_on() {   // (not with the parallel replay: its segments' workers record copies out of the captures in any order)
+    static const bool on = [] {   // (on unless an off value: env_value_off)
+        const char* e = getenv("RX_VK_LATE_FIX");
+        return (!e || !env_value_off(e)) && !(getenv("RX_VK_PARALLEL") && atoi(getenv("RX_VK_PARALLEL")) > 1);
+    }();
+    return on;
+}
+} // namespace
+// (hookshot) The late pages' fix (see take_capture) needs to know what wrote a late page back: the diff pass (its stamps say
+// which words) or a whole copy (no record of which words: the capture waits). A page late for another write-back (the GPU's
+// writes in place, note_direct_write) has neither, and its capture waits, as before. wb_pages_mu
+WbPages wb_diff_pages, wb_whole_pages;
+enum WbKind { WB_DIFF, WB_WHOLE };
+void wb_kind_note(WbKind kind, uint64_t guest_lo, uint64_t guest_hi, uint64_t value) {
+    if (!value || guest_hi <= guest_lo || !late_fix_on()) return;
+    std::lock_guard lk(wb_pages_mu);
+    WbPages& pages = kind == WB_DIFF ? wb_diff_pages : wb_whole_pages;
+    for (uint64_t pg = guest_lo >> kPageShift; pg <= (guest_hi - 1) >> kPageShift; pg++) pages.set(pg, value);
+}
+// (whole copies' page snapshots: a page late for a whole copy gets a 4 KB slot; each whole copy over it from then on also
+// copies its part of the page there, in the same command buffer, and its range is kept with the copy's value. pools_mu)
+// When the 256 slots are taken, the slots of pages not late for a whole copy in kSnapIdle recordings, with nothing on the GPU
+// still writing or reading them, are given back (snap_pages_reclaim); with none such, a new page waits as before
+constexpr uint32_t kSnapSlots = 256;
+constexpr uint64_t kSnapIdle = 1024;   // (recordings)
+// (a small pool, 16 MB or less, whose late page was written back whole: given a shadow at its next write-back, so its pages
+// take the diff pass's exact stamps; a whole copy writes words the program never wrote too, older than the CPU's. A pool
+// gone leaves the set (late_fix_reap): a new pool at its address starts over. pools_mu)
+constexpr uint64_t kLateShadowPoolMax = 16ull << 20;
+std::unordered_set<uint64_t> late_shadow_pools;
+bool late_shadow_wanted(uint64_t pool_lo) { return !late_shadow_pools.empty() && late_shadow_pools.count(pool_lo); }
+struct SnapPage {
+    uint32_t slot = 0;
+    uint64_t since = 0;   // (the first recording whose whole copies are snapped)
+    uint64_t used = 0;    // (the last recording that writes its slot (a whole copy) or reads it (a fix): given back only once done)
+    uint64_t late = 0;    // (the recording when a capture last found it late for a whole copy)
+    std::vector<std::array<uint64_t, 3>> ranges;   // (lo, hi in the page, the copy's value)
+};
+std::unordered_map<uint32_t, SnapPage> snap_pages;
+std::vector<uint32_t> snap_free;   // (slots given back: snap_pages_reclaim)
+VkBuffer snap_buf = VK_NULL_HANDLE;
+VmaAllocation snap_alloc = nullptr;
+VkDeviceAddress snap_address = 0;
+uint32_t snap_used = 0;
+void snap_pages_reclaim();
+bool snap_page_make(uint32_t pg) {
+    if (snap_pages.count(pg)) return false;
+    if (snap_used >= kSnapSlots && snap_free.empty()) snap_pages_reclaim();
+    if (snap_used >= kSnapSlots && snap_free.empty()) return false;
+    if (!snap_buf) {
+        if (!create_device_buffer((uint64_t)kSnapSlots * 4096, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                                VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, snap_buf, snap_alloc)) {
+            snap_buf = VK_NULL_HANDLE, snap_alloc = nullptr;
+            return false;
+        }
+        VkBufferDeviceAddressInfo da{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
+        da.buffer = snap_buf;
+        snap_address = vkGetBufferDeviceAddress(dev.device, &da);
+    }
+    SnapPage s;
+    if (!snap_free.empty()) s.slot = snap_free.back(), snap_free.pop_back();   // (no range of it kept: the old page's words are never read)
+    else s.slot = snap_used++;
+    s.since = mem_rec_value + 1, s.late = mem_rec_value;
+    snap_pages.emplace(pg, std::move(s));
+    return true;
+}
+// (pools_mu held) a whole copy of [off, off + size) of the pool, just recorded into cmd: the snapped pages' parts copied too
+void late_snap_whole(VkCommandBuffer cmd, const Pool& p, uint64_t off, uint64_t size) {
+    if (snap_pages.empty() || !size || !p.mirror || !snap_buf) return;
+    const uint64_t lo = p.lo + off, hi = lo + size;
+    for (uint64_t pg = lo >> kPageShift; pg <= (hi - 1) >> kPageShift; pg++) {
+        const auto it = snap_pages.find((uint32_t)pg);
+        if (it == snap_pages.end() || mem_rec_value < it->second.since) continue;
+        const uint64_t a = std::max(lo, pg << kPageShift), b = std::min(hi, (pg + 1) << kPageShift);
+        const VkBufferCopy c{a - p.lo, (uint64_t)it->second.slot * 4096 + (a - (pg << kPageShift)), b - a};
+        vkCmdCopyBuffer(cmd, p.mirror, snap_buf, 1, &c);
+        it->second.used = std::max(it->second.used, mem_rec_value);
+        std::vector<std::array<uint64_t, 3>>& rs = it->second.ranges;   // (the done ones go: else one a whole copy, for good)
+        if (rs.size() >= 32) std::erase_if(rs, [](const std::array<uint64_t, 3>& r) { return r[2] <= mem_completed; });
+        rs.push_back({a - (pg << kPageShift), b - (pg << kPageShift), mem_rec_value});
+    }
+}
+// (hookshot) The shadow follows the mirror's sync: a mirror sync of a pool with a shadow copies the same bytes (a capture's
+// page, or guest memory as the GPU gets there) into the shadow, and the next write-back counts those pages as known again
+// after forgetting the pages the CPU wrote. Before, such a page was filled again from guest memory at the write-back, with
+// the CPU's writes made after the capture: where the GPU wrote nothing the mirror still held the capture's words, which
+// differed, and the diff wrote them over the CPU's newer ones (the per-character animation program's output: 0x4800-byte
+// bindings written whole by their descriptor, padding the program never stores holding 0x6f6f6f6f, put back over floats the
+// CPU had written, every frame). Now the diff writes only what the GPU changed since the sync. RX_VK_SHADOW_FOLLOWS_SYNC=0: as before
+bool shadow_follows_sync_on() {
+    static const bool on = [] { const char* e = getenv("RX_VK_SHADOW_FOLLOWS_SYNC"); return !e || !env_value_off(e); }();
+    return on;
+}
+struct ShadowSynced { uint64_t lo, page; VkBuffer shadow; };
+std::vector<ShadowSynced> shadow_synced;   // (synced since the last write-back's forget, into that shadow; pools_mu)
+void shadow_sync_copy(VkCommandBuffer up, VkBuffer src, Pool& p, const std::vector<VkBufferCopy>& rs) {
+    if (!p.shadow || rs.empty() || !shadow_follows_sync_on()) return;
+    if (shadow_synced.size() > (1u << 20)) {   // (no write-back for very long: those pages are filled from guest memory, as before)
+        shadow_synced.clear();
+        return;
+    }
+    vkCmdCopyBuffer(up, src, p.shadow, (uint32_t)rs.size(), rs.data());
+    for (const VkBufferCopy& r : rs)
+        for (uint64_t pg = r.dstOffset >> kPageShift; r.size && pg <= (r.dstOffset + r.size - 1) >> kPageShift; pg++)
+            shadow_synced.push_back({p.lo, pg, p.shadow});
+}
+void shadow_synced_known() {   // (after the write-back's forget: the pages synced since, known as the sync left them)
+    for (const ShadowSynced& s : shadow_synced) {   // (a shadow made since has not had the copy: shadow_synced_freed)
+        const auto it = imported.find(s.lo);
+        if (it == imported.end() || !it->second.shadow || it->second.shadow != s.shadow) continue;
+        std::vector<uint64_t>& known = it->second.shadow_known;
+        if ((s.page >> 6) < known.size()) known[s.page >> 6] |= 1ull << (s.page & 63);
+    }
+    shadow_synced.clear();
+}
+constexpr unsigned kStampShift = 16;   // (a block: 64 KB of guest memory, 64 KB of stamps)
+constexpr uint64_t kStampBlock = 1ull << kStampShift, kStampMask = kStampBlock - 1, kStampMax = 64ull << 20;
+struct StampBlock {
+    VkBuffer buf = VK_NULL_HANDLE;
+    VmaAllocation alloc = nullptr;
+    VkDeviceAddress address = 0;
+    uint64_t pool = 0;                  // (the pool's lo: the stamps say which guest words a write-back of it wrote)
+    VkBuffer shadow = VK_NULL_HANDLE;   // (the shadow they are for: the fixes read the words there)
+    uint64_t since = 0;                 // (the first recording whose write-backs stamp it; 0 until filled)
+};
+std::unordered_map<uint64_t, StampBlock> stamp_blocks;   // (guest >> kStampShift; pools_mu)
+std::unordered_map<uint64_t, int> stamp_pools;           // (a pool's lo -> its blocks)
+std::vector<uint64_t> stamp_unfilled;                    // (made: filled first in the next recording)
+struct DeadStamp { VkBuffer buf; VmaAllocation alloc; uint64_t value; };
+std::deque<DeadStamp> dead_stamps;
+uint64_t stamp_bytes = 0;
+bool stamps_in(const Pool& p) {
+    const auto it = stamp_pools.find(p.lo);
+    return it != stamp_pools.end() && it->second > 0;
+}
+uint64_t stamp_address(const Pool& p, uint64_t guest) {   // (0: none, or not filled yet)
+    const auto it = stamp_blocks.find(guest >> kStampShift);
+    if (it == stamp_blocks.end() || !it->second.since || it->second.pool != p.lo || it->second.shadow != p.shadow) return 0;
+    return it->second.address + (guest & kStampMask);
+}
+// (pools_mu held) the blocks of a pool gone, or whose shadow is gone (its write-backs are whole copies then: no stamps),
+// let go once the recordings so far are done (a write-back recorded before may still stamp them)
+void stamps_drop_unused() {
+    for (auto it = stamp_blocks.begin(); it != stamp_blocks.end();) {
+        const auto pi = imported.find(it->second.pool);
+        if (pi != imported.end() && pi->second.shadow) { ++it; continue; }
+        dead_stamps.push_back({it->second.buf, it->second.alloc, mem_rec_value});
+        stamp_bytes -= kStampBlock;
+        if (--stamp_pools[it->second.pool] <= 0) stamp_pools.erase(it->second.pool);
+        it = stamp_blocks.erase(it);
+    }
+}
+void stamp_block_make(Pool& p, uint64_t guest) {
+    const uint64_t key = guest >> kStampShift;
+    if (!p.shadow || stamp_blocks.count(key) || stamp_bytes + kStampBlock > kStampMax) return;
+    StampBlock b;
+    if (!create_device_buffer(kStampBlock, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                               VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, b.buf, b.alloc))
+        return;
+    VkBufferDeviceAddressInfo da{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
+    da.buffer = b.buf;
+    b.address = vkGetBufferDeviceAddress(dev.device, &da);
+    b.pool = p.lo, b.shadow = p.shadow;
+    stamp_blocks.emplace(key, b);
+    stamp_pools[p.lo]++;
+    stamp_bytes += kStampBlock;
+    stamp_unfilled.push_back(key);
+    static int logged;
+    if (logged++ < 8 || stamp_blocks.size() % 64 == 0)
+        logf("vk: late pages' fix: stamps for %#llx (pool %#llx; %zu blocks, %llu KB)", (unsigned long long)(key << kStampShift),
+             (unsigned long long)p.lo, stamp_blocks.size(), (unsigned long long)(stamp_bytes >> 10));
+}
+struct LateFix { uint64_t dst, src, stamps; uint32_t count, after; };   // (shaders/late_fix.comp's Fix)
+static_assert(sizeof(LateFix) == 32, "late_fix.comp's Fix");
+std::vector<LateFix> late_fixes;   // (of the captures taken, for the next recording; pools_mu)
+struct LatePage {   // (a page with fixes: until they are done, a read of it on the CPU waits as before)
+    uint64_t pool = 0, stamp_key = UINT64_MAX;   // (what its fixes read: the pool's shadow, its stamp block)
+    VkBuffer shadow = VK_NULL_HANDLE, stamp_buf = VK_NULL_HANDLE;
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VmaAllocation alloc = nullptr;
+    uint8_t* slot = nullptr;
+    uint64_t nbytes = 0, late_value = 0, fix_value = 0;   // (fix_value: the recording that fixes it; 0: not recorded yet)
+    uint64_t cap_value = 0;                                 // (its capture's value: the buffer kept under it, cap_bufs)
+    size_t first = 0, n = 0;                                // (its fixes in late_fixes, then in fix_map)
+    LateFix* fix_map = nullptr;
+    VmaAllocation fix_alloc = nullptr;                      // (fix_map's table, and the recording part it was recorded in)
+    uint64_t fix_part = 0, fix_end = 0;                     // (fix_end: the table's bytes up to its last fix)
+};
+std::unordered_map<uint32_t, LatePage> late_pages;
+// (pools_mu held; the slots all taken) the snapshots of pages not late for a whole copy in kSnapIdle recordings given back:
+// none whose slot a recording not done yet writes or reads (used: its whole copies, and the fixes late_fix_emit recorded), and
+// none with a late page whose fix is not recorded yet or not done (late_fixes still to be recorded read its slot)
+void snap_pages_reclaim() {
+    for (auto it = snap_pages.begin(); it != snap_pages.end();) {
+        const SnapPage& s = it->second;
+        const auto lp = late_pages.find(it->first);
+        const bool fixing = lp != late_pages.end() && (!lp->second.fix_value || lp->second.fix_value > mem_completed);
+        if (fixing || s.used > mem_completed || s.late + kSnapIdle > mem_rec_value) {
+            ++it;
+            continue;
+        }
+        snap_free.push_back(s.slot);
+        it = snap_pages.erase(it);
+    }
+}
+std::vector<uint32_t> late_built;   // (the pages of the last late_fix_build, until late_fix_kept)
+size_t late_built_mark = 0;
+struct LateFixTable { VkBuffer buf = VK_NULL_HANDLE; VmaAllocation alloc = nullptr; uint8_t* map = nullptr; VkDeviceAddress address = 0; uint64_t bytes = 0, value = 0; };
+LateFixTable late_fix_tables[16];
+int late_fix_next = 0;
+struct { bool tried = false; VkPipelineLayout layout = VK_NULL_HANDLE; VkPipeline pipe = VK_NULL_HANDLE; } late_fix_pipe;
+int64_t st_lf_takes, st_lf_fixed, st_lf_fell[8], st_lf_fixes, st_lf_pages, st_lf_cpu_reads, st_lf_no_table, st_lf_moved;
+bool late_fix_pipe_ready() {
+    if (late_fix_pipe.tried) return late_fix_pipe.pipe != VK_NULL_HANDLE;
+    late_fix_pipe.tried = true;
+    const VkPushConstantRange pr{VK_SHADER_STAGE_COMPUTE_BIT, 0, 16};
+    VkPipelineLayoutCreateInfo li{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    li.pushConstantRangeCount = 1;
+    li.pPushConstantRanges = &pr;
+    if (vkCreatePipelineLayout(dev.device, &li, nullptr, &late_fix_pipe.layout) == VK_SUCCESS) {
+        VkShaderModuleCreateInfo mi{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+        mi.codeSize = sizeof LATE_FIX_COMP_SPV;
+        mi.pCode = LATE_FIX_COMP_SPV;
+        VkShaderModule m = VK_NULL_HANDLE;
+        if (vkCreateShaderModule(dev.device, &mi, nullptr, &m) == VK_SUCCESS) {
+            VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+            ci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+            ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+            ci.stage.module = m;
+            ci.stage.pName = "main";
+            ci.layout = late_fix_pipe.layout;
+            if (vkCreateComputePipelines(dev.device, VK_NULL_HANDLE, 1, &ci, nullptr, &late_fix_pipe.pipe) != VK_SUCCESS)
+                late_fix_pipe.pipe = VK_NULL_HANDLE;
+            vkDestroyShaderModule(dev.device, m, nullptr);
+        }
+    }
+    const bool ok = late_fix_pipe.pipe != VK_NULL_HANDLE;
+    logf("vk: late pages' fix %s", ok ? "on (RX_VK_LATE_FIX=0: the wait, as before)" : "off: its pipeline was not made");
+    return ok;
+}
+LateFixTable* late_fix_table_get(uint64_t bytes) {   // (a ring: one is taken again once the recording that read it is done)
+    LateFixTable& t = late_fix_tables[late_fix_next];
+    if (t.value > mem_completed) return nullptr;
+    if (t.bytes < bytes) {
+        if (t.buf) destroy_buffer(t.buf, t.alloc);
+        t = {};
+        const uint64_t n = std::max<uint64_t>(64u << 10, (bytes + 65535) & ~65535ull);
+        void* map = nullptr;
+        if (!create_buffer(n, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, true, t.buf, t.alloc, &map) || !map) {
+            if (t.buf) destroy_buffer(t.buf, t.alloc);
+            t = {};
+            return nullptr;
+        }
+        VkBufferDeviceAddressInfo da{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
+        da.buffer = t.buf;
+        t.address = vkGetBufferDeviceAddress(dev.device, &da);
+        t.map = (uint8_t*)map, t.bytes = n;
+    }
+    late_fix_next = (late_fix_next + 1) % 16;
+    t.value = mem_rec_value;
+    return &t;
+}
+// (pools_mu held) the fixes of a capture's late pages, or false: it waits, as before
+bool late_fix_build(Capture& c) {
+    st_lf_takes++;
+    if (!late_fix_pipe_ready() || !c.buffer) return false;
+    VkBufferDeviceAddressInfo da{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
+    da.buffer = c.buffer;
+    const VkDeviceAddress cap = vkGetBufferDeviceAddress(dev.device, &da);
+    // (the GPU's progress now, not at the capture: the late pages are copied again below from guest memory, which has every
+    // write-back done by now, as the wait's copy had; the fixes are for the ones not done yet)
+    const uint64_t D = std::max(c.late_done, vk_timeline_completed());
+    late_built_mark = late_fixes.size();
+    late_built.clear();
+    static thread_local std::vector<uint8_t> copied;
+    copied.assign(c.pages.size(), 0);
+    for (uint32_t s : c.slots) copied[s] = 1;
+    static thread_local std::vector<std::pair<uint32_t, LatePage>> pages;
+    pages.clear();
+    int why = cap ? -1 : 0;
+    const auto fail = [&](int k) { if (why < 0) why = k; };
+    {
+        std::lock_guard wl(wb_pages_mu);
+        Pool* p = nullptr;
+        for (uint32_t i : c.late) {
+            if (why >= 0 && why != 2 && why != 3 && why != 4 && why != 5) break;   // (no stamps or shadow yet: the rest looked at, to make them)
+            if (!copied[i]) continue;
+            const uint64_t pg = c.pages[i], a = pg << kPageShift;
+            if (const auto lp = late_pages.find((uint32_t)pg); lp != late_pages.end() && !lp->second.fix_value) {
+                fail(2);   // (an earlier capture's fix of it not recorded yet: one entry a page, so this one waits)
+                continue;
+            }
+            if (!p || a < p->lo || a >= p->hi) {
+                p = nullptr;
+                auto it = imported.upper_bound(a);
+                if (it != imported.begin() && a < std::prev(it)->second.hi) p = &std::prev(it)->second;
+            }
+            if (!p || (p->hi - a) & 3) { fail(1); continue; }
+            const uint64_t end = std::min(a + 4096, p->hi);
+            const uint64_t dst = cap + (uint64_t)i * 4096, src = p->shadow_address + (a - p->lo);   // (src: the diff fixes')
+            const size_t first = late_fixes.size();
+            bool any = false;
+            uint64_t stamp_key = UINT64_MAX;
+            VkBuffer stamp_buf = VK_NULL_HANDLE;
+            if (wb_direct.get(pg) > D) { fail(6); continue; }   // (written in place by a submission not done: which words, unknown)
+            const bool whole = wb_whole_pages.get(pg) > D, diffed = wb_diff_pages.get(pg) > D;
+            if (whole && diffed) { fail(5); continue; }   // (both pending: the fix's workgroups have no order between them)
+            if (whole && p->hi - p->lo <= kLateShadowPoolMax) late_shadow_pools.insert(p->lo);   // (its next write-backs: the diff pass)
+            if (whole) {   // (from its snapshot: the pending copies' ranges, as they wrote them)
+                const auto sit = snap_pages.find((uint32_t)pg);
+                if (sit == snap_pages.end()) {
+                    snap_page_make((uint32_t)pg);
+                    fail(3);
+                    continue;
+                }
+                SnapPage& s = sit->second;
+                s.late = mem_rec_value;   // (kept from snap_pages_reclaim for kSnapIdle recordings, and its fixes with it)
+                std::erase_if(s.ranges, [](const std::array<uint64_t, 3>& r) { return r[2] <= mem_completed; });
+                if (D + 1 < s.since) { fail(4); continue; }
+                bool odd = false;
+                for (const auto& r : s.ranges) {
+                    if (r[2] <= D) continue;
+                    if ((r[0] | r[1]) & 3 || a + r[1] > end) { odd = true; break; }
+                    late_fixes.push_back({dst + r[0], snap_address + (uint64_t)s.slot * 4096 + r[0], 0, (uint32_t)((r[1] - r[0]) / 4), 0});
+                    any = true;
+                }
+                if (odd || !any) { late_fixes.resize(first); fail(5); continue; }
+            }
+            if (diffed) {
+                if (!p->shadow || !p->shadow_address) { fail(3); continue; }
+                const auto it = stamp_blocks.find(a >> kStampShift);
+                if (it == stamp_blocks.end()) {
+                    stamp_block_make(*p, a);
+                    fail(3);
+                    continue;
+                }
+                if (it->second.pool != p->lo || it->second.shadow != p->shadow) {   // (another shadow since: filled again, counts from then)
+                    if (it->second.pool != p->lo) {   // (another pool's: its write-backs stamp it from now on, stamps_in)
+                        if (--stamp_pools[it->second.pool] <= 0) stamp_pools.erase(it->second.pool);
+                        stamp_pools[p->lo]++;
+                    }
+                    it->second.pool = p->lo, it->second.shadow = p->shadow, it->second.since = 0;
+                    stamp_unfilled.push_back(it->first);
+                    fail(3);
+                    continue;
+                }
+                if (!it->second.since || D + 1 < it->second.since) { fail(4); continue; }
+                late_fixes.push_back({dst, src, it->second.address + (a & kStampMask), (uint32_t)((end - a) / 4), (uint32_t)D});
+                stamp_key = it->first, stamp_buf = it->second.buf;
+                any = true;
+            }
+            if (!any && wb_pages.get(pg) <= D) continue;   // (its write-backs done by now: the copy below is all it needs)
+            if (!any) {   // (late, with no write-back of these kinds pending: unknown, so as before)
+                static int told;
+                if (told++ < 12)
+                    logf("vk: late pages' fix: page %#llx late with no write-back of a known kind: written back %llu, the capture saw "
+                         "%llu done, diff %llu, whole %llu (pool %#llx%s)", (unsigned long long)a,
+                         (unsigned long long)wb_pages.get(pg), (unsigned long long)D, (unsigned long long)wb_diff_pages.get(pg),
+                         (unsigned long long)wb_whole_pages.get(pg),
+                         (unsigned long long)p->lo, p->shadow ? ", shadow" : "");
+                fail(6);
+                continue;
+            }
+            LatePage lp;
+            lp.buffer = c.buffer, lp.alloc = c.alloc, lp.slot = (uint8_t*)c.map + (uint64_t)i * 4096, lp.nbytes = c.nbytes;
+            lp.late_value = c.late_value, lp.first = first, lp.n = late_fixes.size() - first;
+            lp.pool = p->lo, lp.shadow = p->shadow, lp.stamp_key = stamp_key, lp.stamp_buf = stamp_buf;
+            pages.push_back({(uint32_t)pg, lp});
+        }
+    }
+    if (why >= 0) {
+        late_fixes.resize(late_built_mark);
+        st_lf_fell[why]++;
+        return false;
+    }
+    {   // (every late page copied again, with no wait: the write-backs done by D are in it, the fixes give the rest)
+        uint8_t* const base = (uint8_t*)host->guest_base();
+        for (uint32_t i : c.late)
+            if (copied[i]) guarded_copy((uint8_t*)c.map + (uint64_t)i * 4096, base + ((uint64_t)c.pages[i] << kPageShift), 4096);
+        flush_mapped(c.alloc, c.nbytes);
+    }
+    for (auto& [pg, lp] : pages) late_pages[pg] = lp, late_built.push_back(pg);
+    st_lf_fixed++, st_lf_pages += (int64_t)pages.size(), st_lf_fixes += (int64_t)(late_fixes.size() - late_built_mark);
+    return true;
+}
+void late_fix_reap();
+void late_fix_shadows_freed();   // (defined with the write-back's diff, where its freed shadows are known)
+bool late_fix_take(Capture& c) {   // (take_capture; pools_mu not held)
+    if (!late_fix_on()) return false;
+    std::lock_guard lk(pools_mu);
+    late_fix_shadows_freed();
+    late_fix_reap();
+    return late_fix_build(c);
+}
+// (pools_mu held) the last build's buffer kept with the captures, or not: then nothing reads it and its fixes go
+void late_fix_kept(bool kept, uint64_t value) {
+    if (kept) {
+        for (uint32_t pg : late_built)
+            if (const auto it = late_pages.find(pg); it != late_pages.end()) it->second.cap_value = value;
+        return;
+    }
+    late_fixes.resize(late_built_mark);
+    for (uint32_t pg : late_built) late_pages.erase(pg);
+    late_built.clear();
+}
+// (pools_mu held) a read on the CPU of a page in a capture's buffer whose late page has a fix: it reads what the GPU's copies
+// out of the buffer read. Fixed already: the buffer as the fix left it. Recorded in a submission before this one: that one
+// waited for, then the same. Not recorded, or recorded in this recording's part not yet submitted: its fix dropped, and it
+// waits and is copied again, as before, for both. Recorded in an earlier part of this submission (not to be waited for
+// here): it waits and is copied again; the fix then writes the same write-backs' words over it on the GPU
+void late_fix_cpu_read(uint32_t page, VkBuffer buffer, uint8_t* slot) {
+    if (late_pages.empty()) return;
+    const auto it = late_pages.find(page);
+    if (it == late_pages.end() || it->second.buffer != buffer || it->second.slot != slot) return;
+    LatePage& lp = it->second;
+    const auto again = [&] {
+        vk_timeline_wait(lp.late_value);
+        guarded_copy(slot, (uint8_t*)host->guest_base() + ((uint64_t)page << kPageShift), 4096);
+        flush_mapped(lp.alloc, lp.nbytes);
+    };
+    if (lp.fix_value && lp.fix_value <= mem_completed) {
+        invalidate_mapped(lp.alloc, lp.nbytes);
+    } else if (lp.fix_value && lp.fix_value < mem_rec_value) {
+        vk_timeline_wait(lp.fix_value);
+        invalidate_mapped(lp.alloc, lp.nbytes);
+    } else if (!lp.fix_value) {
+        for (size_t k = lp.first; k < lp.first + lp.n && k < late_fixes.size(); k++) late_fixes[k].count = 0;
+        again();
+    } else if (lp.fix_part == mem_rec_part.load() && lp.fix_map) {
+        for (size_t k = 0; k < lp.n; k++) lp.fix_map[k].count = 0;
+        flush_mapped(lp.fix_alloc, lp.fix_end);
+        again();
+    } else {
+        again();
+    }
+    st_lf_cpu_reads++;
+    late_pages.erase(it);
+}
+// (pools_mu held) the stamps given back and the fixes known done, let go
+void late_fix_reap() {
+    static uint64_t reaps;
+    if (++reaps % 64 == 0) {
+        stamps_drop_unused();
+        std::erase_if(late_shadow_pools, [](uint64_t lo) { return !imported.count(lo); });   // (pools gone: their shadow no longer wanted)
+    }
+    while (!dead_stamps.empty() && dead_stamps.front().value <= mem_completed) {
+        destroy_buffer(dead_stamps.front().buf, dead_stamps.front().alloc);
+        dead_stamps.pop_front();
+    }
+    for (auto it = late_pages.begin(); it != late_pages.end();)
+        it = it->second.fix_value && it->second.fix_value <= mem_completed ? late_pages.erase(it) : std::next(it);
+}
+// (pools_mu held) the stamps' new blocks filled and the taken captures' fixes recorded, in the recording's uploads: right
+// before anything copies out of a capture's buffer on the GPU (mirror_sync, mirror_make) and before its write-back.
+// Not at a recording's start: in a burst the captures of its later pieces are taken while its recording goes on, and
+// memory_begin_submission gives mirrors back after begin_recording. The upload command buffer runs after every recording
+// before it, so after the write-backs the fixes wait for; and before this recording's own work
+void late_fix_emit() {
+    if (stamp_unfilled.empty() && late_fixes.empty()) return;
+    late_built.clear();
+    VkCommandBuffer up = upload_command_buffer();   // (its full barrier: after the submissions before, their write-backs)
+    for (uint64_t key : stamp_unfilled) {
+        const auto it = stamp_blocks.find(key);
+        if (it == stamp_blocks.end()) continue;
+        vkCmdFillBuffer(up, it->second.buf, 0, VK_WHOLE_SIZE, (uint32_t)(mem_rec_value - 1));
+        it->second.since = mem_rec_value + 1;   // (the recording's parts before this one wrote back with no stamps: from the next)
+    }
+    stamp_unfilled.clear();
+    if (!late_fixes.empty()) {
+        // (each page's shadow and stamps still what its fixes read: else its fixes go, and it waits and is copied again, as before)
+        bool all_gone = true;
+        for (auto& [pg, lp] : late_pages) {
+            if (lp.fix_value) continue;
+            const auto pi = imported.find(lp.pool);
+            const Pool* p = pi != imported.end() ? &pi->second : nullptr;
+            bool ok = p && p->shadow == lp.shadow;
+            if (ok && lp.stamp_key != UINT64_MAX) {
+                const auto sb = stamp_blocks.find(lp.stamp_key);
+                ok = sb != stamp_blocks.end() && sb->second.buf == lp.stamp_buf && sb->second.shadow == lp.shadow;
+            }
+            if (ok) { all_gone = false; continue; }
+            for (size_t k = lp.first; k < lp.first + lp.n && k < late_fixes.size(); k++) late_fixes[k].count = 0;
+            lp.fix_value = UINT64_MAX;   // (marked: waited for below)
+            st_lf_moved++;
+        }
+        const uint64_t bytes = late_fixes.size() * sizeof(LateFix);
+        LateFixTable* t = all_gone ? nullptr : late_fix_table_get(bytes);
+        if (!t && !all_gone) {   // (no table free: what the fixes do, done by the wait, as before)
+            st_lf_no_table++;
+            for (auto& [pg, lp] : late_pages)
+                if (!lp.fix_value) lp.fix_value = UINT64_MAX;
+        }
+        if (t) {
+            memcpy(t->map, late_fixes.data(), bytes);
+            flush_mapped(t->alloc, bytes);
+            // (after what this upload command buffer wrote since its last barrier: this emit can run several times in one
+            // recording, and between two runs shadow_sync_copy writes a pool's shadow, which the diff fixes read; the stamps'
+            // fills above too. Left out when nothing came in between: the dedupe)
+            full_barrier(up, "late pages' fix (before)");
+            GprofSpan gp(up, "late pages' fix (shadows, snapshots -> capture buffers)");
+            gp.items = (int)late_fixes.size();
+            vkCmdBindPipeline(up, VK_PIPELINE_BIND_POINT_COMPUTE, late_fix_pipe.pipe);
+            const struct { uint64_t table; uint32_t count, pad; } pc{t->address, (uint32_t)late_fixes.size(), 0};
+            vkCmdPushConstants(up, late_fix_pipe.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof pc, &pc);
+            const uint32_t n = (uint32_t)late_fixes.size();
+            vkCmdDispatch(up, std::min<uint32_t>(n, 65535u), (n + 65534u) / 65535u, 1);
+            for (auto& [pg, lp] : late_pages)
+                if (!lp.fix_value) {
+                    lp.fix_value = mem_rec_value, lp.fix_map = (LateFix*)t->map + lp.first;
+                    lp.fix_alloc = t->alloc, lp.fix_part = mem_rec_part.load(), lp.fix_end = (lp.first + lp.n) * sizeof(LateFix);
+                    if (!snap_pages.empty())   // (its snapshot's slot read by this recording: not given back before it is done)
+                        if (const auto sp = snap_pages.find(pg); sp != snap_pages.end()) sp->second.used = std::max(sp->second.used, mem_rec_value);
+                    for (auto& [g, cb] : cap_bufs)   // (its buffer kept until this recording is done: it writes there)
+                        if (cb.buffer == lp.buffer && cb.value == lp.cap_value) cb.last_use = std::max(cb.last_use, mem_rec_value);
+                }
+        }
+        uint64_t v = 0;   // (the pages whose fixes went: the wait and the copy, as before)
+        for (const auto& [pg, lp] : late_pages)
+            if (lp.fix_value == UINT64_MAX) v = std::max(v, lp.late_value);
+        if (v) {
+            vk_timeline_wait(v);
+            for (auto it = late_pages.begin(); it != late_pages.end();) {
+                if (it->second.fix_value != UINT64_MAX) { ++it; continue; }
+                guarded_copy(it->second.slot, (uint8_t*)host->guest_base() + ((uint64_t)it->first << kPageShift), 4096);
+                flush_mapped(it->second.alloc, it->second.nbytes);
+                it = late_pages.erase(it);
+            }
+        }
+        late_fixes.clear();
+    }
+    full_barrier(up);   // (the stamps filled and the capture buffers fixed before anything copies from them)
+    static int64_t emits;
+    if (++emits % 600 == 0) {
+        logf("vk: late pages' fix (600 recordings with one): of %lld captures with late pages %lld fixed (%.1f pages, %.1f fixes "
+             "a capture), waited as before: %lld no pool, %lld no stamps or shadow yet, %lld stamps too new, %lld "
+             "whole copies, %lld in place or unknown, %lld a page's earlier fix not recorded yet, %lld other; %lld read on the CPU first, %lld with no table, %lld pages whose shadow changed "
+             "first; stamps %zu blocks (%llu KB)",
+             (long long)st_lf_takes, (long long)st_lf_fixed, st_lf_fixed ? (double)st_lf_pages / st_lf_fixed : 0.0,
+             st_lf_fixed ? (double)st_lf_fixes / st_lf_fixed : 0.0, (long long)st_lf_fell[1],
+             (long long)st_lf_fell[3], (long long)st_lf_fell[4], (long long)st_lf_fell[5], (long long)st_lf_fell[6],
+             (long long)st_lf_fell[2], (long long)st_lf_fell[0], (long long)st_lf_cpu_reads, (long long)st_lf_no_table, (long long)st_lf_moved, stamp_blocks.size(),
+             (unsigned long long)(stamp_bytes >> 10));
+        st_lf_takes = st_lf_fixed = st_lf_pages = st_lf_fixes = st_lf_cpu_reads = st_lf_no_table = st_lf_moved = 0;
+        for (int64_t& f : st_lf_fell) f = 0;
+    }
+}
 bool take_capture(std::unique_ptr<Capture> c, uint64_t value, uint64_t completed) {
     const auto tk0 = std::chrono::steady_clock::now();
+    bool fixed = false;   // (the late pages fixed on the GPU, no wait: late_fix_take)
     if (c->late_value && c->map) {   // (the pages a submission still on the GPU writes back: see capture_make)
+      if (!(fixed = late_fix_take(*c))) {
         // (timed apart: the replay thread waits here for the GPU, the more often the fewer pools have a mirror. With
         // RX_VK_MIRROR_MB=1024 on an 8 GB card it was most of a capture's 2.4-3 ms, six submits a frame: Hyrule Field at
         // 35-45 fps instead of 55, issue 995)
@@ -1931,6 +2516,7 @@ bool take_capture(std::unique_ptr<Capture> c, uint64_t value, uint64_t completed
         for (uint32_t i : c->late)
             guarded_copy((uint8_t*)c->map + (uint64_t)i * 4096, base + ((uint64_t)c->pages[i] << kPageShift), 4096);
         flush_mapped(c->alloc, c->nbytes);
+      }
     }
     const auto tl = std::chrono::steady_clock::now();
     std::lock_guard lk(pools_mu);
@@ -1950,6 +2536,11 @@ bool take_capture(std::unique_ptr<Capture> c, uint64_t value, uint64_t completed
         g = ++gen_now;
         for (uint32_t p : c->pages) stamp_page(p, g);
         pages_collected += c->pages.size();
+    }
+    static thread_local std::vector<uint8_t> late_index;   // (by index in pages: a late page the GPU fixes)
+    if (fixed) {
+        late_index.assign(c->pages.size(), 0);
+        for (uint32_t i : c->late) late_index[i] = 1;
     }
     if (!c->pages.empty() && tex_capture_on()) {   // (the texture storage it took: the shadow, as of this submit)
         std::lock_guard sk(shadow_mu);
@@ -1992,6 +2583,10 @@ bool take_capture(std::unique_ptr<Capture> c, uint64_t value, uint64_t completed
             for (; i < c->copied.size(); i++) {
                 const uint32_t p = c->copied[i];
                 if (!in_tex.in((uint64_t)p << 12)) continue;
+                if (fixed && late_index[c->slots[i]]) {   // (its bytes are fixed on the GPU: read from guest memory instead)
+                    shadow_erase(p);
+                    continue;
+                }
                 if (shadow_n.load(std::memory_order_relaxed) >= kShadowMax && !shadow.count(p)) {
                     if (swept) break;
                     swept = true;
@@ -2038,6 +2633,7 @@ bool take_capture(std::unique_ptr<Capture> c, uint64_t value, uint64_t completed
         cur_cap_gen = g;
         for (size_t i = 0; i < c->copied.size(); i++) cap_entry_set(c->copied[i], CapEntry{g, c->slots[i]});
     }
+    if (fixed) late_fix_kept(c->buffer == VK_NULL_HANDLE, value);   // (the buffer kept with the captures: else nothing reads the pages)
     cap_view_bump();
     stage_put(*c);   // (the shadow's copies from it are done: copy_pairs returned)
     if (c->map) cap_buf_free(c->buffer, c->alloc, c->map, c->bsize), c->buffer = VK_NULL_HANDLE, c->map = nullptr;
@@ -2641,6 +3237,7 @@ void append_capture_copy(std::vector<VkBufferCopy>& runs, const VkBufferCopy& ne
 
 /// The pages of the pool the CPU wrote since its mirror's sync, copied in (the upload command buffer)
 void mirror_sync(Pool& p) {
+    late_fix_emit();   // (the late pages' fix, before this copies out of a capture's buffer)
     p.synced_epoch = mirror_epoch;
     p.sync_seg = texture_segment();
     mirror_synced.push_back(&p);
@@ -2718,6 +3315,7 @@ void mirror_sync(Pool& p) {
         GprofSpan gp(upload_command_buffer(), "msync copies (CPU pages from a capture -> mirror)");
         gp.items = (int)rs.size();
         vkCmdCopyBuffer(upload_command_buffer(), buf, p.mirror, (uint32_t)rs.size(), rs.data());
+        shadow_sync_copy(upload_command_buffer(), buf, p, rs);   // (the shadow as the mirror: see shadow_follows_sync_on)
         for (const VkBufferCopy& r : rs) st_sync_bytes += (int64_t)r.size, gp.bytes += r.size;
         st_sync_copies += (int64_t)rs.size();
     }
@@ -2727,6 +3325,7 @@ void mirror_sync(Pool& p) {
     gp.items = (int)runs.size();
     note_in_place_read();   // (these pages as guest memory has them when the GPU gets here)
     vkCmdCopyBuffer(upload_command_buffer(), p.buffer, p.mirror, (uint32_t)runs.size(), runs.data());
+    shadow_sync_copy(upload_command_buffer(), p.buffer, p, runs);
     for (const VkBufferCopy& r : runs) st_sync_bytes += (int64_t)r.size, gp.bytes += r.size;
     st_sync_copies += (int64_t)runs.size();
 }
@@ -3805,6 +4404,7 @@ bool mirror_make(Pool& pool) {
                 b->second.last_use = std::max(b->second.last_use, mem_rec_value);
             }
             if (!over.empty()) {
+                late_fix_emit();   // (the late pages' fix, before the copies out of a capture's buffer below)
                 VkMemoryBarrier2 mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};   // (after the full copy)
                 mb.srcStageMask = mb.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
                 mb.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
@@ -4109,9 +4709,34 @@ template <class F> void wbd_split(uint64_t at, uint64_t size, F&& emit) {
     }
     if (end > body_end) emit(body_end, end - body_end, false);
 }
+// (pools_mu held) the shadow-follows-sync entries of a freed shadow dropped, before shadows_reap destroys it (a shadow made
+// after may have its handle: the entries would mark that one's pages known, which never had the copy)
+void shadow_synced_freed() {
+    if (dead_shadows.empty() || shadow_synced.empty()) return;
+    std::erase_if(shadow_synced, [](const ShadowSynced& s) {
+        for (const DeadShadow& d : dead_shadows)
+            if (d.buffer == s.shadow) return true;
+        return false;
+    });
+}
+// (pools_mu held) the late pages' fix: a stamp block whose shadow was freed counts for none: filled again and tied to its
+// pool's shadow when a late page is next found there (a new shadow may have the freed one's handle and memory, and the
+// stamps were the old one's)
+void late_fix_shadows_freed() {
+    if (dead_shadows.empty() || stamp_blocks.empty()) return;
+    for (auto& [key, b] : stamp_blocks) {
+        if (!b.shadow) continue;
+        for (const DeadShadow& d : dead_shadows)
+            if (d.buffer == b.shadow) {
+                b.shadow = VK_NULL_HANDLE, b.since = 0;
+                break;
+            }
+    }
+}
 struct WbdChunk {   // (shaders/wb_diff.comp's Chunk)
     uint64_t mirror, shadow, guest;
-    uint32_t count, vecs;   // (16-byte vectors when vecs is 1, else words)
+    uint32_t count, vecs;   // (16-byte vectors when bit 0 is set, else words; bit 1: it has stamps, the late pages' fix:
+                            // their address in a uint64 a chunk right after the table's chunks, which then has no observations)
 };
 bool wbd_observe_on() {
     static const bool on = env_on("RX_VK_WB_OBSERVE");
@@ -4152,6 +4777,7 @@ void wbd_observe_collect(WbdTable& t) {
     const auto* flags = reinterpret_cast<const uint32_t*>(t.map + offset);
     uint64_t changed = 0, bytes = 0, changed_bytes = 0;
     for (uint64_t i = 0; i < count; ++i) {
+        // (vecs 0 or 1 only: a table with the late pages' fix's stamps has no observations)
         const uint64_t size = (uint64_t)chunks[i].count * (chunks[i].vecs ? 16u : 4u);
         if (flags[i] > 1 || chunks[i].vecs > 1 || !size || size > (64u << 10)) {
             wbd_observe_missed(count, "incomplete or invalid GPU result");
@@ -4186,12 +4812,15 @@ bool wbd_table_make(uint64_t bytes, WbdTable& t) {
     t = {};
     return false;
 }
-WbdTable* wbd_table_get(uint64_t bytes) {
+// (stamps: the bytes after the chunks that the late pages' fix's stamp addresses take; a table with them has no observations)
+WbdTable* wbd_table_get(uint64_t chunk_bytes, uint64_t stamps = 0) {
     WbdTable& t = wbd_tables[wbd_table_next];
     if (t.value > mem_completed) return nullptr;   // (still read by a submission the GPU has not done)
     wbd_observe_collect(t); // Before its input table or its trailing flags can be overwritten or freed.
-    const uint64_t count = bytes / sizeof(WbdChunk);
-    const uint64_t extra = wbd_observe_on() && mem_rec_value && bytes % sizeof(WbdChunk) == 0 &&
+    if (stamps > UINT64_MAX - chunk_bytes) return nullptr;
+    const uint64_t bytes = chunk_bytes + stamps;
+    const uint64_t count = chunk_bytes / sizeof(WbdChunk);
+    const uint64_t extra = !stamps && wbd_observe_on() && mem_rec_value && chunk_bytes % sizeof(WbdChunk) == 0 &&
                            count <= kWbdObserveChunks ? count * sizeof(uint32_t) : 0;
     const uint64_t wanted = bytes <= UINT64_MAX - extra ? bytes + extra : bytes;
     if (t.bytes < wanted) {
@@ -4233,6 +4862,9 @@ VkDeviceAddress wbd_observe_begin(WbdTable& t, uint64_t count) {
 
 void memory_end_submission(VkCommandBuffer cmd, uint64_t part) {
     std::lock_guard lk(pools_mu);
+    late_fix_shadows_freed();
+    late_fix_reap();
+    late_fix_emit();   // (the late pages' fix: the stamps' new blocks filled before this write-back stamps them)
     {   // (every 600 submissions: how the mirror syncs' dirty pages were read)
         static int64_t n, l_live, l_cap;
         if (++n % 600 == 0) {
@@ -4318,12 +4950,14 @@ void memory_end_submission(VkCommandBuffer cmd, uint64_t part) {
         std::vector<VkBufferCopy> runs;
         // (the write-back's diff: the runs of pools with a shadow, as chunks of 64 KB at most, for one pass after the loop)
         const bool diff = wb_diff_on() && wbd_pipe_ready();
-        if (diff) shadows_forget_written(), shadows_reap(), shadows_check_room();
+        if (diff) shadows_forget_written(), shadow_synced_freed(), shadows_reap(), shadows_check_room(), late_fix_shadows_freed(), shadow_synced_known();
         static thread_local std::vector<WbdChunk> chunks;
         struct ChunkSrc { Pool* p; uint64_t at, len; };
         static thread_local std::vector<ChunkSrc> chunk_src;   // (for the whole copy, when no table is free)
+        static thread_local std::vector<uint64_t> chunk_stamps;   // (the late pages' fix: a chunk's stamps, or 0)
+        bool any_stamps = false;
         static thread_local std::vector<VkBufferCopy> fills, odd;
-        chunks.clear(), chunk_src.clear();
+        chunks.clear(), chunk_src.clear(), chunk_stamps.clear();
         bool filled = false;
         for (size_t i = 0; i < writebacks.size();) {
             Pool* p = writebacks[i].pool;
@@ -4340,7 +4974,7 @@ void memory_end_submission(VkCommandBuffer cmd, uint64_t part) {
             checkpoint_mark(cmd, p->lo, 'b');
             uint64_t run_bytes = 0;
             for (const VkBufferCopy& r : runs) run_bytes += r.size;
-            if (diff && !p->shadow && run_bytes >= (256u << 10)) {
+            if (diff && !p->shadow && (run_bytes >= (256u << 10) || late_shadow_wanted(p->lo))) {   // (or one the late pages' fix wants)
                 // (a pool whose write-back is worth one, as VRAM allows; wanted stays after VRAM takes it, for shadows_check_room)
                 p->shadow_wanted = true;
                 shadow_make(*p);
@@ -4376,17 +5010,38 @@ void memory_end_submission(VkCommandBuffer cmd, uint64_t part) {
                     vkCmdCopyBuffer(cmd, p->mirror, p->buffer, (uint32_t)odd.size(), odd.data());
                     for (const VkBufferCopy& r : odd) shadow_forget(*p, r.dstOffset, r.size);
                 }
+                const bool stamped = stamps_in(*p);   // (the late pages' fix: chunks cut at its 64 KB stamp blocks)
                 for (const VkBufferCopy& r : runs) {
-                    if ((r.dstOffset | r.size) & 3) continue;
+                    if ((r.dstOffset | r.size) & 3) {
+                        wb_kind_note(WB_WHOLE, p->lo + r.dstOffset, p->lo + r.dstOffset + r.size, mem_rec_value);
+                        late_snap_whole(cmd, *p, r.dstOffset, r.size);   // (copied whole above, with the odd ones)
+                        continue;
+                    }
+                    wb_kind_note(WB_DIFF, p->lo + r.dstOffset, p->lo + r.dstOffset + r.size, mem_rec_value);
                     wbd_split(r.dstOffset, r.size, [&](uint64_t at, uint64_t len, bool vecs) {
-                        chunks.push_back({mirror_address + at, p->shadow_address + at, p->address + at,
-                                          (uint32_t)(len / (vecs ? 16 : 4)), vecs ? 1u : 0u});
-                        chunk_src.push_back({p, at, len});
+                        while (len) {
+                            uint64_t piece = len, st = 0;
+                            if (stamped) {
+                                const uint64_t g = p->lo + at;
+                                piece = std::min<uint64_t>(len, (((g >> kStampShift) + 1) << kStampShift) - g);
+                                st = stamp_address(*p, g);
+                            }
+                            chunks.push_back({mirror_address + at, p->shadow_address + at, p->address + at,
+                                              (uint32_t)(piece / (vecs ? 16 : 4)), (vecs ? 1u : 0u) | (st ? 2u : 0u)});
+                            chunk_src.push_back({p, at, piece});
+                            chunk_stamps.push_back(st);
+                            any_stamps |= st != 0;
+                            at += piece, len -= piece;
+                        }
                     });
                 }
                 st_wbd_runs += (int64_t)runs.size(), st_wbd_bytes += (int64_t)run_bytes;
             } else {
                 vkCmdCopyBuffer(cmd, p->mirror, p->buffer, (uint32_t)runs.size(), runs.data());
+                for (const VkBufferCopy& r : runs) {
+                    wb_kind_note(WB_WHOLE, p->lo + r.dstOffset, p->lo + r.dstOffset + r.size, mem_rec_value);
+                    late_snap_whole(cmd, *p, r.dstOffset, r.size);
+                }
             }
             for (const VkBufferCopy& r : runs) st_wb_bytes += (int64_t)r.size, gp.bytes += r.size;
             gp.items += (int)runs.size();
@@ -4418,13 +5073,15 @@ void memory_end_submission(VkCommandBuffer cmd, uint64_t part) {
             }
         }
         if (!chunks.empty()) {
-            WbdTable* t = wbd_table_get(chunks.size() * sizeof(WbdChunk));
+            WbdTable* t = wbd_table_get(chunks.size() * sizeof(WbdChunk), any_stamps ? chunks.size() * sizeof(uint64_t) : 0);
             if (!t) {   // (no table free: the whole copies, the shadows forgotten for those pages)
                 if (wbd_observe_on()) wbd_observe_missed(chunks.size(), "chunk table busy or unavailable");
                 for (const ChunkSrc& c : chunk_src) {
                     const VkBufferCopy r{c.at, c.at, c.len};
                     vkCmdCopyBuffer(cmd, c.p->mirror, c.p->buffer, 1, &r);
                     shadow_forget(*c.p, c.at, c.len);
+                    wb_kind_note(WB_WHOLE, c.p->lo + c.at, c.p->lo + c.at + c.len, mem_rec_value);
+                    late_snap_whole(cmd, *c.p, c.at, c.len);
                 }
                 static int logged;
                 if (logged++ < 8) logf("vk: write-back diff: no chunk table free (%zu chunks): this one copied whole", chunks.size());
@@ -4432,13 +5089,17 @@ void memory_end_submission(VkCommandBuffer cmd, uint64_t part) {
             if (filled) transfer_barrier(cmd);   // (the shadows' pages from guest memory before the pass reads them)
             if (t) {
                 memcpy(t->map, chunks.data(), chunks.size() * sizeof(WbdChunk));
-                const VkDeviceAddress observations = wbd_observe_begin(*t, chunks.size());
-                if (!observations) flush_mapped(t->alloc, chunks.size() * sizeof(WbdChunk));
+                if (any_stamps) {   // (the stamps' addresses after the chunks: shaders/wb_diff.comp reads them there)
+                    if (wbd_observe_on()) wbd_observe_missed(chunks.size(), "a table with stamps");
+                    memcpy(t->map + chunks.size() * sizeof(WbdChunk), chunk_stamps.data(), chunks.size() * sizeof(uint64_t));
+                }
+                const VkDeviceAddress observations = any_stamps ? 0 : wbd_observe_begin(*t, chunks.size());
+                if (!observations) flush_mapped(t->alloc, chunks.size() * (sizeof(WbdChunk) + (any_stamps ? sizeof(uint64_t) : 0)));
                 GprofSpan gd(cmd, "wb diff (mirror -> guest memory where it differs from the shadow)");
                 gd.items = (int)chunks.size();
                 vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, wbd_pipe.pipe);
                 const struct { uint64_t table; uint32_t count, pad; uint64_t observations; }
-                    pc{t->address, (uint32_t)chunks.size(), 0, observations};
+                    pc{t->address, (uint32_t)chunks.size(), (uint32_t)mem_rec_value, observations};
                 vkCmdPushConstants(cmd, wbd_pipe.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof pc, &pc);
                 const uint32_t n = (uint32_t)chunks.size();
                 vkCmdDispatch(cmd, std::min<uint32_t>(n, 65535u), (n + 65534u) / 65535u, 1);
