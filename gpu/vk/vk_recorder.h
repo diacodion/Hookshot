@@ -101,7 +101,7 @@ extern std::atomic<bool> par_active;   // (vk_replay.cpp: a parallel replay's se
     K(vkDestroyPipelineLayout) K(vkDestroyDescriptorSetLayout) K(vkDestroyDescriptorPool) K(vkDestroyQueryPool)                   \
     K(vkDestroyShaderModule) K(vkDestroyPipelineCache) K(vkDestroyFence) K(vkDestroySemaphore) K(vkDestroySwapchainKHR)           \
     K(vkDestroySurfaceKHR) K(vkDestroyDevice) K(vkDestroyInstance) K(vkFreeMemory)                                                 \
-    M(vmaDestroyBuffer) M(vmaDestroyImage) M(vmaInvalidateAllocation)
+    M(vmaDestroyBuffer) M(vmaDestroyImage) M(vmaInvalidateAllocation) M(vmaFreeMemory)
 
 namespace mkwvk::rec {
 

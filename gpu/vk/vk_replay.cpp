@@ -260,6 +260,8 @@ void queue_flush_locked() {   // (dev.present_mu held)
     si.pSignalSemaphoreInfos = sig;
     PROF(PROF_QSUBMIT);
     si.pNext = reflex_submit_id(nullptr, pend.reflex);   // (NVIDIA Reflex: the game frame of the batch's first command buffer)
+    VkSemaphoreSubmitInfo sparse_wait;   // (hookshot: after the sparse mirrors' binds, RX_VK_MIRROR_SPARSE)
+    if (memory_sparse_wait(&sparse_wait)) si.waitSemaphoreInfoCount = 1, si.pWaitSemaphoreInfos = &sparse_wait;
     const VkResult res = vkQueueSubmit2(dev.queue, 1, &si, VK_NULL_HANDLE);
     static int failures;
     if (res != VK_SUCCESS && failures++ < 8) logf("vk: batched submit %llu failed (%d)", (unsigned long long)batch_next, (int)res);
@@ -805,6 +807,8 @@ void submit_recording(Recording& r, bool signal_value = true, uint64_t signal_at
     }
     PROF(PROF_QSUBMIT);
     si.pNext = reflex_submit_id(nullptr);   // (NVIDIA Reflex: the frame being made)
+    VkSemaphoreSubmitInfo sparse_wait;   // (hookshot: after the sparse mirrors' binds, RX_VK_MIRROR_SPARSE)
+    if (memory_sparse_wait(&sparse_wait)) si.waitSemaphoreInfoCount = 1, si.pWaitSemaphoreInfos = &sparse_wait;
     const VkResult res = vkQueueSubmit2(dev.queue, 1, &si, r.fence);
     r.submitted = res == VK_SUCCESS;
     static int failures;
@@ -2083,6 +2087,8 @@ const uint8_t* replay_handle(VkCommandBuffer& cmd, const uint8_t* h, bool may_st
         std::lock_guard lk(dev.present_mu);
         queue_flush_locked();
         si.pNext = reflex_submit_id(nullptr);   // (NVIDIA Reflex: the frame being made; after the flush, which tags its own)
+        VkSemaphoreSubmitInfo sparse_wait;   // (hookshot: after the sparse mirrors' binds, RX_VK_MIRROR_SPARSE)
+        if (memory_sparse_wait(&sparse_wait)) si.waitSemaphoreInfoCount = 1, si.pWaitSemaphoreInfos = &sparse_wait;
         const VkResult res = vkQueueSubmit2(dev.queue, 1, &si, j->r->fence);
         j->r->submitted = res == VK_SUCCESS;
         if (res != VK_SUCCESS) logf("vk: segment submit %llu failed (%d)", (unsigned long long)j->r->value, (int)res);
