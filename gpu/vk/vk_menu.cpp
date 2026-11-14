@@ -688,10 +688,11 @@ const char* tx_output_res(int v) {
     static char b[40];
     v = output_choice(v);
     // (the picture this choice makes (picture_for: at the monitor's shape when the Aspect ratio takes it), "(native)"
-    // when it is the screen's own size; the game's own choice (0) keeps its name)
+    // when it is the screen's own size; the game's own reduced size (0, 80% of its 2560x1440: hos_output_parse) marked so,
+    // not the default since a new install takes 2560x1440, host/hos_wide_size.h hos_output_default)
     bool native = false;
     const Out o = picture_for(v, &native);
-    snprintf(b, sizeof b, "%ux%u%s", o.w, o.h, native ? " (native)" : v ? "" : " (game's)");
+    snprintf(b, sizeof b, "%ux%u%s", o.w, o.h, native ? " (native)" : v ? "" : " (reduced)");
     return b;
 }
 /// The Aspect ratio row (ultrawide=): the shapes of the sizes offered, narrowest first, the monitor's own named so
@@ -1070,11 +1071,11 @@ const char* hn_vsync(int v, int variant) {
     }
     return variant <= 0 ? t[std::clamp(v, 0, 2)] : nullptr;
 }
-/// The Output resolution: the game's own, the player's own, or one of the screen's sizes as it compares with the screen (its
-/// own, larger, smaller; nothing where the screen's size is not known)
+/// The Output resolution: the game's own reduced size, the player's own, or one of the screen's sizes as it compares with the
+/// screen (its own, larger, smaller; nothing where the screen's size is not known)
 const char* hn_output_res(int v, int variant) {
     static const char* const t[] = {
-        "The game's own size.",
+        "The game's own reduced size, 80% of its 2560x1440: lighter on the GPU.",
         "Your screen's own size: the HUD and text pixel for pixel, nothing to scale to the window.",
         "Larger than your screen: drawn bigger, then scaled down to the window. Sharper, and slower. The game's render "
         "targets get a bigger GPU pool, so a full-size 3D fits.",
@@ -4188,14 +4189,14 @@ void menu_init() {
     first_start = !has_options;
     const char* handheld_env = getenv("HOS_HANDHELD");   // (host/nn_applet.c handheld(): the environment over the file's)
     if (!has_output && !(handheld_env ? atoi(handheld_env) != 0 : opts.handheld != 0)) {
-        // (none chosen, a new install: the size host/nn_applet.c took at boot, the main screen's where it has fewer pixels than
-        // the game's own (a Steam Deck's 1280x800), hos_output_default. Saved from now on, so the two never part. HOS_OUTPUT_RES,
-        // below, is over it, as over a chosen one)
+        // (none chosen, a new install: the size host/nn_applet.c took at boot, the game's 2560x1440 or the main screen's where
+        // it has fewer pixels (a Steam Deck's 1280x800), hos_output_default. Saved from now on, so the two never part.
+        // HOS_OUTPUT_RES, below, is over it, as over a chosen one)
         uint32_t sw = 0, sh = 0, w = 0, h = 0;
-        if (host_screen_size(&sw, &sh) && hos_output_default(sw, sh, &w, &h)) {
-            opts.output_res = output_choice_of(w, h);
-            logf("vk: the Output resolution: none chosen, the screen's %ux%u (smaller than the game's 2048x1152)", w, h);
-        }
+        host_screen_size(&sw, &sh);   // (not known: 0 x 0, the game's 2560x1440)
+        hos_output_default(sw, sh, &w, &h);
+        opts.output_res = output_choice_of(w, h);
+        logf("vk: the Output resolution: none chosen, %ux%u (the game's 2560x1440, or the screen's where smaller)", w, h);
     }
     // An opt-in profile for 4 GB cards: keep existing options authoritative, but make a first run usable on
     // low-VRAM hardware without requiring the menu to render first.

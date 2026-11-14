@@ -32,7 +32,7 @@ struct Hardware {
 };
 
 // What the profile sets. Indices are the menu's own: the Upscaler (upscaler_rows.h, ur::GAME...) and the Render resolution
-// (ur::kPercent's index). Not the Output resolution: it stays the game's 2048 x 1152 or the player's own. host/hos_main.c reads it
+// (ur::kPercent's index). Not the Output resolution: it stays a new install's (hos_output_default) or the player's own. host/hos_main.c reads it
 // at boot, before the card is known, so a size chosen here only applied at the next start, and a new install's first close of
 // the menu asked to restart for it
 struct Choice {
